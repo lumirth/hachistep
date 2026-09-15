@@ -1,0 +1,46 @@
+use crate::time::Time;
+
+/// A pin is not a byte. High impedance is resolved by board pulls/drivers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drive { Floating, Low, High }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Piezo { Negative, Neutral, Positive }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NvDomain { EepromArray, EepromStatus, InternalFlash, Sensor }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Event {
+    LcdWrite { at: Time, page: u8, column_byte: u16, value: u8 },
+    LcdControl { at: Time, command: u8, parameter: Option<u8> },
+    Buzzer { at: Time, drive: Piezo },
+    Infrared { at: Time, emitting: bool },
+    NvByte { at: Time, domain: NvDomain, address: u16, value: u8 },
+    NvCommit { at: Time, domain: NvDomain, address: u16, length: u16 },
+    Reset { at: Time, watchdog: bool },
+}
+/// Events are delivered synchronously. NvByte records precede their NvCommit
+/// at one timestamp, so consumers never have to infer intermediate writes from
+/// a later memory image. No re-entry is allowed.
+pub trait Output { fn event(&mut self, event: Event); }
+impl Output for () { fn event(&mut self, _: Event) {} }
+impl Output for Vec<Event> { fn event(&mut self, event: Event) { self.push(event); } }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Acceleration { pub x: i32, pub y: i32, pub z: i32 }
+impl Acceleration {
+    /// Specific force in micro-g in sensor coordinates. Includes gravity.
+    pub const STILL: Self = Self { x: 0, y: 0, z: 1_000_000 };
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Buttons { pub left: bool, pub center: bool, pub right: bool }
+impl Buttons { pub const RELEASED: Self = Self { left: false, center: false, right: false }; }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Input {
+    Buttons(Buttons),
+    Acceleration(Acceleration),
+    SupplyMillivolts(u16),
+    InfraredLevel(bool),
+    ResetPin(bool),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimedInput { pub at: Time, pub input: Input }

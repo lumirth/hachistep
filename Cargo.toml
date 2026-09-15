@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/hs-core", "crates/hs-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+overflow-checks = true
+
+[profile.dev]
+overflow-checks = true

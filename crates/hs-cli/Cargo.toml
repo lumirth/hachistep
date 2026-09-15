@@ -1,0 +1,13 @@
+[package]
+name = "hs-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hachistep"
+path = "src/main.rs"
+
+[dependencies]
+hs-core = { path = "../hs-core" }

@@ -1,0 +1,7 @@
+/target/
+/local-inputs/*
+!/local-inputs/README.md
+/out/
+__pycache__/
+*.tmp
+.DS_Store
