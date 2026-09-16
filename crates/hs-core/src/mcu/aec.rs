@@ -200,6 +200,13 @@ impl Aec {
         if now < self.at {
             return Err(TimeError::Reversed.into());
         }
+        if !self.module {
+            // No AEC clock or output evolution in module standby. Rejoining
+            // the shared phases is done once by set_power, not at every
+            // unrelated MCU read. Pin baselines are still retained separately.
+            self.at = now;
+            return Ok(());
+        }
         while let Some(due) = self.pwm_deadline(c)? {
             if due > now {
                 break;
@@ -235,6 +242,9 @@ impl Aec {
         now: Time,
         c: &Clocks,
     ) -> Result<(), Error> {
+        if now == self.at && pins == self.pins {
+            return Ok(());
+        }
         self.sync(now, c)?;
         let old_gate = self.gate();
         let old_pins = self.pins;

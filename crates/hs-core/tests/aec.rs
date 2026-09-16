@@ -403,3 +403,24 @@ fn pwm_output_pin_route_and_digital_collision_validation() {
         .is_err());
     assert_eq!(m, before);
 }
+
+#[test]
+fn inactive_module_does_not_replay_elapsed_clocks_when_reenabled() {
+    let mut c = clocks();
+    let mut a = Aec::default();
+    a.write(0xff94, 0x10, Time::ZERO, &c).unwrap(); // L: phi/2
+    a.write(0xff95, 0x17, Time::ZERO, &c).unwrap();
+    let pins = [Some(false), Some(false), Some(true)];
+    a.input_pins(pins, Time::ZERO, &c).unwrap();
+    let end = t(&c, 20000);
+    a.sync(end, &c).unwrap();
+    c.set_system(end, 32768, 1).unwrap();
+    a.set_power(true, true, true, true, end, &c).unwrap();
+    assert_eq!(a.peek(0xff97), 0);
+    let next = c
+        .after(end, 2, hs_core::mcu::clocks::Tap::system(1))
+        .unwrap();
+    a.sync(next, &c).unwrap();
+    assert_eq!(a.peek(0xff97), 1);
+    assert_eq!(a.take_requests(), 0);
+}
