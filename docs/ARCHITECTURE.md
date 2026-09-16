@@ -32,6 +32,12 @@ execution loop, no JIT, no native firmware replacement, and no speculative clone
 and rollback. Register aliases refer to the authoritative ER register values.
 The incremental decoder requests extension words only when needed.
 
+Aliased predecrement stores capture the source after the full address-register
+update. RTE does not inherit the following-instruction delay belonging to LDC.
+EEPMOV.W samples NMI only between complete transfer cycles; an already-issued
+read remains stable until completion. Exception entry saves the next PC and the
+firmware must explicitly resume the remaining copy.
+
 A word access to a byte-wide SFR range is represented as separate completed
 lanes; a native word register remains a word access. Long transfers have multiple
 word effects. The first completed lane is never undone because a later phase
@@ -50,6 +56,12 @@ Effects at `T` remain pending. An input at the exclusive endpoint is not consume
 The return value includes `inputs_consumed`, which the caller must use when
 continuing a timeline. The complete supplied slice is validated before mutation.
 
+CPU waits, SSU half-edge waits and ADC aperture/result waits retain a `ClockWait`
+with remaining source edges and a revision-tagged derived deadline. Downstream
+gating pauses the obligation; a source change recomputes its appointment. SCI
+and stabilization still have older absolute appointments, and source switching
+still rephases fractional timing; these remain explicit fidelity work.
+
 The implementation compares the pending CPU completion, the cached next-device
 appointment, the next input, any wake delay and the requested horizon. It does
 not scan every peripheral after every ordinary RAM access. MCU register accesses
@@ -58,8 +70,10 @@ serial edges, conversion apertures, programming completion and sensor updates.
 
 At an equal timestamp the present kernel settles device events, then applies the
 input batch, then completes a CPU effect. That ordering is reproducible, not a
-universal silicon claim. A future local conflict rule must be added to the
-owning mechanism instead of reordering the entire machine to fix one register.
+universal silicon claim. Timer W now resolves its documented write/capture/
+buffer and counter-clear conflicts locally, and the comparator/AEC owners retain
+read qualification independently of controller flags. These do not establish a
+universal precedence for every other register.
 
 ## Fixed serial wiring
 
@@ -129,3 +143,21 @@ registry or cross-owner `RefCell` graph to avoid understanding ownership.
 The public modules are exposed for development and fixture access. Their internal
 representation is not declared stable. The intended embedding surface is the
 `Machine`/`Images`/`Conditions`/input/output facade documented in API.
+
+## New concrete owners and test seams
+
+The AEC keeps OVH/OVL flags separate from its emitted controller requests. PWM
+output and external gate/clock changes feed its one counter recurrence, including
+the documented gate-return counting effect. Its P12 PWM route also reaches the
+actual EEPROM select net; it is not merely a detached test pin.
+
+The comparator keeps its analog output and read-armed comparison baseline
+separate. CMDR inspection does not arm/acknowledge it. The P30 VCref path retains
+the SCI transmit pin independently. Response timing remains a nominal inertial
+witness, not an analog measurement.
+
+`AnalogPin`, `DigitalPin` and `NmiPin` inputs are hardware-fixture seams, not new
+physical buttons or claims that every pad is exposed on the retail enclosure.
+Duplicate assignments are rejected before mutation. NMI is a dedicated latch
+and is acknowledged when the CPU actually admits vector 7, not when a maskable
+request is inspected.

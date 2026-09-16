@@ -45,6 +45,13 @@ assignment to each property is allowed at a timestamp. There is no header row.
 | `103,ir,0` | Incident emission absent. |
 | `1000,reset,0` | Assert the MCU's active-low reset input. |
 | `1010,reset,1` | Release reset. |
+| `100,nmi,0` | Drive NMI low; the selected edge is latched even while CCR.I is set. |
+| `300,nmi,1` | Drive NMI high (also the default user-mode reset strap). |
+| `100,analog,pb4,1900` | Apply 1,900 mV to a comparator/ADC fixture node. |
+| `200,analog,vcref,1200` | Apply external comparator reference at VCref/P30. |
+| `300,analog,pb4,release` | Release the external analog fixture driver. |
+| `100,digital,p11,1` | Drive an AEC/Timer W-related package input high. |
+| `300,digital,p11,release` | Release that digital fixture driver. |
 
 Button order is left, center, right. Values are logical physical pressed states,
 not low-active line voltages; the reached Pokéwalker input path is active high.
@@ -61,6 +68,17 @@ recover physical information it never measured. The supplied walking CSV uses
 The IR input is a digital optical-pulse witness interpreted by the receiver
 model, not a socket packet and not a complete analog photodetector simulation.
 The conformance IR fixture is an original software-generated pulse timeline.
+
+Analog fixture names are `pb0` through `pb5` and `vcref`; values are integer mV
+within the checked input envelope. Digital fixture names are `p10`, `p11`, and
+`p12`, with `0`, `1`, or `release`. These use actual pin-function routing rather
+than directly mutating a peripheral counter or flag. They are diagnostic seams,
+not a claim that an unmodified retail enclosure exposes those pads.
+
+NMI starts high. IEGR bit 7 selects its edge. A low level at reset release or
+power-on requests an unimplemented bootstrap/debug mode and is rejected; it is
+not treated as ordinary user-firmware startup. Held levels do not continuously
+reassert NMI. Short-pulse/subcycle synchronizer behavior remains uncharacterized.
 
 ## Exclusive timing
 

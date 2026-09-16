@@ -81,6 +81,15 @@ External component lifetimes are not erased just because the MCU resets.
 the current boundary. They can return a model error; notably, power removal
 while external nonvolatile programming is active is unsupported and rejected.
 
+`Input::NmiPin(bool)` controls the dedicated NMI input, separate from IRQ enables
+and flags. It defaults high and preserves its physical level across MCU reset.
+Low-at-reset bootstrap/debug behavior is explicitly unsupported.
+
+`Input::AnalogPin { pin, millivolts }` and `Input::DigitalPin { pin, level }` accept
+optional fixture drives (`None` releases them). The actual names/variant field
+spelling are defined in `signals.rs`; see INPUTS for the CLI equivalents. These
+fixtures flow through real routed owners, not host-created interrupt flags.
+
 A supply-voltage input is currently an analog-condition change, not an implicit
 power/reset call. Do not use a zero supply value as a substitute for `power_off`.
 

@@ -4,11 +4,11 @@ version = 3
 
 [[package]]
 name = "hs-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hs-core",
 ]
 
 [[package]]
 name = "hs-core"
-version = "0.1.0"
+version = "0.2.0"

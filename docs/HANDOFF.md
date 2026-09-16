@@ -1,140 +1,127 @@
-# Implementation handoff
+# Implementation handoff — after revision 0.2
 
-## First commands
+## Reproduce before changing behavior
 
 ```sh
 python3 tools/check.py --out out/your-check
-python3 tools/verify_retail.py --out out/your-retail
-cargo run -p hs-core --release --example replay -- \
-  local-inputs/pokewalker.bin local-inputs/eeprom.bin
+python3 tools/mutation_check.py --out out/your-mutations
+python3 tools/verify_retail.py --out out/your-retail --menu-trace
 ```
 
-All destination directories must be new. Logs remain available on failure.
-The standard checks do not require private images. The retail command is
-explicitly separate and verifies that input hashes remain unchanged.
+Destinations must be new. Standard checks need no private images. Private-input
+verification checks source hashes are unchanged and now checks explicit reviewed
+software expectations. It does not call every changed endpoint a hardware bug.
 
-## Reading route
+Read REVISION-0.2, STATUS, `machine.rs::run_until`, then the affected owner and its
+integration tests. This revision extends the original Git history; do not add a
+second executor, retail-PC shortcuts, raw SFR mirror, or a new device framework.
 
-Read `machine.rs::run_until` and its inner loop, then `cpu::Cpu::next/complete`,
-then the addressed MCU owner. Device state does not depend on a retail function
-address. Product output is collected at `Output::event`. Before changing timing,
-read the exact-horizon and error semantics in ARCHITECTURE.
+## What is now closed enough to build on
 
-The synthetic conformance builder is deliberately separate from Rust and does
-not import the decoder. Its tiny emitter only generates the diagnostic forms it
-needs; it is not intended to become a general assembler.
+- The 95-entry register access-width/timing transcription is independently tested;
+  RTC, timers, ADC, SPCR and IrCR no longer receive the SSU/SCI three-state cost.
+- CPU/SSU/ADC waits retain clock-edge obligations across source/gate changes.
+- Dual comparators and the AEC are functional owners, not address scaffolding.
+- Timer W captures/buffers/external clocks work, including stopped capture and
+  documented register conflicts through actual GPIO routing.
+- Aliased predecrement source timing, RTE versus LDC deferral and specific d24
+  encoding restrictions are corrected. Dedicated NMI input/latching/masked wake
+  and EEPMOV.W break handling are implemented without an alternate executor.
+- Strict conformance manifests, complete-output comparison and mutation checks
+  provide meaningful constraints for subsequent work.
 
-## Ordered work
+## Next work, in dependency order
 
-### 1. Close CPU fetch, timing and admission
+### 1. CPU fetch/microtiming and interrupt admission
 
-Files: `cpu/mod.rs`, `cpu/decode.rs`, `machine.rs`, `mcu/mod.rs`,
-`conformance/build.py` and `crates/hs-core/tests/kernel.rs`.
+Files: `cpu/mod.rs`, `cpu/decode.rs`, `machine.rs`, `tests/cpu_regressions.rs`,
+`tests/nmi.rs`, and the independent guest corpus.
 
-The executor already preserves partial physical accesses. Extend that same
-continuation rather than adding a whole-instruction backend. Audit each form's
-fetch, discarded prefetch, internal delay, access and retirement timing against
-the target manual. Make request sampling/admission explicit where a final-state
-mask check is insufficient. Close CCR-write deferral, NMI/EEPMOV interruption,
-stack quirks, aliasing updates, odd addresses and undefined-form dispositions.
+Complete discarded/prefetched accesses, phase placement and total timings for
+all applicable forms. The new alias/d24 tests certify only their stated cases,
+not the whole instruction set. General enable/flag races, short NMI pulses and
+synchronizer/admission timing remain. RTE is fixed; do not re-add LDC's delay to
+it. EEPMOV.W now abandons the remaining copy on NMI and saves the next PC; retain
+that rule while improving bus timing. `next()` must keep an issued action stable.
 
-Acceptance: independent form/flag cases, exception bus ordering, interrupted
-multi-beat accesses, self-modification before/after fetch, boundary phase sweeps,
-and no change in the single-engine invariant. First-word nonpanic enumeration
-alone is not the acceptance criterion.
+Acceptance: independent encoding/flags, source-correct ordered bus traces,
+phase-swept events, partial effects before reset, self-modification before/after
+fetch, typed-state/product-history partition and restoration equivalence.
 
-### 2. Replace absolute in-flight appointments at clock transitions
+### 2. Finish source-phase and lifecycle contracts
 
-Files: `machine.rs::Pending`, `mcu/clocks.rs`, `control.rs`, `ssu.rs`, `sci.rs`,
-`adc.rs` and timer owners.
+Files: `mcu/clocks.rs`, `control.rs`, `sci.rs`, timer owners and `machine.rs`.
 
-Store the applicable remaining clock obligation where a source can change during
-an operation. Distinguish divider phase, downstream gating and oscillator stop.
-The present system-source switch rephases fractional timing; correct this from
-the target's source-switch/stabilization rules. Add owner-specific same-time
-conflict handling rather than generalizing the current global ordering.
+Extend retained obligations to SCI where applicable. System source switches
+still rephase their fractional epoch; establish the actual source-selection and
+oscillator stabilization rules before replacing that witness. Source-derived
+waits and independently timed external-chip operations are different. Complete
+retention matrices without erasing external-device lifetimes on MCU reset.
 
-Acceptance: phase sweeps of clock/gate changes inside bus, serial and conversion
-operations; whole/chunked/snapshot behavior still agrees; each new rule has a
-manual anchor or identified measured basis.
+Acceptance: clock/gate changes at every relevant phase, standby/watch/subactive
+transitions, no stale expired visibility appointment after clock changes, NMI
+wake/strap tests, and local conflict rules rather than a global priority hack.
 
-### 3. Complete pin/function and serial modes
+### 3. Complete digital hardware gaps
 
-Files: `gpio.rs`, `ssu.rs`, `sci.rs`, `machine.rs::resolve_board` and external
-serial owners.
+IIC2 and internal MCU flash programming are still missing. Serial slave,
+bidirectional/RX-only, synchronous/external-clock SCI and some active
+reconfiguration modes remain unsupported. Complete GPIO mux, open-drain and
+contention behavior first where those modes depend on it. Resolve the reached
+0xF088 bits from target evidence rather than naming a guessed register.
 
-Resolve 0xF088. Complete pin priority/open-drain/pull behavior, serial slave and
-bidirectional modes, alternate serial selection, SCI stop-bit/error/multiprocessor
-cases, active reconfiguration and the actual IR transceiver envelope. Do not
-invent a BMA IRQ wire or direct packet-to-register bypass.
+AEC and comparators exist now: extend their existing owners and tests, not new
+parallel models. Resolve AEC module-stop ambiguity, clock polarity and gate-edge
+apertures; comparator delay/offset/noise and digital-read suppression witnesses.
+Timer W clock-mux glitches and exact sub-state input synchronization remain.
+ADC triggers/channel-change/retention are incomplete. Implement actual flash
+program/erase/verify controls and fetch restrictions, not a direct page-write API.
 
-Acceptance: physical pin fixtures, simultaneous selects/contention, deselect at
-every bit position, output released versus driven high, status clear versus byte
-completion, real peer interoperability only when actually measured.
+Acceptance: all applicable control paths through guest accesses, invalid-mode
+behavior with honest model errors, pin and register phase sweeps, distinct
+hardware/controller latches, preservation across reset/gating, mutation-sensitive
+expected observations, and no private-firmware patching.
 
-### 4. Complete missing MCU owners
+### 4. Physical sensor, display, supply and optical closure
 
-Add concrete `aec.rs`, `iic.rs`, `comparators.rs`, `flash.rs` modules; complete
-Timer W capture/buffering and ADC trigger/retention modes. The address authority
-currently rejects these operations, so entry points are easy to identify.
+Files: external owners, `adc.rs`, `comparators.rs`, `machine.rs`.
 
-Acceptance: owner-specific command/register sequences through guest accesses,
-not only direct Rust method calls; reset/gate/race tests; invalid configuration
-handling; persistent changes and fetches during internal flash programming.
+BMA filter window/rounding/calibration, publication skew, 0x1E effects, thresholds,
+wake modes, self-test and alternate interfaces still need work. LCD COM/scan/
+column and analog control behavior are provisional. Linear battery conversion,
+brownout/reset and optical receiver/transmitter response are not characterized.
+Interrupted programming must not become an invented atomic all-old/all-new rule.
 
-### 5. Characterize sensor, LCD and supply behavior
+Use narrow physical experiments with separate fitting and validation stimuli.
+Record observable versus inferred timing and instrument effects. No physical
+captures are included in this delivery, and no passing test changes that fact.
 
-Files: `devices/bma150.rs`, `nt7508.rs`, `mcu/adc.rs`, `machine.rs`.
+### 5. Optimize measured work
 
-Resolve BMA filter lengths/internal precision, startup history, publication skew,
-calibration window/0x1E effects, interrupts, other interfaces and self-test.
-Resolve LCD COM mapping/scan latching/column boundary and actual control effects.
-Replace the linear battery witness with the board's established circuit/transfer
-model. Close supply-to-reset and interrupted-programming outcomes without
-inventing atomic all-old/all-new results.
+The inactive AEC optimization is complete and checked against full menu output
+history. Remaining opportunities include broad MCU synchronization, individual
+serial/buzzer edges, 3 kHz sensor work and decoding. Exact edge-run/waveform
+compression must retain one owner transition mechanism. Use the paired tool's
+untimed history preflight and review full typed-state invariants separately.
 
-Acceptance: physical observations distinguish the proposed models. Keep fitting
-and validation stimuli separate. Until then retain explicit witness labeling.
+A performance comparison after an accuracy correction needs a newly justified
+behavior baseline. Do not turn off the correction to preserve an old hash.
+Report binary/code size, memory, workload and host, not a universal speed claim.
 
-### 6. Optimize measured work, keeping one model
+### 6. Integration and durable sessions
 
-Current opportunities are visible: individual SSU/Sci/timer output boundaries,
-3 kHz BMA updates, repeated decoding, and synchronization around polling. Use
-`tools/bench.py --left ... --right ...` with matching workloads. Do not install a
-second block runner to make a synthetic loop look faster.
+The CLI is replay, not a GUI or tested HGSS live peer. Live transport must respect
+causality. Portable snapshots must encode every causal latch/continuation/clock
+history, not just RAM and EEPROM. Test promised host architectures and declared
+MSRV; only the delivery compiler was exercised here. Package private assets
+separately from publishable source. Do not install or trigger network CI.
 
-For exact edge-run or signal-law compression, retain one owner advancement
-function and test expanded output against the uncompressed local recurrence in
-tests. Keep input changes and configuration boundaries inside the validity
-contract. No compression currently exists, so there is no hidden fallback to
-preserve.
+## Updating expectations
 
-Acceptance: full event histories where available, canonical state, chunk/snapshot
-invariance, default build improvement on multiple workload classes, code/table
-size and memory cost reported. Endpoint hashes alone are not sufficient proof.
-
-### 7. Frontend and durable session work
-
-The CLI is deterministic replay, not a live GUI. The core's time/input/output API
-is ready for a platform adapter. Host audio already renders from drive events.
-Live transport must not inject input into the past. A portable checkpoint format
-must serialize the complete typed causal state; serializing only RAM and EEPROM
-would not be a session save.
-
-## Preserve these boundaries
-
-Firmware decides steps, menu behavior, save repair, time counters and protocol
-semantics. The core models the machine, not `pw` functions. Host read-only policy
-means separate file output, not suppression of guest writes. No source hash or
-retail PC may select behavior. Error paths retain already completed effects.
-Unknown physical behavior belongs in explicit research cases, not an expanding
-public accuracy-settings menu.
-
-## Handoff quality gates
-
-Keep offline build/tests working, add a narrow regression at the owning boundary,
-run the private integration corpus after causal changes, inspect the first
-hardware divergence rather than patching a final screenshot, and update STATUS
-when a witness becomes established or a new mode is completed. Commit changes in
-small reviewable steps. Do not upload private inputs or install network CI merely
-because a local check exists.
+`conformance/spec` and documented guest fixtures are independent target
+expectations. `conformance/regressions/private-retail.json` is different: a
+reviewed software-observed baseline with input identity and an explicit basis
+revision. The verifier never updates it. A legitimate hardware change may alter
+retail instruction counts, timing, frame hashes or the synthetic motion result;
+explain that change before rebasing, and retain the independent case that caused
+it. Do not certify correctness by copying the candidate's output into a golden.

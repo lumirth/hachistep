@@ -1,98 +1,112 @@
 # Testing and evidence
 
-## What was actually run
+## Different claims have different tests
 
-The release checks comprise 47 ordinary Rust tests, one compiled documentation
-example, and one separately opted-in private retail test. The standard Rust
-corpus was also repeated with the `trace` feature enabled. Five Python host-tool
-tests and seven independent guest diagnostic fixtures pass. Formatting, Clippy
-with warnings denied, offline debug/release compilation and an extracted-package
-rebuild are recorded in `evidence/` when present.
-
-The private test runs the supplied firmware and buttons to five seconds in one
-call and in randomized short calls. It compares the **entire product-event
-vectors and the complete machine states**, not just final screenshots. It then
-restores a typed snapshot and compares a further second of complete state and
-events. No hardware fixture was connected; these are software regression results.
-
-A separate real-firmware script runs home, menu, synthetic motion and long idle
-workloads. It checks completion and integration activity, records all endpoint
-hashes/counters, and verifies the original input hashes remain unchanged. The
-107-step screenshot is an observed result of the supplied trajectory and model,
-not a claim about pedometer accuracy on real motion.
-
-## Rust test locations
-
-| Location | Purpose |
-|---|---|
-| `cpu/alu.rs` | Exhaustive byte arithmetic input cases and chained/preserved flags. |
-| `cpu/decode.rs` | Known forms/extensions and classification of all first words without panic. |
-| `cpu/mod.rs` | Aliases, reset prologue and exception write order. |
-| Owner-local tests | Serial/parser, timing, register and sampling mechanisms. |
-| `tests/kernel.rs` | Whole-machine partition/snapshot, horizons, invalid timelines, RAM execution, faults, real serial programming, lifecycle and persistence import. |
-| `tests/allocation.rs` | Allocation-free ordinary run with an allocation-free sink. Test-only allocator instrumentation uses `unsafe`; production core forbids it. |
-| `tests/retail.rs` | Opt-in complete event/state replay against private images. |
-| `hs-cli/tests/safety.rs` | Invalid input handling, no-clobber output, persistence images and run metadata. |
-| Crate doctest / `examples/replay.rs` | Compiled API usage and host integration. |
-
-This is a starter corpus, not a full H8 conformance matrix. Enumeration without a
-panic does not prove that every reserved/valid encoding is correctly classified.
-A local expected value expressed from the same algorithm can show consistency
-without providing independent physical evidence. See STATUS for unclosed cases.
-
-## Core-independent diagnostic fixtures
-
-`conformance/build.py` emits small original H8 programs with literal expected
-outcomes. It does not import Rust, `hs-core`, its decoder, or a previous emulator.
-`conformance/run.py` is a thin CLI adapter that checks RAM/EEPROM/register/output
-observations. These are software-reasoned expectations, not recorded hardware.
-The format and cases are documented in `conformance/README.md`.
+The standard suite needs no private images. It runs ordinary Rust tests,
+documentation tests, an all-features/trace build, Clippy, host-tool checks, and
+fifteen independently encoded guest fixtures. Run:
 
 ```sh
-python3 conformance/build.py out/fixtures
-python3 conformance/run.py --runner target/release/hachistep \
-  --fixtures out/fixtures --report out/fixture-results.json
+python3 tools/check.py --out out/check
+python3 tools/mutation_check.py --out out/mutations
+python3 tools/verify_retail.py --out out/retail --menu-trace
 ```
 
-The fixtures can be split into a separate repository as they grow. There is no
-second production CPU implementation or universal test DSL to maintain.
+All destinations must be new. No compiler/dependency is installed and no network
+CI job is created. See `evidence/next-revision` for actual results and versions.
+There are no new physical hardware captures.
 
-## Host tool tests
+The private Rust test compares the **complete typed machine state and complete
+product-event vectors** across randomized run partitions, then a further interval
+after snapshot restoration. The peripheral integration tests add clock/gate,
+analog-input, capture, AEC and NMI partition/snapshot cases. These establish
+representation/replay consistency, not agreement with silicon.
 
-The Python unit tests exercise archive extraction without path traversal,
-no-clobber destinations, rejection before writing invalid input, binary PGM pixel
-preservation, aperture-integrated audio and trace-truncation rejection. The
-end-to-end release process additionally runs these tools on the real files.
+## Independent target expectations
 
-## Measurements
+| Location | Scope |
+|---|---|
+| `conformance/spec/register_access.tsv`, `tests/register_access.rs` | 95 documented register widths/state counts and actual CPU access boundaries. |
+| `tests/cpu_regressions.rs` | 120 aliased predecrement combinations, partial long stores, RTE/LDC admission, 192 displacement-24 cases, EEPMOV/NMI and stable issued actions. |
+| `tests/clock_obligations.rs` | CPU/SSU/ADC source-edge waits, downstream gating, source changes, ordinary GPIO pull writes. |
+| `tests/comparators.rs` | Dual-channel hysteresis/reference/arming/clear behavior, actual guest vector 36, peek and pin-routing tests. |
+| `tests/timer_w_modes.rs` | Buffers, capture, external clock, local conflicts, PWM boundary, stabilization gating and guest vector 35. |
+| `tests/aec.rs` | Counter/PWM/gate recurrence, 8/16-bit behavior, separate flags/requests, guest vectors 18/32, shared phases and replay. |
+| `tests/nmi.rs` | Dedicated edge latch, masked wake, held-input behavior, standby replay, reset straps and failed power-on nonmutation. |
+| `conformance/build.py`, `run.py` | Fifteen guest images; independent literal expectations and a fail-closed hashed manifest. |
+
+Other existing tests cover arithmetic, image/CLI safety, memory and serial
+mechanisms, typed snapshots, and ordinary-run zero allocation. First-word
+nonpanic enumeration is retained, but is **not** called complete opcode
+certification. Many subcycle timings and physical parameters remain provisional;
+STATUS records them rather than hiding them behind passing tests.
+
+## Mutation checks
+
+The mutation tool copies only sources and expectation data into an automatically
+cleaned temporary directory. It runs the unmodified control, changes exactly one
+identified site, and requires a compiled test to fail with the expected assertion.
+A compiler error, missing test, zero tests, or unapplied mutation is not success.
+The source repository and user's machine are never modified.
+
+The three shipped mutations reintroduce a wrong RTC access duration, capture an
+aliased predecrement source too early, and suppress EEPMOV.W NMI acceptance.
+These tests demonstrate sensitivity to those bugs. They do not establish that
+all possible bugs are detected, or that the expectations came from physical runs.
+
+## Private firmware: regression versus smoke
+
+`verify_retail.py` now checks the exact firmware/EEPROM identity and scenario,
+semantic report fields and all six exported images against
+`conformance/regressions/private-retail.json`. This includes the frame bytes,
+rather than merely recording a screenshot hash while asserting only completion.
+The supplied home/menu/walking frames were visually inspected to establish this
+software regression baseline. A model-correcting change may legitimately require
+a separately reviewed expectation change; never auto-rebaseline from a candidate.
+
+Use `--smoke-only` with different private inputs to test execution only. Its output
+explicitly says that no behavioral regression comparison was made. It is a host
+verification choice, not an emulator accuracy mode; the execution engine is the
+same. `--quick` omits the longer walking/idle workloads.
+
+The 107-step result is an observation of a synthetic trajectory under the current
+sensor model, not an independently measured physical pedometer expectation.
+
+## Compare histories before measuring speed
 
 ```sh
-python3 tools/bench.py --milliseconds 10000 --repeats 3 --out out/bench
+python3 tools/compare_runs.py out/left out/right \
+  --left-trace out/left-events.txt --right-trace out/right-events.txt
 python3 tools/bench.py --left /path/to/baseline --right /path/to/candidate \
   --input conformance/scenarios/menu.csv --milliseconds 6500 \
-  --repeats 5 --out out/paired
+  --repeats 4 --out out/paired
 ```
 
-With two binaries, the tool varies ABBA/BAAB paired ordering using a fixed seed.
-It preserves each raw report and reports median/min/max times. It does not
-invent confidence intervals from a handful of samples. Endpoint and event-count
-mismatches reject the comparison; they are not ignored to obtain a speed number.
+The comparator checks semantic report fields, actual exported bytes and, when
+requested, every product-event record. It identifies the first difference and
+rejects truncated, missing, mixed bus/product, or report-length-mismatched
+histories. It does not equate endpoint equality with history equality. It does
+not serialize all hidden machine state; the Rust replay tests compare that.
 
-The CLI's internal wall interval measures the simulation loop, with any selected
-trace work. The external timer additionally includes process launch, image load,
-construction and export. Both are recorded. No output-based time is an energy
-measurement. No result is a competitive fastest-emulator claim.
+A paired benchmark first performs two **untimed** complete-product-history runs.
+Measured runs do not trace or hash every event in the simulation path. They use
+ABBA/BAAB ordering and preserve raw samples. An accuracy correction that changes
+behavior must establish a new justified baseline first, not masquerade as a
+performance-only improvement. One-binary runs are measurements without a
+cross-build equivalence claim.
 
-The initial three default-build 10-second runs here had a median simulation-loop
-wall time of approximately 1.05 seconds on the sandbox's Linux x86-64 host. The
-raw samples, binary hash and exact inputs are in `evidence/benchmark.json`. This
-is not a controlled cross-emulator benchmark or a prediction for an Apple Watch.
+CLI simulation-loop time and externally measured process/load/export time are
+reported separately. Neither is energy or physical accuracy. Confidence and
+cross-host generality must not be inferred from a small single-host sample. The
+0.2 measurement in REVISION-0.2 compares only the immediately preceding complete
+new-hardware build with its inactive-AEC optimization, not the original starter
+or another emulator.
 
-## Adding accuracy tests
+## Host-tool tests
 
-Start with the first incorrect observable access or event. Preserve the relevant
-clock/interrupt/history context when reducing it. Put mathematical optimization
-invariants in local tests; put independent target behavior in diagnostic fixtures
-or device signal cases. Mark measured, documented and provisional expectations
-separately. Do not regenerate golden observations from the candidate implementation
-and label the result independent certification.
+Tests cover import/no-clobber/path safety, PGM pixel preservation, aperture audio,
+truncated histories, result-manifest input hashes/schema, actual IRQ assertions,
+software regression frame/identity/duration checks and missing expectations.
+These tests also deliberately change observed records while keeping final state
+unchanged, so an endpoint-only comparison cannot accidentally claim history
+coverage.

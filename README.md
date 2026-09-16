@@ -1,8 +1,12 @@
-# HachiStep — runnable Rust starter
+# HachiStep — development core 0.2.0
 
-A new, dependency-free implementation of a Pokéwalker development core. It runs
-real firmware; it is not a mock UI, native replacement of firmware functions, or
-repackaged earlier HachiStep implementation.
+A dependency-free Rust Pokéwalker development core, continued from the delivered
+starter and its Git history. It runs real firmware; it is not a mock UI, native
+replacement of firmware routines, or a wrapper around another emulator.
+
+**This revision adds functional AEC and dual-comparator owners, Timer W capture/
+buffering/external clocks, NMI and block-copy interruption, clock-relative waits,
+and independent timing/ISA regressions.** See [revision notes](docs/REVISION-0.2.md).
 
 **This is a working starter, not the completed hardware-indistinguishable core.**
 The current model executes the supplied, unmodified 48 KiB firmware through boot,
@@ -60,13 +64,13 @@ With the packaged images and default conditions, observed results include:
 
 | Scenario | Observed result |
 |---|---|
-| 10-second boot | Home screen, 6,205,663 retired instructions, 237 interrupt entries. |
+| 10-second boot | Home screen, 6,205,679 retired instructions, 237 interrupt entries. |
 | 6.5-second button replay | Menu navigation; 688 timestamped differential buzzer transitions. |
-| 61-second synthetic movement | Firmware displays **107 steps**; 16,779,535 retired instructions. |
+| 61-second synthetic movement | Firmware displays **107 steps**; 16,779,551 retired instructions. |
 | 120-second stationary run | Completes without a model fault; display enters power save. |
 | Random run partitioning | Complete product event vectors and full machine state agree. |
 | Snapshot replay | Subsequent complete event vectors and full machine state agree. |
-| Independent guest fixtures | Seven pass: CPU aliases/flags/calls/RAM execution, serial EEPROM programming, infrared transmit and receive. |
+| Independent guest fixtures | Fifteen pass, including guest-driven comparator, capture, AEC overflow/gate, NMI and aliased-store cases. |
 
 The movement input is a synthetic 2 Hz trajectory, not a hardware capture or a
 pedometer-accuracy study. The private frame viewer is
@@ -79,7 +83,8 @@ Machine-readable execution reports and build/test logs are under `evidence/`.
 `hs-core` contains one resumable H8 executor, incremental decoding, explicit-width
 ALU/CCR operations, partial physical accesses, 64.64 timestamps, rational clocks,
 fixed hardware composition, interrupts, clock/power controls, GPIO, Timer B1,
-Timer W's supported modes, RTC, watchdog, ADC, SSU, asynchronous SCI/IrDA, M95512,
+Timer W capture/buffers/external clock, RTC, watchdog, ADC, AEC, dual comparators,
+SSU, asynchronous SCI/IrDA, M95512,
 BMA150 and NT7508 owners. RAM execution uses the same executor as flash.
 
 The kernel accepts exact exclusive horizons and physical input timelines. It
@@ -91,7 +96,11 @@ allocate. Production core code forbids `unsafe`.
 `hs-cli` supplies input parsing, bounded event traces, image inspection, raw
 persistence export/import, screenshots, SHA-256 identities, and JSON run reports.
 Python tools provide independent fixtures, verification, paired measurements,
-private-input extraction, PGM viewing, WAV rendering and ZIP packaging.
+private-input extraction, PGM viewing, WAV rendering and ZIP packaging. The
+retail verifier now checks a reviewed **software-observed** baseline, not merely
+completion; `--smoke-only` is explicitly execution-only. Paired benchmarks first
+compare complete product traces outside the timed runs. Mutation checks confirm
+that selected deliberately broken implementations are rejected by their tests.
 
 ## Start contributing
 
@@ -102,6 +111,7 @@ analog characterization—not a second interpreter or a new emulator framework.
 
 ```sh
 python3 tools/check.py                 # offline Rust + host-tool + fixture gates
+python3 tools/mutation_check.py        # isolated temporary mutants; no source edits
 cargo run -p hs-core --release --example replay -- \
   local-inputs/pokewalker.bin local-inputs/eeprom.bin
 ```
@@ -115,6 +125,7 @@ incremental commits are included in the ZIP.
 
 | Document | Contents |
 |---|---|
+| [REVISION-0.2](docs/REVISION-0.2.md) | Implemented changes, validation and remaining boundaries. |
 | [BUILD](docs/BUILD.md) | Build commands, offline setup, tested compiler, output safety. |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | State authority, execution/timing, integration and error contracts. |
 | [API](docs/API.md) | Embedding, input horizons, snapshots, reset and power. |

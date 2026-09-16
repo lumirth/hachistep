@@ -68,8 +68,9 @@ from provisional physical behavior.
 
 ## Original implementation and test code
 
-The Rust core, CLI, small Python tools and seven synthetic diagnostic programs
-were written for this starter. Existing HachiStep implementation files and other
+The Rust core, CLI, small Python tools and original seven synthetic diagnostic programs
+were written for the starter. Revision 0.2 extends that Git history, adds eight
+guest fixtures and independently stated target regressions. Existing HachiStep implementation files and other
 emulator source were not copied into this repository. The core-independent test
 builder does not derive expected values by calling the production decoder. It is
 not a full independently hardware-validated CPU suite.
@@ -90,3 +91,33 @@ No workflow was launched to acquire it. No user repository or computer was
 modified. The toolchain is not bundled, the project requires no fork-specific
 feature, and the declared Rust minimum was not separately tested. Build reports
 record the actual compiler rather than claiming an upstream stable version.
+
+## Revision 0.2 source anchors
+
+The implementation uses the same primary references; no new physical captures
+were obtained. Printed page numbers differ from PDF indices. The named sections
+and diagrams are recorded in owner comments and tests.
+
+- REJ09B0152-0300 §20.1, printed pp.372–375: register physical access widths and
+  state counts. `conformance/spec/register_access.tsv` is a separate 95-row
+  transcription, not generated from production routing.
+- §3.8.5: LDC/ANDC/ORC/XORC following-instruction interrupt deferral; RTE is not
+  in that list. §3.8.6: EEPMOV.B versus EEPMOV.W NMI acceptance and saved next PC.
+- §§3.4.1/3.5.1 and IEGR: NMI priority/latch and edge selection; §6.3 Table 6.1
+  distinguishes low-at-reset bootstrap/debug straps from ordinary user mode.
+- §10, particularly input/output timing and §10.7 conflict notes: Timer W
+  compare/capture/buffer semantics and external clock. The implementation uses
+  reference-edge pipelines; mux glitches and subcycle behavior are not claimed.
+- §13: AEC/PWM, CUE/CRC, independent/cascaded counters, clock and IRQAEC gates,
+  Fig.13.5 gate-return counting, and separate interrupt requests. Conflicting
+  module-stop descriptions and phase apertures remain explicitly identified.
+- §18, Table 18.2/Fig.18.2: comparator ladder/hysteresis; CMDR read-armed baseline
+  and interrupt behavior. §1.3/§8.2 identify VCref as P30, not P32. A quoted maximum
+  response time is used only as a nominal witness, not an exact measured delay.
+- ADE-602-053A MOV.B/W/L usage notes (printed pp.121/123/125): update an aliased
+  predecrement address register before capturing store data. Instruction encoding
+  tables provide fixed displacement-24 selectors and 6B long/CCR restrictions.
+
+The core-independent fixture corpus remains a directory that can be published
+separately; it has no dependency on `hs-core`. It is not claimed to be a separate
+repository already, or to contain hardware-measured traces.
