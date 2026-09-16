@@ -91,7 +91,7 @@ impl Mcu {
         if self.timer_b1.sync(now, &self.clocks) {
             self.control.irr2 |= 4;
         }
-        self.timer_w.sync(now, &self.clocks);
+        self.timer_w.sync(now, &self.clocks)?;
         Ok(self.watchdog.sync(now, &self.clocks))
     }
     pub fn apply_gates(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
@@ -111,10 +111,12 @@ impl Mcu {
             &self.clocks,
         );
         self.timer_w.set_gate(
-            !standby && self.control.gate2 & 0x40 != 0 && (main || self.timer_w.uses_watch()),
+            self.control.gate2 & 0x40 != 0
+                && self.control.stabilizing_from.is_none()
+                && (main || (sub && (self.timer_w.uses_watch() || self.timer_w.uses_external()))),
             now,
             &self.clocks,
-        );
+        )?;
         self.watchdog
             .set_gate(self.control.gate2 & 4 != 0, now, &self.clocks);
         self.ssu.set_gate(
@@ -287,7 +289,7 @@ impl Mcu {
             return Ok(u16::from_be_bytes([self.ram[i], self.ram[i + 1]]));
         }
         match a {
-            0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe => Ok(self.timer_w.word(a)),
+            0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe => self.timer_w.read_word(a, &self.clocks),
             0xffbc => Ok(self.adc.result()),
             _ => Err(self.unimplemented(a, false, 2)),
         }
@@ -343,8 +345,7 @@ impl Mcu {
         }
         match a {
             0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe => {
-                self.timer_w.write_word(a, v, now, &self.clocks);
-                Ok(())
+                self.timer_w.write_word(a, v, now, &self.clocks)
             }
             0xffbc => Ok(()),
             _ => Err(self.unimplemented(a, true, 2)),

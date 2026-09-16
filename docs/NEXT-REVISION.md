@@ -46,3 +46,28 @@ short partitions, including restoration during the pending analog transition.
 Analog pin stimuli name real nodes. They do not invent a comparator wire or
 convert step counts into register values. The default unconnected-node voltage,
 ADC transfer, and CMOS threshold witnesses remain visible in STATUS.md.
+
+## Timer W and stabilization
+
+Implemented paired compare buffers and capture buffers, FTIO capture, and FTCI
+external rising-edge counting through one counter recurrence. Every compare
+uses the same old-register snapshot before buffer loads. Buffer registers can
+still produce their own compare outputs (§10.7.12). Equal PWM period/duty
+matches now retain the existing output instead of forcing initial polarity.
+TCNT clear wins a simultaneous CPU write; CPU GR writes win capture/buffer
+transfers without suppressing status. Reads at a capture boundary see the old
+GR until the following reference edge. CTS=0 stops counting, not capture.
+Module standby retains pending flags and prevents clearing them (§10.7.4).
+
+The input pipeline models Figs.10.15/10.17 with three reference-edge stages.
+Metastability, exact sub-state propagation, and short out-of-spec pulses have
+not been characterized. Switching clock muxes may itself produce an increment
+(§10.7.3); that mechanism remains open, not silently claimed complete.
+
+Timer W now stops in watch/standby and oscillator stabilization, while supported
+watch/external counting remains available in subactive/subsleep. Stabilization
+is explicit control state: system-clocked SSU/ADC/SCI do not resume before its
+completion. Timer output A is routed to P10; B/C/D use P82/83/84. A full guest
+fixture drives a physical GPIO edge, captures a stopped counter, takes vector
+35, writes the captured word to RAM, clears the flag and returns. Full firmware
+partition/snapshot replay still passes.

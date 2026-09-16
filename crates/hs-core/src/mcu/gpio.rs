@@ -176,7 +176,14 @@ impl Gpio {
         if let Some(high) = self.analog_levels[6] {
             self.levels[1] = (self.levels[1] & !4) | (u8::from(high) << 2);
         }
-        self.levels[2] = (self.levels[2] & !timer_mask) | (timer_levels & timer_mask);
+        self.levels[2] =
+            (self.levels[2] & !(timer_mask & 0x1c)) | (timer_levels & timer_mask & 0x1c);
+        if self.pmr[0] & 7 == 0 && timer_mask & 2 != 0 {
+            self.levels[0] = (self.levels[0] & !1) | ((timer_levels >> 1) & 1);
+        }
+        if self.pmr[0] & 0x18 != 0 && self.pfcr & 0x0c != 8 {
+            self.levels[0] = (self.levels[0] & !2) | (self.pull[0] & 2);
+        }
         if let Some((clock, mosi)) = serial {
             if self.pfcr & 0x10 == 0 {
                 self.levels[3] = (self.levels[3] & !6) | u8::from(clock) << 1 | u8::from(mosi) << 2;
@@ -195,6 +202,18 @@ impl Gpio {
             clock: self.levels[3] & 2 != 0,
             mosi: self.levels[3] & 4 != 0,
         }
+    }
+    /// Package inputs for Timer W. FTIOA is P10; B/C/D are P82/83/84.
+    /// Capture can observe a GPIO output on a dual-purpose pin. FTCI is P11
+    /// only when selected and not overridden by the IRQ1 route.
+    pub fn timer_inputs(&self) -> [Option<bool>; 5] {
+        [
+            (self.pmr[0] & 7 == 0).then_some(self.levels[0] & 1 != 0),
+            Some(self.levels[2] & 4 != 0),
+            Some(self.levels[2] & 8 != 0),
+            Some(self.levels[2] & 16 != 0),
+            (self.pmr[0] & 0x10 != 0 && self.pfcr & 0x0c != 8).then_some(self.levels[0] & 2 != 0),
+        ]
     }
     pub fn serial_input(&self) -> bool {
         self.levels[3] & if self.pfcr & 0x10 == 0 { 8 } else { 1 } != 0

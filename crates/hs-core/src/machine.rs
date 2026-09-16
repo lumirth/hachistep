@@ -354,6 +354,9 @@ impl Machine {
                 [pb[4], pb[5]],
             )?;
         }
+        self.mcu
+            .timer_w
+            .input_pins(self.mcu.gpio.timer_inputs(), self.now, &self.mcu.clocks)?;
         Ok(())
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
@@ -547,6 +550,10 @@ impl Machine {
                 return Ok(());
             }
             self.resume_after = None;
+            self.mcu.control.stabilizing_from = None;
+            self.mcu.apply_gates(self.now, out)?;
+            self.resolve_board(out)?;
+            self.refresh_deadline()?;
         }
         if self.cpu.sleeping() {
             let irq = self.mcu.interrupt();

@@ -28,6 +28,7 @@ pub struct Control {
     pub irr1: u8,
     pub irr2: u8,
     pub mode: Mode,
+    pub stabilizing_from: Option<Mode>,
     irq_levels: [Option<bool>; 2],
 }
 impl Default for Control {
@@ -44,6 +45,7 @@ impl Default for Control {
             irr1: 0,
             irr2: 0,
             mode: Mode::Active,
+            stabilizing_from: None,
             irq_levels: [None; 2],
         }
     }
@@ -109,10 +111,10 @@ impl Control {
         self.irq_levels = levels;
     }
     pub fn main_running(&self) -> bool {
-        matches!(self.mode, Mode::Active | Mode::Sleep)
+        self.stabilizing_from.is_none() && matches!(self.mode, Mode::Active | Mode::Sleep)
     }
     pub fn sub_running(&self) -> bool {
-        matches!(self.mode, Mode::Subactive | Mode::Subsleep)
+        self.stabilizing_from.is_none() && matches!(self.mode, Mode::Subactive | Mode::Subsleep)
     }
     pub fn sleeping(&self) -> bool {
         matches!(
@@ -121,7 +123,8 @@ impl Control {
         )
     }
     fn select_clock(&self, now: Time, c: &mut Clocks) -> Result<(), Error> {
-        if matches!(self.mode, Mode::Subactive | Mode::Subsleep) {
+        if self.stabilizing_from.is_none() && matches!(self.mode, Mode::Subactive | Mode::Subsleep)
+        {
             let divide = [8, 4, 2, 1][usize::from(self.sys2 & 3)];
             c.set_system(now, c.frequencies.watch_hz, divide)
         } else {
@@ -178,6 +181,7 @@ impl Control {
         };
         self.select_clock(now, c)?;
         if matches!(old, Mode::Watch | Mode::Standby) && self.mode == Mode::Active {
+            self.stabilizing_from = Some(old);
             let edges =
                 [8192, 16384, 1024, 2048, 4096, 256, 512, 16][usize::from(self.sys1 >> 4 & 7)];
             let end = c.after(now, edges, Tap::system(1))?;
