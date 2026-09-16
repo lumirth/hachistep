@@ -10,6 +10,9 @@ pub enum NvDomain { EepromArray, EepromStatus, InternalFlash, Sensor }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
+    Power { at: Time, on: bool },
+    #[cfg(feature="trace")]
+    Bus { at: Time, pc: u16, address: u16, width: u8, write: bool, value: u16 },
     LcdWrite { at: Time, page: u8, column_byte: u16, value: u8 },
     LcdControl { at: Time, command: u8, parameter: Option<u8> },
     Buzzer { at: Time, drive: Piezo },
@@ -31,7 +34,7 @@ impl Acceleration {
     /// Specific force in micro-g in sensor coordinates. Includes gravity.
     pub const STILL: Self = Self { x: 0, y: 0, z: 1_000_000 };
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Buttons { pub left: bool, pub center: bool, pub right: bool }
 impl Buttons { pub const RELEASED: Self = Self { left: false, center: false, right: false }; }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,3 +47,14 @@ pub enum Input {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimedInput { pub at: Time, pub input: Input }
+
+impl Event {
+    /// Exact 64.64 timestamp, independent of human-readable Debug formatting.
+    pub fn time(self) -> Time {
+        match self {
+            Event::Power{at,..}|Event::LcdWrite{at,..}|Event::LcdControl{at,..}|Event::Buzzer{at,..}|
+            Event::Infrared{at,..}|Event::NvByte{at,..}|Event::NvCommit{at,..}|Event::Reset{at,..} => at,
+            #[cfg(feature="trace")] Event::Bus{at,..}=>at,
+        }
+    }
+}

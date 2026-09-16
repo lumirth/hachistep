@@ -1,0 +1,7 @@
+# time_us,buttons,left,center,right -- physical press is 1
+4500000,buttons,0,1,0
+4750000,buttons,0,0,0
+5000000,buttons,0,0,1
+5250000,buttons,0,0,0
+5500000,buttons,0,0,1
+5750000,buttons,0,0,0

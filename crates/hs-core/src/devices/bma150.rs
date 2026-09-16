@@ -48,6 +48,13 @@ impl Bma150 {
             motion_history: [[0; 3]; 3], motion_at: 0, motion_divider: 0,
             motion_set: 0, motion_clear: 0, data_ready: false, motion_irq: false }
     }
+    pub fn nonvolatile_busy(&self) -> bool { self.nv_operation.is_some() }
+    pub fn power_cycle(&mut self, now: Time) -> Result<(), Error> {
+        if self.nonvolatile_busy() { return Err(Error::Unsupported { component: "BMA150", detail: "interrupted nonvolatile programming is not characterized", address: 0x0a }); }
+        let image = self.nonvolatile; let input = self.input;
+        *self = Self::new(now); self.nonvolatile = image; self.input = input; self.copy_image();
+        Ok(())
+    }
     pub fn set_input(&mut self, input: Acceleration) -> Result<(), Error> {
         if [input.x, input.y, input.z].iter().any(|v| v.unsigned_abs() > 1_000_000_000) {
             return Err(Error::BadInput("acceleration exceeds the model's safe numerical input range"));
@@ -69,8 +76,8 @@ impl Bma150 {
             if at == now {
                 self.nonvolatile[usize::from(address - 0x2b)] = value;
                 self.nv_operation = None;
-                output.event(Event::NvByte { at: now, domain: NvDomain::Sensor, address, value });
-                output.event(Event::NvCommit { at: now, domain: NvDomain::Sensor, address, length: 1 });
+                output.event(Event::NvByte { at: now, domain: NvDomain::Sensor, address: u16::from(address), value });
+                output.event(Event::NvCommit { at: now, domain: NvDomain::Sensor, address: u16::from(address), length: 1 });
             }
         }
         if self.image_deadline == Some(now) {
@@ -189,6 +196,7 @@ impl Bma150 {
                 self.registers[i] = value;
             }
             0x15 => {
+                if value & 0x80 == 0 { return Err(Error::Unsupported { component: "BMA150", detail: "three-wire SPI turnaround is not implemented", address: 0x15 }); }
                 if value & 1 != 0 { return Err(Error::Unsupported { component: "BMA150", detail: "autonomous wake-pause algorithm is not implemented", address: 0x15 }); }
                 self.registers[i] = value;
                 if value & 8 != 0 { self.shadows = [None; 3]; }

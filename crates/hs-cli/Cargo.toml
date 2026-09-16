@@ -11,3 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 hs-core = { path = "../hs-core" }
+
+[features]
+default = []
+trace = ["hs-core/trace"]

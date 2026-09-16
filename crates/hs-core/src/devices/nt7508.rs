@@ -132,7 +132,9 @@ impl Nt7508 {
                 if self.entire_on { shade = 3; }
                 else {
                     let logical_y = if self.common_reverse { LCD_HEIGHT - 1 - y } else { y };
-                    let row = (logical_y + usize::from(self.start_line) + 128 - usize::from(self.controls[0])) & 127;
+                    // Canonical panel wiring witness: the 64-row glass is bonded at
+                    // COM32. COM-start 32 maps RAM start line to the first visible row.
+                    let row = (logical_y + usize::from(self.start_line) + 160 - usize::from(self.controls[0])) & 127;
                     let col = if self.segment_reverse { LCD_WIDTH - 1 - x } else { x };
                     let index = (row / 8) * 256 + col * 2;
                     shade = ((self.ram[index] >> (row & 7)) & 1) | (((self.ram[index + 1] >> (row & 7)) & 1) << 1);
@@ -159,7 +161,7 @@ mod tests {
         for c in [0xb8, 0x10, 0] { l.write_counted_fixture(false, c, Time::ZERO, &mut ()).unwrap(); }
         l.write_counted_fixture(true, 1, Time::ZERO, &mut ()).unwrap();
         l.write_counted_fixture(true, 1, Time::ZERO, &mut ()).unwrap();
-        for c in [0x40, 64, 0xaf] { l.write_counted_fixture(false, c, Time::ZERO, &mut ()).unwrap(); }
+        for c in [0x44, 32, 0x40, 64, 0xaf] { l.write_counted_fixture(false, c, Time::ZERO, &mut ()).unwrap(); }
         let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT]; l.render(&mut pixels); assert_eq!(pixels[0], 3);
         l.write_counted_fixture(false, 0xe2, Time::ZERO, &mut ()).unwrap(); assert_eq!(l.ram()[2048], 1);
     }

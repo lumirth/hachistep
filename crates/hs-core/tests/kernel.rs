@@ -1,0 +1,100 @@
+use hs_core::{Machine,Images,Time,TimedInput,Input,Buttons,Event};
+fn machine(code:&[u8])->Machine {
+    let mut flash=vec![0u8;49152];flash[..2].copy_from_slice(&0x0100u16.to_be_bytes());
+    flash[0x100..0x100+code.len()].copy_from_slice(code);
+    Machine::new(Images{firmware:&flash,eeprom:&[0xff;65536],eeprom_status:0}).unwrap()
+}
+const LOOP:&[u8]=&[0x79,0x07,0xff,0x80,0xf8,0x2a,0x6a,0x88,0xf7,0x80,0x0a,0x08,0x40,0xf8];
+#[test]
+fn run_partition_and_snapshot_replay_preserve_all_state_and_events(){
+    let mut long=machine(LOOP);let mut short=long.clone();let mut a=Vec::new();let mut b=Vec::new();
+    let end=Time::from_micros(3000);
+    long.run_until(end,&[],&mut a).unwrap();
+    let mut rng=1234567u32;let mut us=0;
+    while us<3000 {rng=rng.wrapping_mul(1664525).wrapping_add(1013904223);us=(us+1+u64::from(rng%43)).min(3000);short.run_until(Time::from_micros(us),&[],&mut b).unwrap();}
+    assert_eq!(a,b);assert_eq!(long,short);
+    let snap=short.snapshot();let mut restored=Machine::from_snapshot(&snap);
+    let mut c=Vec::new();let mut d=Vec::new();
+    short.run_until(Time::from_micros(5000),&[],&mut c).unwrap();
+    restored.run_until(Time::from_micros(5000),&[],&mut d).unwrap();
+    assert_eq!(c,d);assert_eq!(short,restored);
+}
+#[test]
+fn horizon_and_input_timestamps_are_exclusive(){
+    let mut m=machine(LOOP);let change=TimedInput{at:Time::from_micros(12),input:Input::Buttons(Buttons{center:true,left:false,right:false})};
+    let result=m.run_until(change.at,&[change],&mut ()).unwrap();assert_eq!(result.inputs_consumed,0);
+    assert_eq!(m.peek(0xffde).unwrap()&1,0);
+    let result=m.run_until(Time::from_micros(13),&[change],&mut ()).unwrap();assert_eq!(result.inputs_consumed,1);
+    assert_eq!(m.peek(0xffde).unwrap()&1,1);
+}
+#[test]
+fn invalid_timeline_is_rejected_before_mutation(){
+    let mut m=machine(LOOP);let before=m.snapshot();
+    let duplicate=[TimedInput{at:Time::ZERO,input:Input::Buttons(Buttons::RELEASED)};2];
+    assert!(m.run_until(Time::from_micros(100),&duplicate,&mut ()).is_err());assert_eq!(before,m.snapshot());
+    let backward=[TimedInput{at:Time::from_micros(2),input:Input::SupplyMillivolts(3000)},TimedInput{at:Time::from_micros(1),input:Input::SupplyMillivolts(2900)}];
+    assert!(m.run_until(Time::from_micros(100),&backward,&mut ()).is_err());assert_eq!(before,m.snapshot());
+}
+#[test]
+fn instruction_fetches_from_ram_follow_the_same_executor(){
+    let mut code=vec![0x79,0x07,0xff,0x80];
+    // Fill RAM with MOV.B #42,R0L; BRA . using ordinary guest stores.
+    for (a,v) in [(0xf780u16,0xf8),(0xf781,42),(0xf782,0x40),(0xf783,0xfe)] {
+        code.extend([0xf8,v,0x6a,0x88,(a>>8)as u8,a as u8]);
+    }
+    code.extend([0x5a,0,0xf7,0x80]);
+    let mut m=machine(&code);m.run_until(Time::from_micros(100),&[],&mut ()).unwrap();
+    assert_eq!(m.registers().er[0]&255,42);assert_eq!(m.instruction_pc(),0xf782);
+}
+#[test]
+fn unimplemented_access_latches_a_fault_without_erasing_prior_store(){
+    let code=[0xf8,0x5a,0x6a,0x88,0xf7,0x80,0x6a,0x88,0xf0,0x78];
+    let mut m=machine(&code);assert!(m.run_until(Time::from_micros(100),&[],&mut ()).is_err());
+    assert_eq!(m.ram()[0],0x5a);assert!(m.fault().is_some());let t=m.now();
+    assert!(m.run_until(Time::from_micros(200),&[],&mut ()).is_err());assert_eq!(m.now(),t);
+}
+#[test]
+fn reset_pin_aborts_cpu_work_but_keeps_existing_ram(){
+    let mut m=machine(LOOP);m.run_until(Time::from_micros(10),&[],&mut ()).unwrap();let old=m.ram()[0];
+    let inputs=[TimedInput{at:Time::from_micros(10),input:Input::ResetPin(false)},TimedInput{at:Time::from_micros(100),input:Input::ResetPin(true)}];
+    let mut events=Vec::new();m.run_until(Time::from_micros(99),&inputs,&mut events).unwrap();
+    assert_eq!(m.ram()[0],old);assert_eq!(m.retired(),0);assert!(events.iter().any(|e|matches!(e,Event::Reset{watchdog:false,..})));
+    m.run_until(Time::from_micros(120),&inputs[1..],&mut events).unwrap();assert!(m.retired()>0);
+}
+#[test]
+fn peeking_does_not_change_causal_state(){
+    let mut m=machine(LOOP);m.run_until(Time::from_micros(100),&[],&mut ()).unwrap();let before=m.snapshot();
+    for a in [0xf0e4,0xf0e9,0xffb1,0xf068,0xffde,0xf780]{let _=m.peek(a);}
+    assert_eq!(m.snapshot(),before);
+}
+
+#[test]
+fn guest_serial_page_write_reaches_the_real_device_owner_and_commits_later(){
+    fn store(code:&mut Vec<u8>,a:u16,v:u8){code.extend([0xf8,v,0x6a,0x88,(a>>8)as u8,a as u8]);}
+    fn send(code:&mut Vec<u8>,v:u8){
+        store(code,0xf0eb,v);
+        code.extend([0x6a,0x08,0xf0,0xe4,0xe8,8,0x47,0xf8]); // wait TEND
+        code.extend([0x6a,0x08,0xf0,0xe9]); // receive register, clear RDRF
+    }
+    let mut code=vec![0x79,7,0xff,0x80];
+    for (a,v) in [(0xfffb,0x14),(0xf0e0,0x8c),(0xf0e1,0x40),(0xf0e2,0x86),
+        (0xf0e3,0xc0),(0xffe4,7),(0xffd4,5),(0xf087,8),(0xffec,1),(0xffdc,1)]{store(&mut code,a,v);}
+    store(&mut code,0xffd4,1);send(&mut code,6);store(&mut code,0xffd4,5);
+    store(&mut code,0xffd4,1);
+    for v in [2,0,0x7e,0xaa,0xbb,0xcc,0xdd]{send(&mut code,v);}
+    store(&mut code,0xffd4,5);code.extend([0x40,0xfe]);
+    let mut m=machine(&code);let mut events=Vec::new();
+    m.run_until(Time::from_micros(1000),&[],&mut events).unwrap();
+    assert_eq!(m.eeprom()[0x7e],0xff);assert!(!events.iter().any(|e|matches!(e,Event::NvCommit{..})));
+    m.run_until(Time::from_micros(7000),&[],&mut events).unwrap();
+    assert_eq!(&m.eeprom()[0x7e..0x80],&[0xaa,0xbb]);assert_eq!(&m.eeprom()[0..2],&[0xcc,0xdd]);
+    assert_eq!(events.iter().filter(|e|matches!(e,Event::NvCommit{..})).count(),1);
+}
+#[test]
+fn power_cycle_and_mcu_reset_are_distinct(){
+    let mut m=machine(LOOP);m.run_until(Time::from_micros(20),&[],&mut ()).unwrap();assert_ne!(m.ram()[0],0);
+    let saved=m.eeprom().to_vec();m.power_off(&mut ()).unwrap();let retired=m.retired();
+    m.run_until(Time::from_micros(100),&[],&mut ()).unwrap();assert_eq!(m.retired(),retired);assert!(!m.powered());
+    m.power_on(&mut ()).unwrap();assert_eq!(m.ram()[0],0);assert_eq!(m.eeprom().as_slice(),saved);
+    m.run_until(Time::from_micros(120),&[],&mut ()).unwrap();assert!(m.retired()>0);
+}

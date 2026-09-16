@@ -4,7 +4,7 @@
 pub mod alu;
 pub mod decode;
 use crate::error::Error;
-use alu::{C, H, I, N, V, Z};
+use alu::{C, H, I, N, Z};
 use decode::{Address, Alu, Bit, CcrOp, Decode, Instruction, Jump, Size, Source, Target};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +135,10 @@ impl Cpu {
                 (value as u16, None)
             }
         }
+    }
+    pub(crate) fn direct_transition(&mut self) -> Result<(), Error> {
+        if !self.sleeping() { return Err(Error::Internal("direct transition outside SLEEP")); }
+        self.enter_exception(13); Ok(())
     }
     fn enter_exception(&mut self, vector: u8) {
         let pc = self.registers.pc;

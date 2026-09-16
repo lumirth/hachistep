@@ -81,11 +81,19 @@ impl Clock {
         self.at = next;
         Ok(next)
     }
-    /// Number of future edges strictly before `limit`. Binary search is used
-    /// only at a bulk synchronization boundary, never per CPU instruction.
+    /// Count edges strictly before a horizon by inverting the same rational
+    /// recurrence used by `after`. The normal calculation is O(1). The checked
+    /// binary fallback handles enormous horizons without intermediate overflow;
+    /// it is an exact arithmetic fallback, not another CPU execution engine.
     pub fn edges_before(&self, limit: Time) -> u64 {
         if limit <= self.at { return 0; }
-        let upper = ((limit.0 - self.at.0 - 1) / self.whole).min(u128::from(u64::MAX)) as u64;
+        let delta = limit.0 - self.at.0;
+        if let Some(scaled) = delta.checked_mul(u128::from(self.denominator)) {
+            let p = self.whole * u128::from(self.denominator) + u128::from(self.remainder);
+            return ((scaled - 1 - u128::from(self.fraction)) / p)
+                .min(u128::from(u64::MAX)) as u64;
+        }
+        let upper = ((delta - 1) / self.whole).min(u128::from(u64::MAX)) as u64;
         let (mut lo, mut hi) = (0u64, upper);
         while lo < hi {
             let mid = lo + (hi - lo) / 2 + 1;
@@ -126,5 +134,15 @@ mod tests {
         let c = Clock::new(Time::MAX, 1, 1).unwrap();
         assert_eq!(c.after(1), Err(TimeError::Overflow));
         assert!(Time::ZERO.duration_since(Time(1)).is_none());
+    }
+}
+
+#[cfg(test)]mod inversion_tests{
+    use super::*;
+    #[test]fn inversion_matches_enumerated_edges_after_fractional_advances(){
+        for (n,d) in [(7,3),(3_686_400,1),(32768,1),(3_000_001,17)]{
+            let mut c=Clock::new(Time::from_raw(12345),n,d).unwrap();c.advance(19).unwrap();
+            for k in 1..1000 {let edge=c.after(k).unwrap();assert_eq!(c.edges_before(edge),k-1);assert_eq!(c.edges_before(Time::from_raw(edge.raw()+1)),k);}
+        }
     }
 }
