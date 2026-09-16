@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "equivalent": true,
+  "differences": [],
+  "exports_sha256": {
+    "ram.bin": [
+      "42918d0d670385269070364a67b7970fbcfb3e993c67a7137b8cfffca1892425",
+      "42918d0d670385269070364a67b7970fbcfb3e993c67a7137b8cfffca1892425"
+    ],
+    "eeprom.bin": [
+      "9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008",
+      "9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008"
+    ],
+    "eeprom.status": [
+      "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+      "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
+    ],
+    "sensor-nv.bin": [
+      "3d9b82a38466138feff638271d573f8d52c8db05e87bbc16a7687e3ef2157154",
+      "3d9b82a38466138feff638271d573f8d52c8db05e87bbc16a7687e3ef2157154"
+    ],
+    "lcd-ram.bin": [
+      "a7e9d66ded8017adffac97890df3f650514783cce4dc86071ab089c06e437fb6",
+      "a7e9d66ded8017adffac97890df3f650514783cce4dc86071ab089c06e437fb6"
+    ],
+    "frame.pgm": [
+      "3197f1eca3e9cef9d07aaf203de2e4f6a93844148fd7b3f7582dff6965b2e241",
+      "3197f1eca3e9cef9d07aaf203de2e4f6a93844148fd7b3f7582dff6965b2e241"
+    ]
+  },
+  "history": {
+    "records": [
+      43812,
+      43812
+    ],
+    "sha256": [
+      "60c0fa8b15c03e8b99a698cf79baa870bfe7e130f00ce70a8219db3f7177b6f3",
+      "60c0fa8b15c03e8b99a698cf79baa870bfe7e130f00ce70a8219db3f7177b6f3"
+    ],
+    "first_different_record": null
+  },
+  "scope": "Exported state and requested product history; not complete hidden state or hardware conformance."
+}

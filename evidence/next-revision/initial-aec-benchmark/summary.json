@@ -1,0 +1,181 @@
+{
+  "schema": 1,
+  "source": {
+    "commit": "7361f1c64d20f9e2f662a56ce30fc7053beb62a5",
+    "dirty": true,
+    "changes": [
+      " M conformance/build.py",
+      " M conformance/run.py",
+      " M crates/hs-core/src/mcu/aec.rs",
+      " M crates/hs-core/tests/aec.rs",
+      "?? evidence/next-revision/",
+      "?? tools/tests/test_conformance.py"
+    ]
+  },
+  "inputs": {
+    "firmware": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607",
+    "eeprom": "9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008",
+    "timeline": "df70bc6f6a2b14c66efd4d823d743e7cb2fe7b6cd5e2229bf5168ec1ebe5d398"
+  },
+  "binaries": {
+    "left": "92e19fa6c799ca5e8f4f27ba7945331e45d021a98dd998290fba1fbb1e5d7803",
+    "right": "22225f5959aaf958f5c496c08397eef358fdd65b0805dd36b79c4ebdab719808"
+  },
+  "milliseconds": 6500,
+  "samples": [
+    {
+      "index": 0,
+      "repeat": 0,
+      "variant": "right",
+      "process_wall_seconds": 0.8726827629998297,
+      "simulation_wall_seconds": 0.868649179
+    },
+    {
+      "index": 1,
+      "repeat": 0,
+      "variant": "left",
+      "process_wall_seconds": 1.0456555699997807,
+      "simulation_wall_seconds": 1.024532937
+    },
+    {
+      "index": 2,
+      "repeat": 0,
+      "variant": "left",
+      "process_wall_seconds": 1.034505127999637,
+      "simulation_wall_seconds": 1.029966617
+    },
+    {
+      "index": 3,
+      "repeat": 0,
+      "variant": "right",
+      "process_wall_seconds": 0.8852781390000928,
+      "simulation_wall_seconds": 0.881929171
+    },
+    {
+      "index": 4,
+      "repeat": 1,
+      "variant": "right",
+      "process_wall_seconds": 0.9432292679998682,
+      "simulation_wall_seconds": 0.94030656
+    },
+    {
+      "index": 5,
+      "repeat": 1,
+      "variant": "left",
+      "process_wall_seconds": 1.0921955369999523,
+      "simulation_wall_seconds": 1.08900465
+    },
+    {
+      "index": 6,
+      "repeat": 1,
+      "variant": "left",
+      "process_wall_seconds": 1.012823704999846,
+      "simulation_wall_seconds": 1.009968461
+    },
+    {
+      "index": 7,
+      "repeat": 1,
+      "variant": "right",
+      "process_wall_seconds": 0.9396890550001444,
+      "simulation_wall_seconds": 0.936088364
+    },
+    {
+      "index": 8,
+      "repeat": 2,
+      "variant": "left",
+      "process_wall_seconds": 1.0805615740000576,
+      "simulation_wall_seconds": 1.077701984
+    },
+    {
+      "index": 9,
+      "repeat": 2,
+      "variant": "right",
+      "process_wall_seconds": 0.8900002380000842,
+      "simulation_wall_seconds": 0.885770652
+    },
+    {
+      "index": 10,
+      "repeat": 2,
+      "variant": "right",
+      "process_wall_seconds": 0.8746725510000033,
+      "simulation_wall_seconds": 0.871687755
+    },
+    {
+      "index": 11,
+      "repeat": 2,
+      "variant": "left",
+      "process_wall_seconds": 1.0488507879999815,
+      "simulation_wall_seconds": 1.045375399
+    },
+    {
+      "index": 12,
+      "repeat": 3,
+      "variant": "right",
+      "process_wall_seconds": 0.8680274460002693,
+      "simulation_wall_seconds": 0.865024212
+    },
+    {
+      "index": 13,
+      "repeat": 3,
+      "variant": "left",
+      "process_wall_seconds": 1.0847796660000313,
+      "simulation_wall_seconds": 1.08133773
+    },
+    {
+      "index": 14,
+      "repeat": 3,
+      "variant": "left",
+      "process_wall_seconds": 0.9964530140000534,
+      "simulation_wall_seconds": 0.993589344
+    },
+    {
+      "index": 15,
+      "repeat": 3,
+      "variant": "right",
+      "process_wall_seconds": 0.9055272259997764,
+      "simulation_wall_seconds": 0.902245294
+    }
+  ],
+  "summary": {
+    "left": {
+      "samples": 8,
+      "median_seconds": 1.037671008,
+      "min_seconds": 0.993589344,
+      "max_seconds": 1.08900465
+    },
+    "right": {
+      "samples": 8,
+      "median_seconds": 0.8838499115,
+      "min_seconds": 0.865024212,
+      "max_seconds": 0.94030656
+    }
+  },
+  "endpoint": {
+    "time_raw": "119903836479112085504",
+    "er": [
+      2386032565,
+      1640448,
+      0,
+      0,
+      0,
+      0,
+      63422,
+      65400
+    ],
+    "ccr": 8,
+    "pc": 9628,
+    "phase": "sleep",
+    "retired": 5426069,
+    "interrupt_entries": 464,
+    "ram_sha256": "42918d0d670385269070364a67b7970fbcfb3e993c67a7137b8cfffca1892425",
+    "lcd_ram_sha256": "a7e9d66ded8017adffac97890df3f650514783cce4dc86071ab089c06e437fb6",
+    "eeprom_sha256": "9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008",
+    "eeprom_status": 0,
+    "events": 43812,
+    "lcd_events": 43124,
+    "nv_commits": 0,
+    "buzzer_events": 688,
+    "ir_events": 0
+  },
+  "limitation": "Endpoint/count equality is not full trace or physical-hardware conformance."
+}

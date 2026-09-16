@@ -1,0 +1,9 @@
+   Compiling hs-core v0.1.0 (/tmp/hachistep-mutations-rlguspbl/source/crates/hs-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.21s
+     Running tests/cpu_regressions.rs (/tmp/hachistep-mutations-rlguspbl/target/debug/deps/cpu_regressions-6d704257e4873620)
+
+running 1 test
+test predecrement_reads_updated_aliased_source_at_every_width_and_register ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
