@@ -12,6 +12,7 @@ pub struct Gpio {
     pull: [u8; 4],
     open_drain9: u8,
     buttons: Buttons,
+    analog_levels: [Option<bool>; 7],
     pub levels: [u8; 5],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,10 +40,23 @@ impl Gpio {
     pub fn set_buttons(&mut self, buttons: Buttons) {
         self.buttons = buttons;
     }
+    pub fn set_analog_levels(&mut self, levels: [Option<bool>; 7]) {
+        self.analog_levels = levels;
+    }
+    pub fn raw_button_levels(&self) -> u8 {
+        u8::from(self.buttons.center)
+            | (u8::from(self.buttons.left) << 2)
+            | (u8::from(self.buttons.right) << 4)
+    }
+    pub fn external_reference_selected(&self) -> bool {
+        self.pmr[1] & 1 != 0
+    }
     pub fn reset(&mut self) {
         let buttons = self.buttons;
+        let analog_levels = self.analog_levels;
         *self = Self::default();
         self.buttons = buttons;
+        self.analog_levels = analog_levels;
     }
     pub fn handles(a: u16) -> bool {
         matches!(
@@ -153,9 +167,15 @@ impl Gpio {
         // Board chip-select lines idle high when not actively driven.
         self.levels[0] |= (!self.direction[0]) & 5;
         self.levels[3] |= (!self.direction[3]) & 1;
-        self.levels[4] = u8::from(self.buttons.center)
-            | u8::from(self.buttons.left) << 2
-            | u8::from(self.buttons.right) << 4;
+        self.levels[4] = self.raw_button_levels();
+        for i in 0..6 {
+            if let Some(high) = self.analog_levels[i] {
+                self.levels[4] = (self.levels[4] & !(1 << i)) | (u8::from(high) << i);
+            }
+        }
+        if let Some(high) = self.analog_levels[6] {
+            self.levels[1] = (self.levels[1] & !4) | (u8::from(high) << 2);
+        }
         self.levels[2] = (self.levels[2] & !timer_mask) | (timer_levels & timer_mask);
         if let Some((clock, mosi)) = serial {
             if self.pfcr & 0x10 == 0 {

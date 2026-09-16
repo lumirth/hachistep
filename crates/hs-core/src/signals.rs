@@ -114,6 +114,25 @@ impl Buttons {
         right: false,
     };
 }
+/// A real package analog node. Explicit voltages are electrical-fixture
+/// stimuli, not extra controls wired into an unmodified product. `None` releases
+/// the override and restores the ordinary board-derived voltage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum AnalogPin {
+    Pb0,
+    Pb1,
+    Pb2,
+    Pb3,
+    Pb4,
+    Pb5,
+    Vcref,
+}
+impl AnalogPin {
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input {
     Buttons(Buttons),
@@ -121,6 +140,10 @@ pub enum Input {
     SupplyMillivolts(u16),
     InfraredLevel(bool),
     ResetPin(bool),
+    AnalogPin {
+        pin: AnalogPin,
+        millivolts: Option<u16>,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimedInput {

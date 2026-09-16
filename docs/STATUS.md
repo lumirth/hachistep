@@ -43,7 +43,8 @@ listed explicitly below. An absence of model faults is not a completeness proof.
 | `devices/bma150.rs` | Physical micro-g input, quantization, bounded filter history, register/shadow state, protected window, working/nonvolatile image, four-wire SPI, basic data-ready/any-motion state. | Exact filter window mapping, rounding, calibration effects, staggered axis publication, interrupt algorithms and physical parameters are not certified. See details below. |
 | `devices/nt7508.rs` | 4 KiB RAM plus icons, serial parser, persistent pending parameters across deselection, command/control state, addressing/bitplanes, logical 96x64 rendering. | Analog drive/FRC/PWM/scan timing and several retained analog control effects are not simulated. Panel COM mapping and terminal-column behavior are witnesses. |
 | MCU flash | Fixed image reads, execution and mutation-aware design boundaries. | Programming/erase/verify are unsupported. Flash control reads returning reset values and accepted zero writes are scaffolding, not full flash logic. |
-| IIC2, AEC, comparators | Address regions identified; accesses diagnose unsupported behavior. | No functional owner implemented yet. These remain substantial custom-firmware gaps. |
+| Comparators | Both channels; ladder/external references, hysteresis, read-armed IRQ baseline, qualified flag clear, vector 36, module/reset behavior; guest wake/replay test and pin stimuli. | Response uses a 15 µs inertial witness (the manual specifies a maximum, not an exact delay). Non-hysteresis VIH follows Table 18.2/Fig.18.2 despite conflicting CRS prose. No characterized analog noise/offset. Digital read suppression on comparator-selected PB pins is a witness; ADC-selected pin suppression is documented. |
+| IIC2, AEC | Address regions identified; accesses diagnose unsupported behavior. | No functional owner implemented yet. These remain substantial custom-firmware gaps. |
 | Frontend/persistence | No-clobber CLI, CSV, raw image exports/import, JSON reports, PGM, ideal-drive WAV tool, typed in-memory snapshot. | No GUI/live-link frontend, no portable snapshot encoding, no atomic multi-file save container. Host export is separate create-new files; report written last. |
 
 ## Specific witnesses that must not become invisible assumptions
@@ -112,3 +113,15 @@ execution and independently assembled diagnostic programs. A complete clean run
 is useful evidence but cannot establish that the firmware transfers correctly to
 hardware outside the listed coverage. Consult this matrix, use focused fixtures,
 and do not reinterpret stored-only witnesses as full peripheral emulation.
+
+## Electrical-fixture inputs
+
+`Input::AnalogPin` / CSV `time_us,analog,pb4,1900` supplies a voltage on an
+actual PB0..PB5 or VCref package node; `release` returns to the board-derived
+voltage. This is a test-fixture stimulus, **not a new user-accessible control on
+an unmodified Pokéwalker**. PB4 remains the right-button net in ordinary use.
+Unconnected PB1/PB5/VCref defaults are zero-voltage witnesses. Digital input
+projection of an override uses Vcc/2, not characterized input thresholds. ADC
+inputs use the existing explicit linear conversion witness. All these inputs
+are serialized in in-memory snapshots and validated before a batch mutates the
+machine. CMOS contention, clamps and loading from forced voltages are not modeled.

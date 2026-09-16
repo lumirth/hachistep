@@ -68,12 +68,14 @@ pub struct Snapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Machine {
     now: Time,
+    last_effect: Time,
     cpu: Cpu,
     mcu: Mcu,
     eeprom: M95512,
     sensor: Bma150,
     lcd: Nt7508,
     conditions: Conditions,
+    analog_pins: [Option<u16>; 7],
     pending: Option<Pending>,
     resume_after: Option<Time>,
     next_devices: Option<Time>,
@@ -106,6 +108,7 @@ impl Machine {
         let cpu = Cpu::new(mcu.reset_vector());
         let mut m = Self {
             now: Time::ZERO,
+            last_effect: Time::ZERO,
             cpu,
             mcu,
             eeprom: M95512::new(images.eeprom, images.eeprom_status)?,
@@ -115,6 +118,7 @@ impl Machine {
             },
             lcd: Nt7508::new(),
             conditions,
+            analog_pins: [None; 7],
             pending: None,
             resume_after: None,
             next_devices: None,
@@ -201,7 +205,7 @@ impl Machine {
         }
         let mut view = self.mcu.clone();
         // Exclude effects exactly at the caller's unprocessed horizon.
-        let t = Time::from_raw(self.now.raw().saturating_sub(1));
+        let t = Time::from_raw(self.now.raw().saturating_sub(1)).max(self.last_effect);
         view.sync(t)?;
         view.peek8(address)
     }
@@ -233,6 +237,7 @@ impl Machine {
             return Err(Error::Unsupported {component:"power", detail:"power loss during nonvolatile programming needs a measured partial-programming model", address:0});
         }
         self.eeprom.power_cycle()?;
+        self.last_effect = self.now;
         self.mcu.sci.set_gate(false, self.now, out);
         if self.piezo != Piezo::Neutral {
             self.piezo = Piezo::Neutral;
@@ -255,6 +260,7 @@ impl Machine {
         if self.powered {
             return Ok(());
         }
+        self.last_effect = self.now;
         self.mcu.power_on(self.now, out)?;
         self.eeprom.power_cycle()?;
         self.sensor.power_cycle(self.now)?;
@@ -339,6 +345,15 @@ impl Machine {
                 drive,
             });
         }
+        if self.mcu.comparators.enabled_mask() != 0 {
+            let (pb, vcref) = self.analog_values();
+            self.mcu.comparators.set_inputs(
+                self.now,
+                self.conditions.supply_millivolts,
+                vcref,
+                [pb[4], pb[5]],
+            )?;
+        }
         Ok(())
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
@@ -354,16 +369,47 @@ impl Machine {
         self.resolve_board(out)?;
         self.refresh_deadline()
     }
-    fn analog_code(&self) -> u16 {
-        if self.mcu.adc.channel() == 7 && self.mcu.gpio.battery_switch() {
-            (u32::from(self.conditions.supply_millivolts) * 1023
-                / u32::from(self.conditions.adc_reference_millivolts))
-            .min(1023) as u16
+    fn analog_values(&self) -> ([u16; 6], u16) {
+        let supply = self.conditions.supply_millivolts;
+        let buttons = self.mcu.gpio.raw_button_levels();
+        let mut pb = [0u16; 6];
+        for (i, value) in pb.iter_mut().enumerate() {
+            let board = if i == 3 {
+                if self.mcu.gpio.battery_switch() {
+                    supply
+                } else {
+                    0
+                }
+            } else if buttons & (1 << i) != 0 {
+                supply
+            } else {
+                0
+            };
+            *value = self.analog_pins[i].unwrap_or(board);
+        }
+        let vcref = if self.mcu.gpio.external_reference_selected() {
+            self.analog_pins[6].unwrap_or(if self.mcu.gpio.levels[1] & 4 != 0 {
+                supply
+            } else {
+                0
+            })
         } else {
             0
+        };
+        (pb, vcref)
+    }
+    fn analog_code(&self) -> u16 {
+        let channel = self.mcu.adc.channel();
+        if !(4..=9).contains(&channel) {
+            return 0;
         }
+        let (pb, _) = self.analog_values();
+        (u32::from(pb[usize::from(channel - 4)]) * 1023
+            / u32::from(self.conditions.adc_reference_millivolts))
+        .min(1023) as u16
     }
     fn devices_at_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        self.last_effect = self.now;
         self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
         // External nonvolatile and sensor clocks do not vanish on an MCU reset.
         if self.eeprom.deadline() == Some(self.now) {
@@ -407,6 +453,7 @@ impl Machine {
             Input::SupplyMillivolts(_) => 2,
             Input::InfraredLevel(_) => 3,
             Input::ResetPin(_) => 4,
+            Input::AnalogPin { pin, .. } => 5 + pin.index() as u8,
         }
     }
     fn validate_inputs(&self, end: Time, inputs: &[TimedInput]) -> Result<(), Error> {
@@ -414,7 +461,7 @@ impl Machine {
             return Err(TimeError::Reversed.into());
         }
         let mut prior = self.now;
-        let mut mask = 0u8;
+        let mut mask = 0u16;
         for change in inputs {
             if change.at < self.now {
                 return Err(Error::PastInput {
@@ -448,6 +495,7 @@ impl Machine {
         Ok(())
     }
     fn apply_batch(&mut self, changes: &[TimedInput], out: &mut dyn Output) -> Result<(), Error> {
+        self.last_effect = self.now;
         if self.powered && self.mcu.sync(self.now)? {
             self.reset_mcu(true, out)?;
         }
@@ -460,8 +508,14 @@ impl Machine {
                 Input::SupplyMillivolts(v) => self.conditions.supply_millivolts = v,
                 Input::InfraredLevel(v) => ir = Some(v),
                 Input::ResetPin(high) => reset = Some(!high),
+                Input::AnalogPin { pin, millivolts } => self.analog_pins[pin.index()] = millivolts,
             }
         }
+        self.mcu.gpio.set_analog_levels(
+            self.analog_pins.map(|v| {
+                v.map(|v| u32::from(v) * 2 > u32::from(self.conditions.supply_millivolts))
+            }),
+        );
         if let Some(asserted) = reset {
             if self.powered && asserted && !self.reset_asserted {
                 self.reset_mcu(false, out)?;
@@ -573,6 +627,7 @@ impl Machine {
         }
     }
     fn complete_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        self.last_effect = self.now;
         let mut pending = self
             .pending
             .take()

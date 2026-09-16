@@ -1,3 +1,4 @@
+use hs_core::signals::AnalogPin;
 use hs_core::{Acceleration, Buttons, Input, Time, TimedInput};
 use std::error::Error;
 
@@ -5,7 +6,7 @@ use std::error::Error;
 pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
     let mut result = Vec::new();
     let mut prior = None;
-    let mut seen = 0u8;
+    let mut seen = 0u16;
     for (line_no, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -47,6 +48,24 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
             ("supply", 3) => (Input::SupplyMillivolts(p[2].parse()?), 2),
             ("ir", 3) => (Input::InfraredLevel(bit(p[2])?), 3),
             ("reset", 3) => (Input::ResetPin(bit(p[2])?), 4),
+            ("analog", 4) => {
+                let pin = match p[2] {
+                    "pb0" => AnalogPin::Pb0,
+                    "pb1" => AnalogPin::Pb1,
+                    "pb2" => AnalogPin::Pb2,
+                    "pb3" => AnalogPin::Pb3,
+                    "pb4" => AnalogPin::Pb4,
+                    "pb5" => AnalogPin::Pb5,
+                    "vcref" => AnalogPin::Vcref,
+                    _ => return Err(fail("unknown analog package pin").into()),
+                };
+                let millivolts = if p[3] == "release" {
+                    None
+                } else {
+                    Some(p[3].parse()?)
+                };
+                (Input::AnalogPin { pin, millivolts }, 5 + pin.index())
+            }
             _ => return Err(fail("unknown input kind or incorrect number of values").into()),
         };
         if let Some(old) = prior {
@@ -80,5 +99,13 @@ mod tests {
         assert!(parse("2,ir,1\n1,ir,0").is_err());
         assert!(parse("0,ir,1\n0,ir,0").is_err());
         assert!(parse("0,buttons,0,2,0").is_err());
+        assert_eq!(
+            parse("0,analog,pb4,1200\n0,analog,vcref,900\n1,analog,pb4,release")
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(parse("0,analog,pb6,1000").is_err());
+        assert!(parse("0,analog,pb4,1200\n0,analog,pb4,1000").is_err());
     }
 }

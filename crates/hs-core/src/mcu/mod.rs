@@ -1,5 +1,6 @@
 pub mod adc;
 pub mod clocks;
+pub mod comparators;
 pub mod control;
 pub mod gpio;
 pub mod rtc;
@@ -12,6 +13,7 @@ pub mod watchdog;
 use crate::{cpu::Width, error::Error, signals::Output, time::Time};
 use adc::Adc;
 use clocks::{Clocks, Frequencies, Tap};
+use comparators::Comparators;
 use control::{Control, Mode};
 use gpio::Gpio;
 use rtc::Rtc;
@@ -38,6 +40,7 @@ pub struct Mcu {
     pub timer_w: TimerW,
     pub watchdog: Watchdog,
     pub adc: Adc,
+    pub comparators: Comparators,
 }
 impl Mcu {
     pub fn new(firmware: &[u8], frequencies: Frequencies) -> Result<Self, Error> {
@@ -66,6 +69,7 @@ impl Mcu {
             timer_w: TimerW::default(),
             watchdog: Watchdog::default(),
             adc: Adc::default(),
+            comparators: Comparators::default(),
         };
         m.apply_gates(Time::ZERO, &mut ())?;
         Ok(m)
@@ -82,6 +86,7 @@ impl Mcu {
     /// Synchronize clocked counters at an actual effect boundary. The return
     /// flag requests an MCU reset; attached device owners are not reconstructed.
     pub fn sync(&mut self, now: Time) -> Result<bool, Error> {
+        self.comparators.sync(now)?;
         self.rtc.sync(now, &self.clocks)?;
         if self.timer_b1.sync(now, &self.clocks) {
             self.control.irr2 |= 4;
@@ -90,6 +95,8 @@ impl Mcu {
         Ok(self.watchdog.sync(now, &self.clocks))
     }
     pub fn apply_gates(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
+        self.comparators
+            .set_gate(self.control.gate2 & 2 != 0, now)?;
         let standby = self.control.mode == Mode::Standby;
         let main = self.control.main_running();
         let sub = self.control.sub_running();
@@ -141,6 +148,7 @@ impl Mcu {
         self.timer_b1 = TimerB1::default();
         self.timer_w = TimerW::default();
         self.adc = Adc::default();
+        self.comparators.reset(now);
         self.watchdog.reset(watchdog, now, &self.clocks);
         self.apply_gates(now, out)
     }
@@ -153,6 +161,7 @@ impl Mcu {
             self.ssu.deadline(&self.clocks)?,
             self.sci.deadline(),
             self.adc.deadline(&self.clocks)?,
+            self.comparators.deadline(),
         ]
         .into_iter()
         .flatten()
@@ -194,6 +203,9 @@ impl Mcu {
         if self.timer_w.interrupt() {
             push(35);
         }
+        if self.comparators.interrupt() {
+            push(36);
+        }
         if self.sci.interrupt() {
             push(37);
         }
@@ -231,6 +243,15 @@ impl Mcu {
         if (RAM_START..=0xff7f).contains(&a) {
             return Ok(self.ram[usize::from(a - RAM_START)]);
         }
+        if a == 0xffde {
+            let channel = self.adc.channel();
+            let adc_mask = if (4..=9).contains(&channel) {
+                1 << (channel - 4)
+            } else {
+                0
+            };
+            return Ok(self.gpio.read(a) & !adc_mask & !(self.comparators.enabled_mask() << 4));
+        }
         if Gpio::handles(a) {
             return Ok(self.gpio.read(a));
         }
@@ -242,6 +263,7 @@ impl Mcu {
         }
         match a {
             0xf067..=0xf06d | 0xf06f => Ok(self.rtc.read(a)),
+            0xf0dc..=0xf0de => Ok(self.comparators.read(a)),
             0xf0d0 => Ok(self.timer_b1.read(a)),
             0xf0d1 => Ok(self.timer_b1.read(a)),
             0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => Ok(self.ssu.read(a)),
@@ -301,6 +323,7 @@ impl Mcu {
         }
         match a {
             0xf067..=0xf06d | 0xf06f => self.rtc.write(a, v, now, &self.clocks),
+            0xf0dc..=0xf0de => self.comparators.write(a, v, now),
             0xf0d0 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0d1 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => self.ssu.write(a, v, now, &self.clocks),
@@ -356,6 +379,15 @@ impl Mcu {
         if (RAM_START..=0xff7f).contains(&a) {
             return Ok(self.ram[usize::from(a - RAM_START)]);
         }
+        if a == 0xffde {
+            let channel = self.adc.channel();
+            let adc_mask = if (4..=9).contains(&channel) {
+                1 << (channel - 4)
+            } else {
+                0
+            };
+            return Ok(self.gpio.read(a) & !adc_mask & !(self.comparators.enabled_mask() << 4));
+        }
         if Gpio::handles(a) {
             return Ok(self.gpio.read(a));
         }
@@ -367,6 +399,7 @@ impl Mcu {
         }
         match a {
             0xf067..=0xf06d | 0xf06f => Ok(self.rtc.read(a)),
+            0xf0dc..=0xf0de => Ok(self.comparators.peek(a)),
             0xf0d0 => Ok(self.timer_b1.read(a)),
             0xf0d1 => Ok(self.timer_b1.read(a)),
             0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => Ok(self.ssu.peek(a)),
