@@ -98,3 +98,20 @@ synchronization is still at event/reference boundaries, not a characterized
 subcycle model. Module standby currently retains AEC state under §5.4's clock-
 gate interpretation; §13.1's 'initial value' wording is insufficient to claim
 a measured reset-on-gate rule. This remaining question is recorded explicitly.
+
+## CPU alias/admission and package-pin corrections
+
+MOV predecrement now updates the full address register before reading an aliased
+source field, matching the MOV.B/W/L usage notes (ADE-602-053A pp.121/123/125).
+The 120-case grid covers byte high/low, word low/high and long fields on all eight
+ER registers, including a decrement carrying into the upper half. A split long
+store test preserves its completed first word and snapshots the continuation.
+RTE no longer inherits LDC's one-instruction interrupt deferral (§3.8.5); a
+separate test confirms LDC still has that behavior. Displacement-24 forms reject
+the reserved address-selector bit and reject byte opcodes following long/CCR
+prefixes; 192 independently expected encoding cases exercise both directions.
+These are specific semantic/encoding corrections, not complete CPU certification.
+
+The comparator external reference's package route is P30/SCK3/VCref, not
+P32/TXD3/IrTXD (§1.3, §8.2). Its analog fixture now updates P30 while preserving
+P32's independent drive; the test checks both states.

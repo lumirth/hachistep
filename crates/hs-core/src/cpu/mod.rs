@@ -504,7 +504,7 @@ impl Cpu {
             Phase::ReturnExceptionPc { ccr } => {
                 self.registers.move_sp(2);
                 self.registers.ccr = ccr;
-                self.interrupt_delay = 1;
+                // RTE is not one of §3.8.5's CCR-writing deferral instructions.
                 self.phase = Phase::BranchWait { target: value };
             }
             Phase::ExceptionPc { vector, ccr, .. } => {
@@ -700,12 +700,16 @@ impl Cpu {
                 store,
                 ccr,
             } => {
+                // MOV @-ERn updates the full address register before reading
+                // an aliased source (RnH/RnL/Rn/En/ERn). ADE-602-053A
+                // MOV.B/W/L usage notes, pp. 121/123/125. Loads still commit
+                // a post-increment before replacing the destination field.
+                let (mut address, post) = self.target_address(address, size);
                 let value = if ccr {
                     u32::from(self.registers.ccr) << 8
                 } else {
                     self.registers.read(size, reg)
                 };
-                let (mut address, post) = self.target_address(address, size);
                 if size != Size::Byte {
                     address &= !1;
                 }

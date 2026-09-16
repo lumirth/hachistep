@@ -207,3 +207,21 @@ fn inspection_after_explicit_power_on_does_not_project_before_reset() {
     assert_eq!(a.peek(0xf0dc).unwrap(), 0);
     assert_eq!(a, before);
 }
+
+#[test]
+fn vcref_is_p30_not_the_p32_transmit_pin() {
+    // REJ09B0152-0300 §1.3 and §8.2: P30/SCK3/VCref, P32/TXD3/IrTXD.
+    let mut g = hs_core::mcu::gpio::Gpio::default();
+    g.write(0xffc2, 1).unwrap();
+    g.write(0xffe6, 4).unwrap(); // P32 output, leave P30 input
+    g.write(0xffd6, 4).unwrap(); // preserve high transmitter output
+    let mut levels = [None; 7];
+    levels[6] = Some(false);
+    g.set_analog_levels(levels);
+    g.resolve(None, 0, 0, None);
+    assert_eq!(g.read(0xffd6) & 5, 4);
+    levels[6] = Some(true);
+    g.set_analog_levels(levels);
+    g.resolve(None, 0, 0, None);
+    assert_eq!(g.read(0xffd6) & 5, 5);
+}

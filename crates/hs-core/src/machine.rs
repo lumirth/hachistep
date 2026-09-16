@@ -398,7 +398,7 @@ impl Machine {
             *value = self.analog_pins[i].unwrap_or(board);
         }
         let vcref = if self.mcu.gpio.external_reference_selected() {
-            self.analog_pins[6].unwrap_or(if self.mcu.gpio.levels[1] & 4 != 0 {
+            self.analog_pins[6].unwrap_or(if self.mcu.gpio.levels[1] & 1 != 0 {
                 supply
             } else {
                 0

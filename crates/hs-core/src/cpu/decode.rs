@@ -723,7 +723,9 @@ fn memory(words: &[u16], prefix: usize, selected_size: Size, ccr: bool) -> Decod
             (Address::Absolute(words[used - 1]), used, store, reg, size)
         }
         0x78 => {
-            if reg != 0 {
+            // The high address-register selector bit is fixed zero, not an
+            // additional store bit. Store direction belongs to word two.
+            if reg != 0 || sel >= 8 {
                 return Decode::Invalid;
             }
             if words.len() < prefix + 2 {
@@ -732,7 +734,7 @@ fn memory(words: &[u16], prefix: usize, selected_size: Size, ccr: bool) -> Decod
             let q = words[prefix + 1];
             let h = (q >> 8) as u8;
             let form = ((q >> 4) & 15) as u8;
-            if !matches!(h, 0x6a | 0x6b) || !matches!(form, 2 | 10) {
+            if !matches!(h, 0x6a | 0x6b) || !matches!(form, 2 | 10) || (prefix != 0 && h != 0x6b) {
                 return Decode::Invalid;
             }
             let actual_size = if prefix != 0 {

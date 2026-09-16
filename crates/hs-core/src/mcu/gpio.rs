@@ -196,7 +196,7 @@ impl Gpio {
             }
         }
         if let Some(high) = self.analog_levels[6] {
-            self.levels[1] = (self.levels[1] & !4) | (u8::from(high) << 2);
+            self.levels[1] = (self.levels[1] & !1) | u8::from(high);
         }
         self.levels[2] =
             (self.levels[2] & !(timer_mask & 0x1c)) | (timer_levels & timer_mask & 0x1c);
