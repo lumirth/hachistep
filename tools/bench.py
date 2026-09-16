@@ -12,6 +12,7 @@ import random
 import statistics
 import subprocess
 import time
+from compare_runs import compare
 from _support import ROOT, create_directory, digest, environment, write_json, source_identity
 
 ENDPOINT_KEYS = ('time_raw', 'er', 'ccr', 'pc', 'phase', 'retired', 'interrupt_entries',
@@ -28,9 +29,11 @@ def main() -> None:
     p.add_argument('--milliseconds', type=int, default=10000)
     p.add_argument('--repeats', type=int, default=3)
     p.add_argument('--out', type=Path, default=ROOT / 'out/benchmark')
+    p.add_argument('--preflight-trace-limit', type=int, default=2_000_000,
+                   help='bounded product-history capacity per untimed comparison run; truncation fails')
     a = p.parse_args()
-    if a.repeats < 2 or a.milliseconds < 1:
-        raise ValueError('repeats must be >=2 and milliseconds >=1')
+    if a.repeats < 2 or a.milliseconds < 1 or a.preflight_trace_limit < 1:
+        raise ValueError('repeats must be >=2; duration and preflight trace limit must be positive')
     out = create_directory(a.out)
     variants = {'left': a.left.resolve()}
     if a.right:
@@ -38,6 +41,28 @@ def main() -> None:
     inputs = {'firmware': digest(a.firmware), 'eeprom': digest(a.eeprom)}
     if a.input:
         inputs['timeline'] = digest(a.input)
+    equivalence = None
+    if a.right:
+        # Untimed correctness preflight. Measured runs below do not trace/hash
+        # product events in the simulation path. Never benchmark changed guest
+        # behavior as if it were an optimization of the same implementation.
+        for variant, executable in variants.items():
+            command = [str(executable), 'run', '--firmware', str(a.firmware.resolve()),
+                       '--eeprom', str(a.eeprom.resolve()), '--milliseconds', str(a.milliseconds),
+                       '--out', str(out/f'preflight-{variant}'), '--trace', str(out/f'preflight-{variant}.txt'),
+                       '--trace-limit', str(a.preflight_trace_limit)]
+            if a.input:
+                command += ['--input', str(a.input.resolve())]
+            process = subprocess.run(command, capture_output=True, text=True, env=environment(), timeout=300)
+            (out/f'preflight-{variant}.log').write_text(process.stdout + process.stderr)
+            if process.returncode:
+                raise RuntimeError(f'{variant} preflight failed; inspect its log')
+        equivalence = compare(out/'preflight-left', out/'preflight-right',
+                              out/'preflight-left.txt', out/'preflight-right.txt')
+        write_json(out/'equivalence.json', equivalence)
+        if not equivalence['equivalent']:
+            raise RuntimeError('observations differ: do not treat a behavior change as a performance-only optimization')
+        print('Untimed exported-state and complete product-history comparison passed.', flush=True)
     schedule = []
     rng = random.Random(0)
     for repeat in range(a.repeats):
@@ -80,10 +105,10 @@ def main() -> None:
     write_json(out / 'summary.json', {'schema': 1, 'source': source_identity(), 'inputs': inputs,
                                      'binaries': {k: digest(v) for k, v in variants.items()},
                                      'milliseconds': a.milliseconds, 'samples': results,
-                                     'summary': summaries, 'endpoint': endpoint,
-                                     'limitation': 'Endpoint/count equality is not full trace or physical-hardware conformance.'})
+                                     'summary': summaries, 'endpoint': endpoint, 'untimed_equivalence': equivalence,
+                                     'limitation': 'Untimed preflight compares exported state and complete product history. It is not hidden-state or physical-hardware conformance. Measured runs compare endpoints/counts without tracing.'})
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, RuntimeError) as e:
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as e:
         raise SystemExit(str(e))
