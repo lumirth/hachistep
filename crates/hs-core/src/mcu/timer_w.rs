@@ -214,6 +214,18 @@ impl TimerW {
             self.schedule_input(due, clocks)?;
         }
         self.clock_to(now, clocks)?;
+        // Retire visibility waits under their old clock epoch. Retaining an
+        // already-consumed edge target across a later clock switch would ask
+        // the new clock epoch to project a target in its past.
+        for visible in &mut self.capture_visible {
+            if visible
+                .as_ref()
+                .map_or(Ok(None), |w| w.deadline(clocks))?
+                .is_some_and(|at| at <= now)
+            {
+                *visible = None;
+            }
+        }
         self.at = now;
         Ok(())
     }

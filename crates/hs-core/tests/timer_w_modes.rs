@@ -276,3 +276,14 @@ fn guest_gpio_edge_captures_stopped_timer_and_vectors_through_35() {
     assert_eq!(a, b);
     assert_eq!(x, y);
 }
+
+#[test]
+fn expired_capture_visibility_does_not_survive_a_clock_epoch_change() {
+    let mut c = clocks();
+    let mut w = capture(&c, true);
+    let now = edge(&c, 12);
+    w.sync(now, &c).unwrap();
+    c.set_system(now, 32768, 1).unwrap();
+    w.sync(now, &c).unwrap();
+    assert_eq!(w.read_word(0xf0f8, &c).unwrap(), 5);
+}
