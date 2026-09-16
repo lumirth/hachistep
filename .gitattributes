@@ -1,0 +1,10 @@
+*.rs text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.lock text eol=lf
+*.csv text eol=lf
+*.json text eol=lf
+*.bin -text
+*.pgm -text
+*.wav -text

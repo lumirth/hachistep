@@ -4,10 +4,10 @@
 //! timing witnesses are enumerated in docs/STATUS.md; successful execution is
 //! not a claim of complete silicon conformance.
 use crate::{
-    cpu::{Action, Cpu, Registers, Width, alu::I},
+    cpu::{alu::I, Action, Cpu, Registers, Width},
     devices::{bma150::Bma150, m95512::M95512, nt7508::Nt7508},
     error::Error,
-    mcu::{Mcu, clocks::Frequencies, gpio::SerialLevels},
+    mcu::{clocks::Frequencies, gpio::SerialLevels, Mcu},
     signals::{Drive, Event, Input, Output, Piezo, TimedInput},
     time::{Duration, Time, TimeError},
 };
@@ -26,7 +26,13 @@ pub struct Conditions {
     pub adc_reference_millivolts: u16,
 }
 impl Default for Conditions {
-    fn default() -> Self { Self { clocks: Frequencies::default(), supply_millivolts: 3000, adc_reference_millivolts: 3300 } }
+    fn default() -> Self {
+        Self {
+            clocks: Frequencies::default(),
+            supply_millivolts: 3000,
+            adc_reference_millivolts: 3300,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunResult {
@@ -36,7 +42,9 @@ pub struct RunResult {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Statistics {
-    pub bus_reads: u64, pub bus_writes: u64, pub resets: u64,
+    pub bus_reads: u64,
+    pub bus_writes: u64,
+    pub resets: u64,
     pub peripheral_boundaries: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +57,9 @@ struct Pending {
     high: u8,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Snapshot { state: Machine }
+pub struct Snapshot {
+    state: Machine,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Machine {
@@ -75,83 +85,205 @@ impl Machine {
         Self::with_conditions(images, Conditions::default())
     }
     pub fn with_conditions(images: Images<'_>, conditions: Conditions) -> Result<Self, Error> {
-        if conditions.adc_reference_millivolts == 0 { return Err(Error::BadInput("ADC reference must be positive")); }
+        Self::with_persistent_state(images, conditions, None)
+    }
+    /// Construct with a sensor nonvolatile image exported by an earlier session.
+    /// `None` selects the documented canonical sensor image, not a claim that
+    /// all physical units have identical calibration.
+    pub fn with_persistent_state(
+        images: Images<'_>,
+        conditions: Conditions,
+        sensor_nonvolatile: Option<&[u8]>,
+    ) -> Result<Self, Error> {
+        if conditions.adc_reference_millivolts == 0 {
+            return Err(Error::BadInput("ADC reference must be positive"));
+        }
         let mcu = Mcu::new(images.firmware, conditions.clocks)?;
         let cpu = Cpu::new(mcu.reset_vector());
-        let mut m = Self { now: Time::ZERO, cpu, mcu,
+        let mut m = Self {
+            now: Time::ZERO,
+            cpu,
+            mcu,
             eeprom: M95512::new(images.eeprom, images.eeprom_status)?,
-            sensor: Bma150::new(Time::ZERO), lcd: Nt7508::new(), conditions,
-            pending: None, resume_after: None, next_devices: None,
-            serial: SerialLevels::default(), piezo: Piezo::Neutral,
-            reset_asserted: false, powered: true, fault: None, stats: Statistics::default() };
+            sensor: match sensor_nonvolatile {
+                Some(bytes) => Bma150::from_nonvolatile(Time::ZERO, bytes)?,
+                None => Bma150::new(Time::ZERO),
+            },
+            lcd: Nt7508::new(),
+            conditions,
+            pending: None,
+            resume_after: None,
+            next_devices: None,
+            serial: SerialLevels::default(),
+            piezo: Piezo::Neutral,
+            reset_asserted: false,
+            powered: true,
+            fault: None,
+            stats: Statistics::default(),
+        };
         m.resolve_board(&mut ())?;
         m.refresh_deadline()?;
         Ok(m)
     }
-    pub fn now(&self) -> Time { self.now }
-    pub fn registers(&self) -> &Registers { &self.cpu.registers }
-    pub fn instruction_pc(&self) -> u16 { self.cpu.instruction_pc() }
-    pub fn phase_name(&self) -> &'static str { self.cpu.phase_name() }
-    pub fn retired(&self) -> u64 { self.cpu.retired }
-    pub fn interrupt_entries(&self) -> u64 { self.cpu.interrupt_entries }
-    pub fn sleeping(&self) -> bool { self.cpu.sleeping() }
-    pub fn statistics(&self) -> Statistics { self.stats }
-    pub fn firmware(&self) -> &[u8;49_152] { self.mcu.firmware() }
-    pub fn ram(&self) -> &[u8;2048] { self.mcu.ram() }
-    pub fn eeprom(&self) -> &[u8;65_536] { self.eeprom.bytes() }
-    pub fn eeprom_status(&self) -> u8 { self.eeprom.persistent_status() }
-    pub fn sensor_nonvolatile(&self) -> &[u8;0x13] { self.sensor.nonvolatile() }
-    pub fn lcd_ram(&self) -> &[u8;4096] { self.lcd.ram() }
-    pub fn display(&self, pixels: &mut [u8;6144]) { if self.powered { self.lcd.render(pixels); } else { pixels.fill(0); } }
-    pub fn display_enabled(&self) -> bool { self.powered && self.lcd.enabled() }
-    pub fn display_start_line(&self) -> u8 { self.lcd.start_line() }
-    pub fn ssu_counts(&self) -> (u64,u64) { (self.mcu.ssu.transmitted,self.mcu.ssu.received) }
-    pub fn fault(&self) -> Option<&Error> { self.fault.as_ref() }
+    pub fn conditions(&self) -> Conditions {
+        self.conditions
+    }
+    pub fn now(&self) -> Time {
+        self.now
+    }
+    pub fn registers(&self) -> &Registers {
+        &self.cpu.registers
+    }
+    pub fn instruction_pc(&self) -> u16 {
+        self.cpu.instruction_pc()
+    }
+    pub fn phase_name(&self) -> &'static str {
+        self.cpu.phase_name()
+    }
+    pub fn retired(&self) -> u64 {
+        self.cpu.retired
+    }
+    pub fn interrupt_entries(&self) -> u64 {
+        self.cpu.interrupt_entries
+    }
+    pub fn sleeping(&self) -> bool {
+        self.cpu.sleeping()
+    }
+    pub fn statistics(&self) -> Statistics {
+        self.stats
+    }
+    pub fn firmware(&self) -> &[u8; 49_152] {
+        self.mcu.firmware()
+    }
+    pub fn ram(&self) -> &[u8; 2048] {
+        self.mcu.ram()
+    }
+    pub fn eeprom(&self) -> &[u8; 65_536] {
+        self.eeprom.bytes()
+    }
+    pub fn eeprom_status(&self) -> u8 {
+        self.eeprom.persistent_status()
+    }
+    pub fn sensor_nonvolatile(&self) -> &[u8; 0x13] {
+        self.sensor.nonvolatile()
+    }
+    pub fn lcd_ram(&self) -> &[u8; 4096] {
+        self.lcd.ram()
+    }
+    pub fn display(&self, pixels: &mut [u8; 6144]) {
+        if self.powered {
+            self.lcd.render(pixels);
+        } else {
+            pixels.fill(0);
+        }
+    }
+    pub fn display_enabled(&self) -> bool {
+        self.powered && self.lcd.enabled()
+    }
+    pub fn display_start_line(&self) -> u8 {
+        self.lcd.start_line()
+    }
+    pub fn ssu_counts(&self) -> (u64, u64) {
+        (self.mcu.ssu.transmitted, self.mcu.ssu.received)
+    }
+    pub fn fault(&self) -> Option<&Error> {
+        self.fault.as_ref()
+    }
     /// Diagnostic inspection is side-effect free. Counter owners are projected
     /// on a temporary copy; guest read side effects are never executed.
     pub fn peek(&self, address: u16) -> Result<u8, Error> {
-        if Mcu::is_memory(address) || !self.powered { return self.mcu.peek8(address); }
+        if Mcu::is_memory(address) || !self.powered {
+            return self.mcu.peek8(address);
+        }
         let mut view = self.mcu.clone();
         // Exclude effects exactly at the caller's unprocessed horizon.
         let t = Time::from_raw(self.now.raw().saturating_sub(1));
         view.sync(t)?;
         view.peek8(address)
     }
-    pub fn snapshot(&self) -> Snapshot { Snapshot { state: self.clone() } }
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            state: self.clone(),
+        }
+    }
     pub fn restore(&mut self, snapshot: &Snapshot) {
         *self = snapshot.state.clone();
     }
     /// Typed in-memory snapshots include in-flight work; this is not a portable
     /// serialization promise. The caller may use equality for same-run snapshots.
-    pub fn from_snapshot(snapshot: &Snapshot) -> Self { snapshot.state.clone() }
+    pub fn from_snapshot(snapshot: &Snapshot) -> Self {
+        snapshot.state.clone()
+    }
 
-    pub fn powered(&self) -> bool { self.powered }
+    pub fn powered(&self) -> bool {
+        self.powered
+    }
     /// Supply removal is supported outside nonvolatile programming. A request
     /// during programming is rejected, preserving the machine, rather than
     /// inventing atomic loss behavior. ResetPin is a different MCU-only input.
     pub fn power_off(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if !self.powered { return Ok(()); }
+        if !self.powered {
+            return Ok(());
+        }
         if self.eeprom.busy() || self.sensor.nonvolatile_busy() {
             return Err(Error::Unsupported {component:"power", detail:"power loss during nonvolatile programming needs a measured partial-programming model", address:0});
         }
         self.eeprom.power_cycle()?;
-        self.mcu.sci.set_gate(false,self.now,out);
-        if self.piezo != Piezo::Neutral {self.piezo=Piezo::Neutral;out.event(Event::Buzzer{at:self.now,drive:Piezo::Neutral});}
-        self.powered=false;self.pending=None;self.resume_after=None;self.next_devices=None;
-        out.event(Event::Power{at:self.now,on:false}); Ok(())
+        self.mcu.sci.set_gate(false, self.now, out);
+        if self.piezo != Piezo::Neutral {
+            self.piezo = Piezo::Neutral;
+            out.event(Event::Buzzer {
+                at: self.now,
+                drive: Piezo::Neutral,
+            });
+        }
+        self.powered = false;
+        self.pending = None;
+        self.resume_after = None;
+        self.next_devices = None;
+        out.event(Event::Power {
+            at: self.now,
+            on: false,
+        });
+        Ok(())
     }
     pub fn power_on(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if self.powered { return Ok(()); }
-        self.mcu.power_on(self.now,out)?;self.eeprom.power_cycle()?;self.sensor.power_cycle(self.now)?;
-        self.lcd=Nt7508::new();self.cpu=Cpu::new(self.mcu.reset_vector());self.serial=SerialLevels::default();
-        self.powered=true;self.fault=None;self.pending=None;self.resume_after=None;
-        out.event(Event::Power{at:self.now,on:true});self.resolve_board(out)?;self.refresh_deadline()
+        if self.powered {
+            return Ok(());
+        }
+        self.mcu.power_on(self.now, out)?;
+        self.eeprom.power_cycle()?;
+        self.sensor.power_cycle(self.now)?;
+        self.lcd = Nt7508::new();
+        self.cpu = Cpu::new(self.mcu.reset_vector());
+        self.serial = SerialLevels::default();
+        self.powered = true;
+        self.fault = None;
+        self.pending = None;
+        self.resume_after = None;
+        out.event(Event::Power {
+            at: self.now,
+            on: true,
+        });
+        self.resolve_board(out)?;
+        self.refresh_deadline()
     }
     fn refresh_deadline(&mut self) -> Result<(), Error> {
-        if !self.powered {self.next_devices=None;return Ok(());}
-        self.next_devices = [self.mcu.deadline()?, self.eeprom.deadline(), self.sensor.deadline()]
-            .into_iter().flatten().min();
-        if self.next_devices.is_some_and(|t| t < self.now) { return Err(Error::Internal("peripheral appointment in the past")); }
+        if !self.powered {
+            self.next_devices = None;
+            return Ok(());
+        }
+        self.next_devices = [
+            self.mcu.deadline()?,
+            self.eeprom.deadline(),
+            self.sensor.deadline(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        if self.next_devices.is_some_and(|t| t < self.now) {
+            return Err(Error::Internal("peripheral appointment in the past"));
+        }
         Ok(())
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<(), Error> {
@@ -169,201 +301,398 @@ impl Machine {
                 self.sensor.rising(levels.mosi, self.now)?;
                 self.lcd.rising(levels.mosi, self.now, out)?;
             } else {
-                self.eeprom.falling(); self.sensor.falling();
+                self.eeprom.falling();
+                self.sensor.falling();
             }
         }
-        let e = self.eeprom.output(); let a = self.sensor.output();
-        let miso = match (e,a) {
-            (Drive::Low,Drive::High)|(Drive::High,Drive::Low) => return Err(Error::Unsupported {
-                component:"board serial net", detail:"opposing external push-pull drivers",address:0xffdc}),
-            (Drive::Low,_)|(_,Drive::Low) => Some(false),
-            (Drive::High,_)|(_,Drive::High) => Some(true),
+        let e = self.eeprom.output();
+        let a = self.sensor.output();
+        let miso = match (e, a) {
+            (Drive::Low, Drive::High) | (Drive::High, Drive::Low) => {
+                return Err(Error::Unsupported {
+                    component: "board serial net",
+                    detail: "opposing external push-pull drivers",
+                    address: 0xffdc,
+                })
+            }
+            (Drive::Low, _) | (_, Drive::Low) => Some(false),
+            (Drive::High, _) | (_, Drive::High) => Some(true),
             _ => None,
         };
-        self.mcu.gpio.resolve(pins,timer,timer_mask,miso);
+        self.mcu.gpio.resolve(pins, timer, timer_mask, miso);
         self.mcu.control.pins(self.mcu.gpio.irq_levels());
         self.serial = levels;
-        let (b,c) = self.mcu.gpio.piezo_levels();
-        let drive = match (b,c) { (true,false)=>Piezo::Positive,(false,true)=>Piezo::Negative,_=>Piezo::Neutral };
-        if drive != self.piezo { self.piezo=drive; out.event(Event::Buzzer{at:self.now,drive}); }
+        let (b, c) = self.mcu.gpio.piezo_levels();
+        let drive = match (b, c) {
+            (true, false) => Piezo::Positive,
+            (false, true) => Piezo::Negative,
+            _ => Piezo::Neutral,
+        };
+        if drive != self.piezo {
+            self.piezo = drive;
+            out.event(Event::Buzzer {
+                at: self.now,
+                drive,
+            });
+        }
         Ok(())
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
-        self.mcu.reset(self.now,watchdog,out)?;
+        self.mcu.reset(self.now, watchdog, out)?;
         self.cpu = Cpu::new(self.mcu.reset_vector());
-        self.pending=None; self.resume_after=None;
-        self.stats.resets=self.stats.resets.wrapping_add(1);
-        out.event(Event::Reset{at:self.now,watchdog});
+        self.pending = None;
+        self.resume_after = None;
+        self.stats.resets = self.stats.resets.wrapping_add(1);
+        out.event(Event::Reset {
+            at: self.now,
+            watchdog,
+        });
         self.resolve_board(out)?;
         self.refresh_deadline()
     }
     fn analog_code(&self) -> u16 {
-        if self.mcu.adc.channel()==7 && self.mcu.gpio.battery_switch() {
-            (u32::from(self.conditions.supply_millivolts)*1023/u32::from(self.conditions.adc_reference_millivolts)).min(1023) as u16
-        } else { 0 }
+        if self.mcu.adc.channel() == 7 && self.mcu.gpio.battery_switch() {
+            (u32::from(self.conditions.supply_millivolts) * 1023
+                / u32::from(self.conditions.adc_reference_millivolts))
+            .min(1023) as u16
+        } else {
+            0
+        }
     }
     fn devices_at_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        self.stats.peripheral_boundaries=self.stats.peripheral_boundaries.wrapping_add(1);
+        self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
         // External nonvolatile and sensor clocks do not vanish on an MCU reset.
-        if self.eeprom.deadline()==Some(self.now) { self.eeprom.complete(self.now,out)?; }
-        if self.sensor.deadline()==Some(self.now) { self.sensor.at_deadline(self.now,out)?; }
-        let reset=self.mcu.sync(self.now)?;
-        if reset { self.reset_mcu(true,out)?; }
-        if self.mcu.adc.deadline()==Some(self.now) {
-            if self.mcu.adc.advance(self.now,self.analog_code())? { self.mcu.control.irr2|=0x40; }
+        if self.eeprom.deadline() == Some(self.now) {
+            self.eeprom.complete(self.now, out)?;
         }
-        if self.mcu.sci.deadline()==Some(self.now) { self.mcu.sci.advance(self.now,&self.mcu.clocks,out)?; }
-        if self.mcu.ssu.deadline()==Some(self.now) {
-            let edge=self.mcu.ssu.advance(self.now,&self.mcu.clocks)?;
+        if self.sensor.deadline() == Some(self.now) {
+            self.sensor.at_deadline(self.now, out)?;
+        }
+        let reset = self.mcu.sync(self.now)?;
+        if reset {
+            self.reset_mcu(true, out)?;
+        }
+        if self.mcu.adc.deadline() == Some(self.now)
+            && self.mcu.adc.advance(self.now, self.analog_code())?
+        {
+            self.mcu.control.irr2 |= 0x40;
+        }
+        if self.mcu.sci.deadline() == Some(self.now) {
+            self.mcu.sci.advance(self.now, &self.mcu.clocks, out)?;
+        }
+        if self.mcu.ssu.deadline() == Some(self.now) {
+            let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;
             self.resolve_board(out)?;
-            if let Some(edge)=edge {
-                if edge.sample { self.mcu.ssu.sample(self.mcu.gpio.serial_input()); }
-                self.mcu.ssu.finish_edge(self.now,&self.mcu.clocks)?;
+            if let Some(edge) = edge {
+                if edge.sample {
+                    self.mcu.ssu.sample(self.mcu.gpio.serial_input());
+                }
+                self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
             }
         }
         self.resolve_board(out)?;
         self.refresh_deadline()
     }
-    fn input_tag(input: Input) -> u8 { match input {Input::Buttons(_)=>0,Input::Acceleration(_)=>1,
-        Input::SupplyMillivolts(_)=>2,Input::InfraredLevel(_)=>3,Input::ResetPin(_)=>4} }
-    fn validate_inputs(&self,end:Time,inputs:&[TimedInput])->Result<(),Error> {
-        if end<self.now {return Err(TimeError::Reversed.into());}
-        let mut prior=self.now; let mut mask=0u8;
+    fn input_tag(input: Input) -> u8 {
+        match input {
+            Input::Buttons(_) => 0,
+            Input::Acceleration(_) => 1,
+            Input::SupplyMillivolts(_) => 2,
+            Input::InfraredLevel(_) => 3,
+            Input::ResetPin(_) => 4,
+        }
+    }
+    fn validate_inputs(&self, end: Time, inputs: &[TimedInput]) -> Result<(), Error> {
+        if end < self.now {
+            return Err(TimeError::Reversed.into());
+        }
+        let mut prior = self.now;
+        let mut mask = 0u8;
         for change in inputs {
-            if change.at<self.now {return Err(Error::PastInput{now:self.now,requested:change.at});}
-            if change.at<prior {return Err(Error::BadInput("input timeline is not ordered"));}
-            if change.at!=prior {mask=0;}
-            let bit=1<<Self::input_tag(change.input);
-            if mask&bit!=0 {return Err(Error::BadInput("duplicate property at one input timestamp"));}
-            mask|=bit;prior=change.at;
-            if let Input::Acceleration(a)=change.input {
-                if [a.x,a.y,a.z].iter().any(|v|i64::from(*v).abs()>32_000_000) {
-                    return Err(Error::BadInput("acceleration exceeds supported +/-32g input envelope"));
+            if change.at < self.now {
+                return Err(Error::PastInput {
+                    now: self.now,
+                    requested: change.at,
+                });
+            }
+            if change.at < prior {
+                return Err(Error::BadInput("input timeline is not ordered"));
+            }
+            if change.at != prior {
+                mask = 0;
+            }
+            let bit = 1 << Self::input_tag(change.input);
+            if mask & bit != 0 {
+                return Err(Error::BadInput("duplicate property at one input timestamp"));
+            }
+            mask |= bit;
+            prior = change.at;
+            if let Input::Acceleration(a) = change.input {
+                if [a.x, a.y, a.z]
+                    .iter()
+                    .any(|v| i64::from(*v).abs() > 32_000_000)
+                {
+                    return Err(Error::BadInput(
+                        "acceleration exceeds supported +/-32g input envelope",
+                    ));
                 }
             }
         }
         Ok(())
     }
-    fn apply_batch(&mut self, changes:&[TimedInput], out:&mut dyn Output)->Result<(),Error> {
-        if self.powered && self.mcu.sync(self.now)? {self.reset_mcu(true,out)?;}
-        let mut ir=None; let mut reset=None;
+    fn apply_batch(&mut self, changes: &[TimedInput], out: &mut dyn Output) -> Result<(), Error> {
+        if self.powered && self.mcu.sync(self.now)? {
+            self.reset_mcu(true, out)?;
+        }
+        let mut ir = None;
+        let mut reset = None;
         for change in changes {
             match change.input {
-                Input::Buttons(b)=>self.mcu.gpio.set_buttons(b),
-                Input::Acceleration(a)=>self.sensor.set_input(a)?,
-                Input::SupplyMillivolts(v)=>self.conditions.supply_millivolts=v,
-                Input::InfraredLevel(v)=>ir=Some(v),
-                Input::ResetPin(high)=>reset=Some(!high),
+                Input::Buttons(b) => self.mcu.gpio.set_buttons(b),
+                Input::Acceleration(a) => self.sensor.set_input(a)?,
+                Input::SupplyMillivolts(v) => self.conditions.supply_millivolts = v,
+                Input::InfraredLevel(v) => ir = Some(v),
+                Input::ResetPin(high) => reset = Some(!high),
             }
         }
-        if let Some(asserted)=reset {
-            if self.powered && asserted && !self.reset_asserted { self.reset_mcu(false,out)?; }
-            self.reset_asserted=asserted;
+        if let Some(asserted) = reset {
+            if self.powered && asserted && !self.reset_asserted {
+                self.reset_mcu(false, out)?;
+            }
+            self.reset_asserted = asserted;
         }
-        if let Some(light)=ir {self.mcu.sci.receive_light(light,self.now,&self.mcu.clocks)?;}
-        if !self.powered {return Ok(());}
-        self.resolve_board(out)?;self.refresh_deadline()
+        if let Some(light) = ir {
+            self.mcu
+                .sci
+                .receive_light(light, self.now, &self.mcu.clocks)?;
+        }
+        if !self.powered {
+            return Ok(());
+        }
+        self.resolve_board(out)?;
+        self.refresh_deadline()
     }
-    fn queue_cpu(&mut self,out:&mut dyn Output)->Result<(),Error> {
-        if self.pending.is_some() || self.reset_asserted || !self.powered {return Ok(());}
-        if let Some(t)=self.resume_after {
-            if t>self.now {return Ok(());} self.resume_after=None;
+    fn queue_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        if self.pending.is_some() || self.reset_asserted || !self.powered {
+            return Ok(());
+        }
+        if let Some(t) = self.resume_after {
+            if t > self.now {
+                return Ok(());
+            }
+            self.resume_after = None;
         }
         if self.cpu.sleeping() {
-            let irq=self.mcu.interrupt();
-            if irq.is_none() || self.cpu.registers.ccr&I!=0 {return Ok(());}
+            let irq = self.mcu.interrupt();
+            if irq.is_none() || self.cpu.registers.ccr & I != 0 {
+                return Ok(());
+            }
             if self.mcu.control.sleeping() {
-                let delay=self.mcu.control.wake(self.now,&mut self.mcu.clocks)?;
-                self.mcu.apply_gates(self.now,out)?;self.resolve_board(out)?;self.refresh_deadline()?;
-                if delay!=Duration::ZERO {self.resume_after=Some(self.now.checked_add(delay).ok_or(TimeError::Overflow)?);return Ok(());}
+                let delay = self.mcu.control.wake(self.now, &mut self.mcu.clocks)?;
+                self.mcu.apply_gates(self.now, out)?;
+                self.resolve_board(out)?;
+                self.refresh_deadline()?;
+                if delay != Duration::ZERO {
+                    self.resume_after =
+                        Some(self.now.checked_add(delay).ok_or(TimeError::Overflow)?);
+                    return Ok(());
+                }
             }
         }
         loop {
-            let action=self.cpu.next(self.mcu.interrupt())?;
+            let action = self.cpu.next(self.mcu.interrupt())?;
             match action {
-                Action::Sleep=>{
-                    if self.mcu.control.sleeping(){return Ok(());}
-                    if self.mcu.sync(self.now)? {self.reset_mcu(true,out)?;continue;}
-                    let direct=self.mcu.control.sleep(self.now,&mut self.mcu.clocks)?;
-                    self.mcu.apply_gates(self.now,out)?;self.resolve_board(out)?;self.refresh_deadline()?;
-                    if direct {self.cpu.direct_transition()?;continue;}
+                Action::Sleep => {
+                    if self.mcu.control.sleeping() {
+                        return Ok(());
+                    }
+                    if self.mcu.sync(self.now)? {
+                        self.reset_mcu(true, out)?;
+                        continue;
+                    }
+                    let direct = self.mcu.control.sleep(self.now, &mut self.mcu.clocks)?;
+                    self.mcu.apply_gates(self.now, out)?;
+                    self.resolve_board(out)?;
+                    self.refresh_deadline()?;
+                    if direct {
+                        self.cpu.direct_transition()?;
+                        continue;
+                    }
                     return Ok(());
                 }
-                Action::Idle(states)=>{
-                    self.pending=Some(Pending{action,due:self.mcu.delay(self.now,u64::from(states))?,split:false,lane:0,high:0});return Ok(());
+                Action::Idle(states) => {
+                    self.pending = Some(Pending {
+                        action,
+                        due: self.mcu.delay(self.now, u64::from(states))?,
+                        split: false,
+                        lane: 0,
+                        high: 0,
+                    });
+                    return Ok(());
                 }
-                Action::Read{address,width,..}|Action::Write{address,width,..}=>{
-                    let address=if width==Width::Word {address&!1}else{address};
-                    let split=width==Width::Word&&!Mcu::native_word(address);
-                    let physical_width=if split{Width::Byte}else{width};
-                    self.pending=Some(Pending{action,due:self.mcu.delay(self.now,Mcu::access_states(address,physical_width))?,split,lane:0,high:0});return Ok(());
+                Action::Read { address, width, .. } | Action::Write { address, width, .. } => {
+                    let address = if width == Width::Word {
+                        address & !1
+                    } else {
+                        address
+                    };
+                    let split = width == Width::Word && !Mcu::native_word(address);
+                    let physical_width = if split { Width::Byte } else { width };
+                    self.pending = Some(Pending {
+                        action,
+                        due: self
+                            .mcu
+                            .delay(self.now, Mcu::access_states(address, physical_width))?,
+                        split,
+                        lane: 0,
+                        high: 0,
+                    });
+                    return Ok(());
                 }
             }
         }
     }
-    fn complete_cpu(&mut self,out:&mut dyn Output)->Result<(),Error> {
-        let mut pending=self.pending.take().ok_or(Error::Internal("CPU completion without pending access"))?;
-        let (address,width,write)=match pending.action {
-            Action::Idle(_)=>{self.cpu.complete(0)?;return Ok(());}
-            Action::Read{address,width,..}=>(address,width,false),
-            Action::Write{address,width,..}=>(address,width,true),
-            Action::Sleep=>return Err(Error::Internal("scheduled SLEEP access")),
+    fn complete_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        let mut pending = self
+            .pending
+            .take()
+            .ok_or(Error::Internal("CPU completion without pending access"))?;
+        let (address, width, write) = match pending.action {
+            Action::Idle(_) => {
+                self.cpu.complete(0)?;
+                return Ok(());
+            }
+            Action::Read { address, width, .. } => (address, width, false),
+            Action::Write { address, width, .. } => (address, width, true),
+            Action::Sleep => return Err(Error::Internal("scheduled SLEEP access")),
         };
-        let base=if width==Width::Word{address&!1}else{address};
-        let a=base.wrapping_add(u16::from(pending.lane));
-        let w=if pending.split{Width::Byte}else{width};
-        let memory=Mcu::is_memory(a);
-        if !memory && self.mcu.sync(self.now)? {self.reset_mcu(true,out)?;return Ok(());}
-        let value=if let Action::Write{value,mov_byte,..}=pending.action {
-            let v=if pending.split&&pending.lane==0{value>>8}else{value};
-            match w{Width::Byte=>self.mcu.write8(a,v as u8,mov_byte,self.now,out)?,Width::Word=>self.mcu.write16(a,v,self.now)?};
-            self.stats.bus_writes=self.stats.bus_writes.wrapping_add(1);v
-        }else{
-            self.stats.bus_reads=self.stats.bus_reads.wrapping_add(1);
-            match w{Width::Byte=>u16::from(self.mcu.read8(a)?),Width::Word=>self.mcu.read16(a)?}
-        };
-        #[cfg(feature="trace")]
-        out.event(Event::Bus{at:self.now,pc:self.cpu.instruction_pc(),address:a,width:w.bytes(),write,value});
-        #[cfg(not(feature="trace"))]
-        let _=write;
-        if !memory {self.resolve_board(out)?;self.refresh_deadline()?;}
-        if pending.split&&pending.lane==0 {
-            pending.high=value as u8;pending.lane=1;
-            pending.due=self.mcu.delay(self.now,Mcu::access_states(a.wrapping_add(1),Width::Byte))?;
-            self.pending=Some(pending);
+        let base = if width == Width::Word {
+            address & !1
         } else {
-            let value=if pending.split{u16::from_be_bytes([pending.high,value as u8])}else{value};
+            address
+        };
+        let a = base.wrapping_add(u16::from(pending.lane));
+        let w = if pending.split { Width::Byte } else { width };
+        let memory = Mcu::is_memory(a);
+        if !memory && self.mcu.sync(self.now)? {
+            self.reset_mcu(true, out)?;
+            return Ok(());
+        }
+        let value = if let Action::Write {
+            value, mov_byte, ..
+        } = pending.action
+        {
+            let v = if pending.split && pending.lane == 0 {
+                value >> 8
+            } else {
+                value
+            };
+            match w {
+                Width::Byte => self.mcu.write8(a, v as u8, mov_byte, self.now, out)?,
+                Width::Word => self.mcu.write16(a, v, self.now)?,
+            };
+            self.stats.bus_writes = self.stats.bus_writes.wrapping_add(1);
+            v
+        } else {
+            self.stats.bus_reads = self.stats.bus_reads.wrapping_add(1);
+            match w {
+                Width::Byte => u16::from(self.mcu.read8(a)?),
+                Width::Word => self.mcu.read16(a)?,
+            }
+        };
+        #[cfg(feature = "trace")]
+        out.event(Event::Bus {
+            at: self.now,
+            pc: self.cpu.instruction_pc(),
+            address: a,
+            width: w.bytes(),
+            write,
+            value,
+        });
+        #[cfg(not(feature = "trace"))]
+        let _ = write;
+        if !memory {
+            self.resolve_board(out)?;
+            self.refresh_deadline()?;
+        }
+        if pending.split && pending.lane == 0 {
+            pending.high = value as u8;
+            pending.lane = 1;
+            pending.due = self
+                .mcu
+                .delay(self.now, Mcu::access_states(a.wrapping_add(1), Width::Byte))?;
+            self.pending = Some(pending);
+        } else {
+            let value = if pending.split {
+                u16::from_be_bytes([pending.high, value as u8])
+            } else {
+                value
+            };
             self.cpu.complete(value)?;
         }
         Ok(())
     }
-    pub fn run_until(&mut self,end:Time,inputs:&[TimedInput],out:&mut dyn Output)->Result<RunResult,Error> {
-        if let Some(error)=&self.fault{return Err(error.clone());}
-        self.validate_inputs(end,inputs)?;
-        let result=self.run_inner(end,inputs,out);
-        if let Err(error)=&result {self.fault=Some(error.clone());}
+    pub fn run_until(
+        &mut self,
+        end: Time,
+        inputs: &[TimedInput],
+        out: &mut dyn Output,
+    ) -> Result<RunResult, Error> {
+        if let Some(error) = &self.fault {
+            return Err(error.clone());
+        }
+        self.validate_inputs(end, inputs)?;
+        let result = self.run_inner(end, inputs, out);
+        if let Err(error) = &result {
+            self.fault = Some(error.clone());
+        }
         result
     }
-    fn run_inner(&mut self,end:Time,inputs:&[TimedInput],out:&mut dyn Output)->Result<RunResult,Error> {
-        let mut consumed=0;
-        while self.now<end {
+    fn run_inner(
+        &mut self,
+        end: Time,
+        inputs: &[TimedInput],
+        out: &mut dyn Output,
+    ) -> Result<RunResult, Error> {
+        let mut consumed = 0;
+        while self.now < end {
             // Process causes pending at this exact time before admitting another
             // CPU action. Device-before-input/CPU tie rules are starter witnesses;
             // fine-grained silicon conflict coverage is explicit in STATUS.md.
-            if self.next_devices==Some(self.now){self.devices_at_boundary(out)?;}
-            if consumed<inputs.len()&&inputs[consumed].at==self.now {
-                let start=consumed;
-                while consumed<inputs.len()&&inputs[consumed].at==self.now{consumed+=1;}
-                self.apply_batch(&inputs[start..consumed],out)?;
+            if self.next_devices == Some(self.now) {
+                self.devices_at_boundary(out)?;
             }
-            if self.pending.is_some_and(|p|p.due==self.now){self.complete_cpu(out)?;}
+            if consumed < inputs.len() && inputs[consumed].at == self.now {
+                let start = consumed;
+                while consumed < inputs.len() && inputs[consumed].at == self.now {
+                    consumed += 1;
+                }
+                self.apply_batch(&inputs[start..consumed], out)?;
+            }
+            if self.pending.is_some_and(|p| p.due == self.now) {
+                self.complete_cpu(out)?;
+            }
             self.queue_cpu(out)?;
-            let next=[Some(end),self.pending.map(|p|p.due),self.next_devices,
-                inputs.get(consumed).map(|i|i.at),self.resume_after]
-                .into_iter().flatten().min().ok_or(Error::Internal("no next time"))?;
-            if next<=self.now {return Err(Error::Internal("non-advancing event loop"));}
-            self.now=next;
+            let next = [
+                Some(end),
+                self.pending.map(|p| p.due),
+                self.next_devices,
+                inputs.get(consumed).map(|i| i.at),
+                self.resume_after,
+            ]
+            .into_iter()
+            .flatten()
+            .min()
+            .ok_or(Error::Internal("no next time"))?;
+            if next <= self.now {
+                return Err(Error::Internal("non-advancing event loop"));
+            }
+            self.now = next;
         }
-        Ok(RunResult{now:self.now,inputs_consumed:consumed,retired:self.cpu.retired})
+        Ok(RunResult {
+            now: self.now,
+            inputs_consumed: consumed,
+            retired: self.cpu.retired,
+        })
     }
 }
