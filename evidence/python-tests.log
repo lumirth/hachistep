@@ -1,0 +1,10 @@
+test_audio_integrates_transitions_instead_of_aliasing_edge_samples (test_tools.HostTools.test_audio_integrates_transitions_instead_of_aliasing_edge_samples) ... ok
+test_audio_refuses_truncation (test_tools.HostTools.test_audio_refuses_truncation) ... ok
+test_bad_input_leaves_no_destination (test_tools.HostTools.test_bad_input_leaves_no_destination) ... ok
+test_import_only_expected_member_and_never_overwrites (test_tools.HostTools.test_import_only_expected_member_and_never_overwrites) ... ok
+test_pgm_preserves_whitespace_valued_pixels (test_tools.HostTools.test_pgm_preserves_whitespace_valued_pixels) ... ok
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.003s
+
+OK

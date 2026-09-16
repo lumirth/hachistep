@@ -1,0 +1,7 @@
+PASS register-aliases
+PASS add-byte-flags
+PASS call-return-stack
+PASS execute-from-ram
+PASS serial-eeprom-page-wrap
+PASS infrared-transmit
+PASS infrared-receive

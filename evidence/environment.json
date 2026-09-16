@@ -1,0 +1,7 @@
+{
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "machine": "x86_64",
+  "python": "3.13.5",
+  "host_hardware_measurements": false,
+  "execution_location": "isolated assistant sandbox; no user computer writes"
+}

@@ -1,0 +1,92 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/main.rs (target/debug/deps/hachistep-9addc945b0fdf87e)
+
+running 2 tests
+test timeline::tests::valid_and_invalid_timelines ... ok
+test digest::tests::known_vectors ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/safety.rs (target/debug/deps/safety-8ce7b18c46cb6bf4)
+
+running 3 tests
+test malformed_inputs_fail_without_creating_output_directories ... ok
+test independent_output_contains_replay_metadata_and_nonvolatile_images ... ok
+test output_and_trace_never_replace_existing_input_files ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (target/debug/deps/hs_core-dc3395193f53aa3c)
+
+running 31 tests
+test cpu::decode::tests::known_forms_and_extension_boundaries ... ok
+test cpu::alu::tests::chained_zero_and_preserved_carry ... ok
+test cpu::tests::aliases_preserve_unwritten_bits ... ok
+test cpu::tests::exception_writes_pc_before_ccr ... ok
+test cpu::tests::executes_reset_prologue_without_special_addresses ... ok
+test devices::bma150::tests::physical_force_and_paired_shadow ... ok
+test devices::bma150::tests::protected_window_and_identity ... ok
+test devices::m95512::tests::programming_waits_and_wraps_inside_a_page ... ok
+test devices::m95512::tests::sequential_read_and_status_stream ... ok
+test devices::m95512::tests::partial_command_and_missing_write_enable_do_not_program ... ok
+test devices::nt7508::tests::parameter_survives_chip_select ... ok
+test mcu::adc::tests::changing_input_after_aperture_does_not_change_held_sample ... ok
+test devices::nt7508::tests::complete_bitplanes_and_nonvisible_ram_survive_reset ... ok
+test mcu::clocks::tests::clock_change_preserves_edge_ordinal ... ok
+test mcu::clocks::tests::divided_clocks_share_their_source_phase ... ok
+test mcu::gpio::tests::button_pins_and_mux_are_not_firmware_flags ... ok
+test mcu::gpio::tests::chip_selects_have_independent_lifetimes ... ok
+test mcu::rtc::tests::busy_and_rollover_are_separate ... ok
+test mcu::rtc::tests::partition_does_not_change_calendar ... ok
+test mcu::sci::tests::transmitter_produces_timed_pulses_and_keeps_holding_distinct ... ok
+test mcu::ssu::tests::holding_shift_and_receive_are_distinct ... ok
+test mcu::timer_b1::tests::interval_load_also_sets_counter ... ok
+test mcu::timer_b1::tests::reload_ff_overflows_each_input_edge ... ok
+test mcu::timer_w::tests::compare_occurs_on_leaving_the_matching_count ... ok
+test mcu::watchdog::tests::watchdog_write_requires_two_qualified_accesses ... ok
+test time::tests::endpoints_are_exclusive ... ok
+test time::inversion_tests::inversion_matches_enumerated_edges_after_fractional_advances ... ok
+test time::tests::rejects_bad_time_and_checks_overflow ... ok
+test cpu::decode::tests::all_first_words_classify_without_panicking ... ok
+test cpu::alu::tests::exhaustive_byte_add_sub ... ok
+test time::tests::exact_one_second_and_partitioning ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/allocation.rs (target/debug/deps/allocation-83b67f6e4c3883a5)
+
+running 1 test
+test ordinary_run_has_no_heap_allocation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/kernel.rs (target/debug/deps/kernel-316007c876856f7c)
+
+running 10 tests
+test horizon_and_input_timestamps_are_exclusive ... ok
+test all_nonvolatile_domains_can_be_reloaded_without_a_snapshot ... ok
+test instruction_fetches_from_ram_follow_the_same_executor ... ok
+test invalid_timeline_is_rejected_before_mutation ... ok
+test power_cycle_and_mcu_reset_are_distinct ... ok
+test reset_pin_aborts_cpu_work_but_keeps_existing_ram ... ok
+test peeking_does_not_change_causal_state ... ok
+test unimplemented_access_latches_a_fault_without_erasing_prior_store ... ok
+test guest_serial_page_write_reaches_the_real_device_owner_and_commits_later ... ok
+test run_partition_and_snapshot_replay_preserve_all_state_and_events ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/retail.rs (target/debug/deps/retail-b413af1af3c040ca)
+
+running 1 test
+test retail_boot_and_button_replay_are_partition_invariant ... ignored, requires HS_FIRMWARE and HS_EEPROM; run tools/verify_retail.py
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests hs_core
+
+running 1 test
+test crates/hs-core/src/lib.rs - (line 7) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
