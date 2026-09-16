@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Repeated end-to-end CLI measurements with raw samples and optional ABBA pairing.
+
+No fastest-emulator claim. Output export and process launch are included in the
+external time; each CLI report separately records the simulation-loop wall time.
+"""
+from __future__ import annotations
+import argparse
+import json
+from pathlib import Path
+import random
+import statistics
+import subprocess
+import time
+from _support import ROOT, create_directory, digest, environment, write_json, source_identity
+
+ENDPOINT_KEYS = ('time_raw', 'er', 'ccr', 'pc', 'phase', 'retired', 'interrupt_entries',
+                 'ram_sha256', 'lcd_ram_sha256', 'eeprom_sha256', 'eeprom_status',
+                 'events', 'lcd_events', 'nv_commits', 'buzzer_events', 'ir_events')
+
+def main() -> None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--left', type=Path, default=ROOT / 'target/release/hachistep')
+    p.add_argument('--right', type=Path)
+    p.add_argument('--firmware', type=Path, default=ROOT / 'local-inputs/pokewalker.bin')
+    p.add_argument('--eeprom', type=Path, default=ROOT / 'local-inputs/eeprom.bin')
+    p.add_argument('--input', type=Path)
+    p.add_argument('--milliseconds', type=int, default=10000)
+    p.add_argument('--repeats', type=int, default=3)
+    p.add_argument('--out', type=Path, default=ROOT / 'out/benchmark')
+    a = p.parse_args()
+    if a.repeats < 2 or a.milliseconds < 1:
+        raise ValueError('repeats must be >=2 and milliseconds >=1')
+    out = create_directory(a.out)
+    variants = {'left': a.left.resolve()}
+    if a.right:
+        variants['right'] = a.right.resolve()
+    inputs = {'firmware': digest(a.firmware), 'eeprom': digest(a.eeprom)}
+    if a.input:
+        inputs['timeline'] = digest(a.input)
+    schedule = []
+    rng = random.Random(0)
+    for repeat in range(a.repeats):
+        if a.right:
+            order = ['left', 'right', 'right', 'left']
+            if rng.randrange(2):
+                order = ['right' if x == 'left' else 'left' for x in order]
+        else:
+            order = ['left']
+        schedule += [(repeat, variant) for variant in order]
+    results, endpoint = [], None
+    for index, (repeat, variant) in enumerate(schedule):
+        destination = out / f'{index:03}-{variant}'
+        command = [str(variants[variant]), 'run', '--firmware', str(a.firmware.resolve()),
+                   '--eeprom', str(a.eeprom.resolve()), '--milliseconds', str(a.milliseconds),
+                   '--out', str(destination)]
+        if a.input:
+            command += ['--input', str(a.input.resolve())]
+        start = time.perf_counter()
+        process = subprocess.run(command, capture_output=True, text=True, env=environment(), timeout=300)
+        wall = time.perf_counter() - start
+        (out / f'{index:03}.log').write_text(process.stdout + process.stderr)
+        if process.returncode:
+            raise RuntimeError(f'runner failed: {process.stderr}')
+        report = json.loads((destination / 'report.json').read_text())
+        current = {k: report[k] for k in ENDPOINT_KEYS}
+        if endpoint is None:
+            endpoint = current
+        elif endpoint != current:
+            raise RuntimeError('endpoints differ: reject performance comparison and inspect the reports')
+        record = {'index': index, 'repeat': repeat, 'variant': variant,
+                  'process_wall_seconds': wall, 'simulation_wall_seconds': report['wall_seconds']}
+        results.append(record)
+        print(json.dumps(record), flush=True)
+    summaries = {}
+    for variant in variants:
+        timings = [r['simulation_wall_seconds'] for r in results if r['variant'] == variant]
+        summaries[variant] = {'samples': len(timings), 'median_seconds': statistics.median(timings),
+                              'min_seconds': min(timings), 'max_seconds': max(timings)}
+    write_json(out / 'summary.json', {'schema': 1, 'source': source_identity(), 'inputs': inputs,
+                                     'binaries': {k: digest(v) for k, v in variants.items()},
+                                     'milliseconds': a.milliseconds, 'samples': results,
+                                     'summary': summaries, 'endpoint': endpoint,
+                                     'limitation': 'Endpoint/count equality is not full trace or physical-hardware conformance.'})
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError) as e:
+        raise SystemExit(str(e))
