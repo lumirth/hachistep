@@ -8,7 +8,6 @@ errors, missing tests and unapplied mutations are failures of this tool.
 from __future__ import annotations
 import argparse
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess

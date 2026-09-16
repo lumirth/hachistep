@@ -25,7 +25,7 @@ def main() -> None:
         ('fixture-build', [sys.executable, 'conformance/build.py', str(out / 'fixtures')]),
     ]
     for name, command in steps:
-        records.append(run(command, out, name))
+        records.append(run(command, out, name, timeout=900))
     exe = release_executable()
     records.append(run([sys.executable, 'conformance/run.py', '--runner', str(exe),
                         '--fixtures', str(out / 'fixtures'), '--report', str(out / 'conformance.json')], out, 'conformance'))

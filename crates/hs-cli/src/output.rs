@@ -133,7 +133,7 @@ pub fn report(
         .map(|v| format!("{v}"))
         .collect::<Vec<_>>()
         .join(",");
-    format!(concat!("{{\n  \"schema\": 2,\n  \"model\": \"hachistep-starter-0.1\",\n",
+    format!(concat!("{{\n  \"schema\": 2,\n  \"model\": \"hachistep-development-0.2\",\n",
       "  \"firmware_sha256\": \"{}\",\n  \"initial_eeprom_sha256\": \"{}\",\n",
       "  \"initial_sensor_nv_sha256\": \"{}\",\n  \"initial_eeprom_status\": {},\n  \"input_sha256\": {},\n  \"chunk_us\": {},\n",
       "  \"initial_conditions\": {{\"supply_millivolts\": {}, \"adc_reference_millivolts\": {}, \"main_hz\": {}, \"watch_hz\": {}, \"on_chip_hz\": {}}},\n",
