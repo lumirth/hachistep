@@ -84,7 +84,7 @@ construction and export. Both are recorded. No output-based time is an energy
 measurement. No result is a competitive fastest-emulator claim.
 
 The initial three default-build 10-second runs here had a median simulation-loop
-wall time of approximately 1.08 seconds on the sandbox's Linux x86-64 host. The
+wall time of approximately 1.05 seconds on the sandbox's Linux x86-64 host. The
 raw samples, binary hash and exact inputs are in `evidence/benchmark.json`. This
 is not a controlled cross-emulator benchmark or a prediction for an Apple Watch.
 

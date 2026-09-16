@@ -88,3 +88,14 @@ A trace build is intentionally more expensive. Rebuild without the feature for
 performance measurements. The CLI reports truncation; a capped trace is not a
 complete hardware history. Do not run long private event-vector tests with bus
 tracing enabled unless the resulting memory use is intentional.
+
+## Delivery archive
+
+`tools/package.py --out FILE.zip` includes tracked source and `.git`, but not
+`target/`, `out/` or compiler archives. `--private` additionally includes the two
+supplied images and `private-observations/`. It requires a clean committed tree.
+`DELIVERY-MANIFEST.json` identifies the packaged commit and SHA-256 of every
+archived file. Git can legitimately refresh `.git/index` after an ordinary status
+command; check archived bytes, rather than later mutable Git cache metadata, for
+archive-integrity validation. The final evidence includes a clean extraction,
+new-target-directory rebuild, tests, fixtures and an actual private-firmware boot.

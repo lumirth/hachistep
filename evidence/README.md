@@ -18,3 +18,8 @@ and documentation without altering the tested Rust code.
 The private image viewer/WAV are outside Git in `private-observations/`.
 Source inputs remained unchanged. Reports may contain sandbox-local paths,
 which identify the recorded invocation rather than a required installation path.
+
+`extracted-package.json` and the `extracted-*` logs record verification of a
+cleanly unpacked source revision in a new Cargo target directory. The tested Rust
+source hashes remain identical in the final package. Git index metadata is mutable
+on ordinary Git inspection, so integrity verification reads the original ZIP.
