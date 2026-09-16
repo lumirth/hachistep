@@ -1,0 +1,15 @@
+PASS register-aliases
+PASS add-byte-flags
+PASS call-return-stack
+PASS execute-from-ram
+PASS serial-eeprom-page-wrap
+PASS infrared-transmit
+PASS infrared-receive
+PASS predecrement-alias-byte
+PASS predecrement-alias-word
+PASS predecrement-alias-long
+PASS timer-w-gpio-capture
+PASS comparator-read-armed-wake
+PASS aec-external-overflow
+PASS aec-gate-interrupt
+PASS nmi-masked-sleep

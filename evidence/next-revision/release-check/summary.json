@@ -1,0 +1,177 @@
+{
+  "schema": 1,
+  "source": {
+    "commit": "155182c347c3167f1a56acc1cfab3b5dab3ecfd6",
+    "dirty": false,
+    "changes": []
+  },
+  "toolchain": {
+    "rustc": "rustc 1.97.0-dev (e638c6cfe 2026-07-15)",
+    "cargo": "cargo 1.97.0-dev (c980f4866 2026-06-30)",
+    "rustfmt": "rustfmt 1.9.0-dev (e638c6cfea 2026-07-15)",
+    "clippy-driver": "clippy 0.1.97 (e638c6cfea 2026-07-15)"
+  },
+  "steps": [
+    {
+      "name": "format",
+      "command": [
+        "/mnt/data/toolchain/bin/rustfmt",
+        "--check",
+        "--edition",
+        "2021",
+        "crates/hs-cli/src/digest.rs",
+        "crates/hs-cli/src/main.rs",
+        "crates/hs-cli/src/output.rs",
+        "crates/hs-cli/src/timeline.rs",
+        "crates/hs-cli/tests/safety.rs",
+        "crates/hs-core/examples/replay.rs",
+        "crates/hs-core/src/cpu/alu.rs",
+        "crates/hs-core/src/cpu/decode.rs",
+        "crates/hs-core/src/cpu/mod.rs",
+        "crates/hs-core/src/devices/bma150.rs",
+        "crates/hs-core/src/devices/m95512.rs",
+        "crates/hs-core/src/devices/mod.rs",
+        "crates/hs-core/src/devices/nt7508.rs",
+        "crates/hs-core/src/error.rs",
+        "crates/hs-core/src/lib.rs",
+        "crates/hs-core/src/machine.rs",
+        "crates/hs-core/src/mcu/adc.rs",
+        "crates/hs-core/src/mcu/aec.rs",
+        "crates/hs-core/src/mcu/clocks.rs",
+        "crates/hs-core/src/mcu/comparators.rs",
+        "crates/hs-core/src/mcu/control.rs",
+        "crates/hs-core/src/mcu/gpio.rs",
+        "crates/hs-core/src/mcu/mod.rs",
+        "crates/hs-core/src/mcu/rtc.rs",
+        "crates/hs-core/src/mcu/sci.rs",
+        "crates/hs-core/src/mcu/ssu.rs",
+        "crates/hs-core/src/mcu/timer_b1.rs",
+        "crates/hs-core/src/mcu/timer_w.rs",
+        "crates/hs-core/src/mcu/watchdog.rs",
+        "crates/hs-core/src/signals.rs",
+        "crates/hs-core/src/time.rs",
+        "crates/hs-core/tests/aec.rs",
+        "crates/hs-core/tests/allocation.rs",
+        "crates/hs-core/tests/clock_obligations.rs",
+        "crates/hs-core/tests/comparators.rs",
+        "crates/hs-core/tests/cpu_regressions.rs",
+        "crates/hs-core/tests/kernel.rs",
+        "crates/hs-core/tests/nmi.rs",
+        "crates/hs-core/tests/register_access.rs",
+        "crates/hs-core/tests/retail.rs",
+        "crates/hs-core/tests/timer_w_modes.rs"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.2139250100008212
+    },
+    {
+      "name": "tests",
+      "command": [
+        "/mnt/data/toolchain/bin/cargo",
+        "test",
+        "--workspace",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.4742543270003807
+    },
+    {
+      "name": "release-tests",
+      "command": [
+        "/mnt/data/toolchain/bin/cargo",
+        "test",
+        "--workspace",
+        "--release",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.6941157239998574
+    },
+    {
+      "name": "trace-tests",
+      "command": [
+        "/mnt/data/toolchain/bin/cargo",
+        "test",
+        "--workspace",
+        "--all-features",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.4431275379993167
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "/mnt/data/toolchain/bin/cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.06673953700010316
+    },
+    {
+      "name": "release-build",
+      "command": [
+        "/mnt/data/toolchain/bin/cargo",
+        "build",
+        "--workspace",
+        "--release",
+        "--locked",
+        "--offline"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.044113693999861425
+    },
+    {
+      "name": "python-tests",
+      "command": [
+        "/opt/pyvenv/bin/python3",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tools/tests",
+        "-v"
+      ],
+      "returncode": 0,
+      "wall_seconds": 2.105153016999793
+    },
+    {
+      "name": "fixture-build",
+      "command": [
+        "/opt/pyvenv/bin/python3",
+        "conformance/build.py",
+        "/mnt/data/hachistep-next/hachistep-starter/out/check-release-complete/fixtures"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.569617549999748
+    },
+    {
+      "name": "conformance",
+      "command": [
+        "/opt/pyvenv/bin/python3",
+        "conformance/run.py",
+        "--runner",
+        "/mnt/data/hachistep-next/hachistep-starter/target/release/hachistep",
+        "--fixtures",
+        "/mnt/data/hachistep-next/hachistep-starter/out/check-release-complete/fixtures",
+        "--report",
+        "/mnt/data/hachistep-next/hachistep-starter/out/check-release-complete/conformance.json"
+      ],
+      "returncode": 0,
+      "wall_seconds": 0.6442912239999714
+    }
+  ],
+  "hardware_captures": false,
+  "private_retail_test": "not run by this command"
+}

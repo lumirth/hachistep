@@ -68,8 +68,11 @@ menu workload's median simulation time fell from **1.037671 s to 0.883850 s**,
 not with the original starter or another emulator. All **43,812 product-event
 records**, semantic reports and exported bytes matched exactly in a separate
 history comparison. There is no universal fastest-emulator or energy claim.
-The final paired tool now performs that untimed history comparison before its
-untraced measurements; raw samples and equivalence results are retained.
+The final clean-source repetition used an automatic untimed history preflight:
+median **1.008205 s to 0.869282 s**, **13.78% less runtime**, again eight
+samples per binary with identical complete output history. Both repetitions and
+all raw samples are preserved; this is not a confidence bound or a cross-host
+prediction. Measured runs do not trace.
 
 ## Explicitly unfinished
 
