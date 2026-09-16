@@ -205,14 +205,18 @@ impl Mcu {
         a < 0xc000 || (RAM_START..=0xff7f).contains(&a)
     }
     pub fn native_word(a: u16) -> bool {
-        Self::is_memory(a) || matches!(a, 0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe | 0xffbc)
+        Self::is_memory(a) || matches!(a, 0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe | 0xff8c | 0xff8e | 0xffbc)
     }
-    pub fn access_states(a: u16, width: Width) -> u64 {
-        if Self::is_memory(a) || width == Width::Word || matches!(a,0xffb0..=0xffb3|0xffc0..=0xffff)
-        {
-            2
-        } else {
+    /// Duration of one *physical* access, in reference-clock states.
+    /// REJ09B0152-0300 §20.1 (pp.372–375): only SSU and the SCI core
+    /// registers below take three states. SPCR and IrCR take TWO states.
+    /// A logical word on an 8-bit bus is issued as two physical byte accesses
+    /// by Machine; this function must not collapse it to one two-state access.
+    pub fn access_states(a: u16, _width: Width) -> u64 {
+        if matches!(a, 0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb | 0xff98..=0xff9d | 0xffa6) {
             3
+        } else {
+            2
         }
     }
     pub fn read8(&mut self, a: u16) -> Result<u8, Error> {
