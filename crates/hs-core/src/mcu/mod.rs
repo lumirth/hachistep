@@ -120,6 +120,7 @@ impl Mcu {
         self.adc.set_gate(
             self.control.gate1 & 0x10 != 0 && (main || (sub && self.adc.uses_watch())),
             now,
+            &self.clocks,
         )?;
         Ok(())
     }
@@ -149,9 +150,9 @@ impl Mcu {
             self.timer_b1.deadline(&self.clocks)?,
             self.timer_w.deadline(&self.clocks)?,
             self.watchdog.deadline(&self.clocks)?,
-            self.ssu.deadline(),
+            self.ssu.deadline(&self.clocks)?,
             self.sci.deadline(),
-            self.adc.deadline(),
+            self.adc.deadline(&self.clocks)?,
         ]
         .into_iter()
         .flatten()
@@ -205,7 +206,11 @@ impl Mcu {
         a < 0xc000 || (RAM_START..=0xff7f).contains(&a)
     }
     pub fn native_word(a: u16) -> bool {
-        Self::is_memory(a) || matches!(a, 0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe | 0xff8c | 0xff8e | 0xffbc)
+        Self::is_memory(a)
+            || matches!(
+                a,
+                0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe | 0xff8c | 0xff8e | 0xffbc
+            )
     }
     /// Duration of one *physical* access, in reference-clock states.
     /// REJ09B0152-0300 §20.1 (pp.372–375): only SSU and the SCI core

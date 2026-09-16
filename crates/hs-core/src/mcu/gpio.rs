@@ -120,7 +120,9 @@ impl Gpio {
             0xffd6 => self.latch[1] = v & 7,
             0xffdb => self.latch[2] = v & 0x1c,
             0xffdc => self.latch[3] = v & 15,
-            0xffde => {} // Input-only port; writes have no electrical effect. 0xffe0 => self.pull[0] = v & 7, 0xffe1 => self.pull[1] = v & 7,
+            0xffde => {} // Input-only port; writes have no electrical effect.
+            0xffe0 => self.pull[0] = v & 7,
+            0xffe1 => self.pull[1] = v & 7,
             0xffe4 => self.direction[0] = v & 7,
             0xffe6 => self.direction[1] = v & 7,
             0xffeb => self.direction[2] = v & 0x1c,

@@ -7,7 +7,11 @@ use crate::{
     cpu::{alu::I, Action, Cpu, Registers, Width},
     devices::{bma150::Bma150, m95512::M95512, nt7508::Nt7508},
     error::Error,
-    mcu::{clocks::Frequencies, gpio::SerialLevels, Mcu},
+    mcu::{
+        clocks::{ClockWait, Frequencies, Tap},
+        gpio::SerialLevels,
+        Mcu,
+    },
     signals::{Drive, Event, Input, Output, Piezo, TimedInput},
     time::{Duration, Time, TimeError},
 };
@@ -50,7 +54,7 @@ pub struct Statistics {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Pending {
     action: Action,
-    due: Time,
+    wait: ClockWait,
     /// Word accesses to byte-wide SFRs retain their first completed lane.
     split: bool,
     lane: u8,
@@ -372,15 +376,18 @@ impl Machine {
         if reset {
             self.reset_mcu(true, out)?;
         }
-        if self.mcu.adc.deadline() == Some(self.now)
-            && self.mcu.adc.advance(self.now, self.analog_code())?
+        if self.mcu.adc.deadline(&self.mcu.clocks)? == Some(self.now)
+            && self
+                .mcu
+                .adc
+                .advance(self.now, self.analog_code(), &self.mcu.clocks)?
         {
             self.mcu.control.irr2 |= 0x40;
         }
         if self.mcu.sci.deadline() == Some(self.now) {
             self.mcu.sci.advance(self.now, &self.mcu.clocks, out)?;
         }
-        if self.mcu.ssu.deadline() == Some(self.now) {
+        if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
             let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;
             self.resolve_board(out)?;
             if let Some(edge) = edge {
@@ -472,6 +479,11 @@ impl Machine {
         self.resolve_board(out)?;
         self.refresh_deadline()
     }
+    fn pending_deadline(&self) -> Result<Option<Time>, Error> {
+        self.pending
+            .as_ref()
+            .map_or(Ok(None), |p| p.wait.deadline(&self.mcu.clocks))
+    }
     fn queue_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         if self.pending.is_some() || self.reset_asserted || !self.powered {
             return Ok(());
@@ -523,7 +535,12 @@ impl Machine {
                 Action::Idle(states) => {
                     self.pending = Some(Pending {
                         action,
-                        due: self.mcu.delay(self.now, u64::from(states))?,
+                        wait: ClockWait::after(
+                            self.now,
+                            u64::from(states),
+                            Tap::system(1),
+                            &self.mcu.clocks,
+                        )?,
                         split: false,
                         lane: 0,
                         high: 0,
@@ -540,9 +557,12 @@ impl Machine {
                     let physical_width = if split { Width::Byte } else { width };
                     self.pending = Some(Pending {
                         action,
-                        due: self
-                            .mcu
-                            .delay(self.now, Mcu::access_states(address, physical_width))?,
+                        wait: ClockWait::after(
+                            self.now,
+                            Mcu::access_states(address, physical_width),
+                            Tap::system(1),
+                            &self.mcu.clocks,
+                        )?,
                         split,
                         lane: 0,
                         high: 0,
@@ -618,9 +638,12 @@ impl Machine {
         if pending.split && pending.lane == 0 {
             pending.high = value as u8;
             pending.lane = 1;
-            pending.due = self
-                .mcu
-                .delay(self.now, Mcu::access_states(a.wrapping_add(1), Width::Byte))?;
+            pending.wait = ClockWait::after(
+                self.now,
+                Mcu::access_states(a.wrapping_add(1), Width::Byte),
+                Tap::system(1),
+                &self.mcu.clocks,
+            )?;
             self.pending = Some(pending);
         } else {
             let value = if pending.split {
@@ -669,13 +692,13 @@ impl Machine {
                 }
                 self.apply_batch(&inputs[start..consumed], out)?;
             }
-            if self.pending.is_some_and(|p| p.due == self.now) {
+            if self.pending_deadline()? == Some(self.now) {
                 self.complete_cpu(out)?;
             }
             self.queue_cpu(out)?;
             let next = [
                 Some(end),
-                self.pending.map(|p| p.due),
+                self.pending_deadline()?,
                 self.next_devices,
                 inputs.get(consumed).map(|i| i.at),
                 self.resume_after,

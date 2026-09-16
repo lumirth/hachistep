@@ -1,10 +1,7 @@
 //! ADC sample aperture and completion are distinct appointments. The nominal
 //! transfer function is supplied by the board, never by retail save data.
-use super::clocks::{Clocks, Tap};
-use crate::{
-    error::Error,
-    time::{Duration, Time, TimeError},
-};
+use super::clocks::{ClockWait, Clocks, Tap};
+use crate::{error::Error, time::Time};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Sample,
@@ -16,11 +13,10 @@ pub struct Adc {
     control: u8,
     result: u16,
     sample: u16,
-    next: Option<Time>,
+    next: Option<ClockWait>,
     phase: Phase,
-    finish: Option<Time>,
+    finish: Option<ClockWait>,
     gate: bool,
-    paused: Option<(Duration, Option<Duration>)>,
 }
 impl Default for Adc {
     fn default() -> Self {
@@ -33,7 +29,6 @@ impl Default for Adc {
             phase: Phase::Sample,
             finish: None,
             gate: false,
-            paused: None,
         }
     }
 }
@@ -51,12 +46,10 @@ impl Adc {
     pub fn channel(&self) -> u8 {
         self.mode & 15
     }
-    pub fn deadline(&self) -> Option<Time> {
-        if self.gate {
-            self.next
-        } else {
-            None
-        }
+    pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
+        self.next
+            .as_ref()
+            .map_or(Ok(None), |wait| wait.deadline(clocks))
     }
     pub fn uses_watch(&self) -> bool {
         self.mode & 0x30 == 0x30
@@ -79,15 +72,12 @@ impl Adc {
         self.phase = Phase::Sample;
         // Aperture at four reference edges is an explicit model witness; the
         // datasheet bounds total conversion, not this subphase placement.
-        self.next = Some(c.after(now, 4, tap)?);
-        self.finish = Some(c.after(now, cycles, tap)?);
+        self.next = Some(ClockWait::after(now, 4, tap, c)?);
+        self.finish = Some(ClockWait::after(now, cycles, tap, c)?);
         if !self.gate {
-            self.paused = Some((
-                self.next.unwrap().duration_since(now).unwrap(),
-                self.finish.and_then(|t| t.duration_since(now)),
-            ));
-            self.next = None;
-            self.finish = None;
+            for wait in [&mut self.next, &mut self.finish].into_iter().flatten() {
+                wait.pause(now, c)?;
+            }
         }
         Ok(())
     }
@@ -114,37 +104,29 @@ impl Adc {
             if v & 0x80 == 0 {
                 self.next = None;
                 self.finish = None;
-                self.paused = None;
             } else if !was {
                 self.start(now, c)?;
             }
         }
         Ok(())
     }
-    pub fn set_gate(&mut self, gate: bool, now: Time) -> Result<(), Error> {
+    pub fn set_gate(&mut self, gate: bool, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.gate == gate {
             return Ok(());
         }
-        if !gate {
-            if let Some(t) = self.next.take() {
-                self.paused = Some((
-                    t.duration_since(now).ok_or(TimeError::Reversed)?,
-                    self.finish.take().and_then(|t| t.duration_since(now)),
-                ));
+        for wait in [&mut self.next, &mut self.finish].into_iter().flatten() {
+            if gate {
+                wait.resume(now, clocks)?;
+            } else {
+                wait.pause(now, clocks)?;
             }
-        } else if let Some((a, b)) = self.paused.take() {
-            self.next = Some(now.checked_add(a).ok_or(TimeError::Overflow)?);
-            self.finish = match b {
-                Some(b) => Some(now.checked_add(b).ok_or(TimeError::Overflow)?),
-                None => None,
-            };
         }
         self.gate = gate;
         Ok(())
     }
     /// Return true only on result-register commit/IRRAD assertion.
-    pub fn advance(&mut self, now: Time, analog_code: u16) -> Result<bool, Error> {
-        if self.deadline() != Some(now) {
+    pub fn advance(&mut self, now: Time, analog_code: u16, clocks: &Clocks) -> Result<bool, Error> {
+        if self.deadline(clocks)? != Some(now) {
             return Err(Error::Internal("ADC event at wrong timestamp"));
         }
         match self.phase {
@@ -170,11 +152,15 @@ mod tests {
     fn changing_input_after_aperture_does_not_change_held_sample() {
         let c = Clocks::new(Time::ZERO, Default::default()).unwrap();
         let mut a = Adc::default();
-        a.set_gate(true, Time::ZERO).unwrap();
+        a.set_gate(true, Time::ZERO, &c).unwrap();
         a.write(0xffbe, 0x27, Time::ZERO, &c).unwrap();
         a.write(0xffbf, 0xbf, Time::ZERO, &c).unwrap();
-        assert!(!a.advance(a.deadline().unwrap(), 500).unwrap());
-        assert!(a.advance(a.deadline().unwrap(), 900).unwrap());
+        assert!(!a
+            .advance(a.deadline(&c).unwrap().unwrap(), 500, &c)
+            .unwrap());
+        assert!(a
+            .advance(a.deadline(&c).unwrap().unwrap(), 900, &c)
+            .unwrap());
         assert_eq!(a.result(), 500 << 6);
     }
 }

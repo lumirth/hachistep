@@ -59,6 +59,7 @@ pub struct Clocks {
     on_chip: Clock,
     system_numerator: u64,
     system_denominator: u64,
+    revision: u64,
 }
 impl Clocks {
     pub fn new(now: Time, frequencies: Frequencies) -> Result<Self, Error> {
@@ -69,6 +70,7 @@ impl Clocks {
             on_chip: Clock::new(now, frequencies.on_chip_hz, 1)?,
             system_numerator: frequencies.main_hz,
             system_denominator: 1,
+            revision: 0,
         })
     }
     fn source(&self, source: Source) -> &Clock {
@@ -110,13 +112,95 @@ impl Clocks {
         let ordinal = self.ticks(now, Tap::system(1));
         let mut c = Clock::new(now, numerator, denominator)?;
         c.ordinal = ordinal;
+        let revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
         self.system = c;
+        self.revision = revision;
         self.system_numerator = numerator;
         self.system_denominator = denominator;
         Ok(())
     }
     pub fn system_rate(&self) -> (u64, u64) {
         (self.system_numerator, self.system_denominator)
+    }
+}
+
+/// An obligation to consume source/divider edges, not a fixed wall-time delay.
+/// The timestamp is a disposable cache for the current clock revision. A clock
+/// switch changes the projection, not the outstanding edge target. Downstream
+/// gating retains the number of unconsumed edges and rejoins the shared divider
+/// phase on resume. It does not replay the old wall-time remainder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockWait {
+    tap: Tap,
+    state: WaitState,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WaitState {
+    Running {
+        target: u64,
+        cached: Time,
+        revision: u64,
+    },
+    Paused {
+        remaining: u64,
+    },
+    Ready(Time),
+}
+impl ClockWait {
+    pub fn after(now: Time, edges: u64, tap: Tap, clocks: &Clocks) -> Result<Self, Error> {
+        if tap.divide == 0 {
+            return Err(Error::BadInput("zero clock divider"));
+        }
+        let state = if edges == 0 {
+            WaitState::Ready(now)
+        } else {
+            let target = clocks
+                .ticks(now, tap)
+                .checked_add(edges)
+                .ok_or(TimeError::Overflow)?;
+            WaitState::Running {
+                target,
+                cached: clocks.edge(target, tap)?,
+                revision: clocks.revision,
+            }
+        };
+        Ok(Self { tap, state })
+    }
+    pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
+        match self.state {
+            WaitState::Running {
+                target,
+                cached,
+                revision,
+            } => Ok(Some(if revision == clocks.revision {
+                cached
+            } else {
+                clocks.edge(target, self.tap)?
+            })),
+            WaitState::Paused { .. } => Ok(None),
+            WaitState::Ready(at) => Ok(Some(at)),
+        }
+    }
+    pub fn pause(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
+        if self.deadline(clocks)?.is_some_and(|at| at < now) {
+            return Err(TimeError::Reversed.into());
+        }
+        let remaining = match self.state {
+            WaitState::Running { target, .. } => target
+                .checked_sub(clocks.ticks(now, self.tap))
+                .ok_or(TimeError::Reversed)?,
+            WaitState::Ready(at) if at >= now => 0,
+            WaitState::Ready(_) => return Err(TimeError::Reversed.into()),
+            WaitState::Paused { .. } => return Ok(()),
+        };
+        self.state = WaitState::Paused { remaining };
+        Ok(())
+    }
+    pub fn resume(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
+        if let WaitState::Paused { remaining } = self.state {
+            *self = Self::after(now, remaining, self.tap, clocks)?;
+        }
+        Ok(())
     }
 }
 

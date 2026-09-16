@@ -1,10 +1,7 @@
 //! SSU holding registers and one edge-level shifter. The board handles every
 //! emitted edge; no completed-byte route into an attached device exists.
-use super::clocks::{Clocks, Tap};
-use crate::{
-    error::Error,
-    time::{Duration, Time},
-};
+use super::clocks::{ClockWait, Clocks, Tap};
+use crate::{error::Error, time::Time};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Load,
@@ -34,10 +31,9 @@ pub struct Ssu {
     sampled: u8,
     clock_high: bool,
     mosi: bool,
-    next: Option<Time>,
+    next: Option<ClockWait>,
     phase: Phase,
     gate: bool,
-    paused: Option<Duration>,
     pub transmitted: u64,
     pub received: u64,
 }
@@ -63,19 +59,16 @@ impl Default for Ssu {
             next: None,
             phase: Phase::Load,
             gate: false,
-            paused: None,
             transmitted: 0,
             received: 0,
         }
     }
 }
 impl Ssu {
-    pub fn deadline(&self) -> Option<Time> {
-        if self.gate {
-            self.next
-        } else {
-            None
-        }
+    pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
+        self.next
+            .as_ref()
+            .map_or(Ok(None), |wait| wait.deadline(clocks))
     }
     pub fn pins(&self) -> Option<(bool, bool)> {
         (self.gate && self.high & 0x84 == 0x84 && self.enable & 0xc0 != 0)
@@ -129,7 +122,7 @@ impl Ssu {
                 });
             }
             self.phase = Phase::Load;
-            self.next = Some(clocks.after(now, 1, Tap::system(1))?);
+            self.next = Some(ClockWait::after(now, 1, Tap::system(1), clocks)?);
         }
         Ok(())
     }
@@ -137,14 +130,12 @@ impl Ssu {
         if self.gate == gate {
             return Ok(());
         }
-        if !gate {
-            self.paused = self.next.and_then(|t| t.duration_since(now));
-            self.next = None;
-        } else if let Some(left) = self.paused.take() {
-            self.next = Some(
-                now.checked_add(left)
-                    .ok_or(crate::time::TimeError::Overflow)?,
-            );
+        if let Some(wait) = &mut self.next {
+            if gate {
+                wait.resume(now, clocks)?;
+            } else {
+                wait.pause(now, clocks)?;
+            }
         }
         self.gate = gate;
         self.schedule_load(now, clocks)
@@ -194,7 +185,6 @@ impl Ssu {
                 if value & 0x20 != 0 {
                     self.holding = None;
                     self.next = None;
-                    self.paused = None;
                     self.edges = 0;
                     self.sampled = 0;
                     self.status = 4;
@@ -224,7 +214,6 @@ impl Ssu {
                 if self.enable & 0x80 == 0 {
                     self.holding = None;
                     self.next = None;
-                    self.paused = None;
                     self.status |= 4;
                 }
                 if self.enable & 0x40 == 0 {
@@ -263,7 +252,7 @@ impl Ssu {
     /// If sampling is requested, the caller resolves attached-device drivers
     /// and calls `sample` at this same timestamp.
     pub fn advance(&mut self, now: Time, clocks: &Clocks) -> Result<Option<Edge>, Error> {
-        if self.deadline() != Some(now) {
+        if self.deadline(clocks)? != Some(now) {
             return Err(Error::Internal("SSU event at wrong timestamp"));
         }
         match self.phase {
@@ -284,7 +273,7 @@ impl Ssu {
                     self.shifted = 1;
                 }
                 self.phase = Phase::Edge;
-                self.next = Some(clocks.after(now, 1, self.half_period())?);
+                self.next = Some(ClockWait::after(now, 1, self.half_period(), clocks)?);
                 Ok(None)
             }
             Phase::Edge => {
@@ -297,7 +286,7 @@ impl Ssu {
                 }
                 self.edges += 1;
                 self.next = if self.edges < 16 {
-                    Some(clocks.after(now, 1, self.half_period())?)
+                    Some(ClockWait::after(now, 1, self.half_period(), clocks)?)
                 } else {
                     None
                 };
@@ -361,10 +350,10 @@ mod tests {
             s.write(a, v, Time::ZERO, &c).unwrap();
         }
         assert_eq!(s.status & 12, 0);
-        let t = s.deadline().unwrap();
+        let t = s.deadline(&c).unwrap().unwrap();
         assert!(s.advance(t, &c).unwrap().is_none());
         assert_eq!(s.status & 12, 4);
-        while let Some(t) = s.deadline() {
+        while let Some(t) = s.deadline(&c).unwrap() {
             if let Some(edge) = s.advance(t, &c).unwrap() {
                 if edge.sample {
                     s.sample(edge.mosi);
