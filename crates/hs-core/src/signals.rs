@@ -133,6 +133,21 @@ impl AnalogPin {
         self as usize
     }
 }
+/// Package nodes exposed for electrical fixtures, not additional product buttons.
+/// A level is used only while the selected pin function is an input; release
+/// restores the board pull. Output contention remains outside this fixture API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DigitalPin {
+    P10,
+    P11,
+    P12,
+}
+impl DigitalPin {
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input {
     Buttons(Buttons),
@@ -140,6 +155,10 @@ pub enum Input {
     SupplyMillivolts(u16),
     InfraredLevel(bool),
     ResetPin(bool),
+    DigitalPin {
+        pin: DigitalPin,
+        level: Option<bool>,
+    },
     AnalogPin {
         pin: AnalogPin,
         millivolts: Option<u16>,

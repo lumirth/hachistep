@@ -297,6 +297,9 @@ impl Machine {
         Ok(())
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        self.mcu
+            .gpio
+            .set_aec_output(self.mcu.aec.pwm_enabled(), self.mcu.aec.pwm_output());
         let pins = self.mcu.ssu.pins();
         let timer = self.mcu.timer_w.outputs() << 1;
         let timer_mask = self.mcu.timer_w.drives() << 1;
@@ -357,6 +360,10 @@ impl Machine {
         self.mcu
             .timer_w
             .input_pins(self.mcu.gpio.timer_inputs(), self.now, &self.mcu.clocks)?;
+        self.mcu
+            .aec
+            .input_pins(self.mcu.gpio.aec_inputs(), self.now, &self.mcu.clocks)?;
+        self.mcu.collect_aec_requests();
         Ok(())
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
@@ -457,6 +464,7 @@ impl Machine {
             Input::InfraredLevel(_) => 3,
             Input::ResetPin(_) => 4,
             Input::AnalogPin { pin, .. } => 5 + pin.index() as u8,
+            Input::DigitalPin { pin, .. } => 12 + pin.index() as u8,
         }
     }
     fn validate_inputs(&self, end: Time, inputs: &[TimedInput]) -> Result<(), Error> {
@@ -512,6 +520,7 @@ impl Machine {
                 Input::InfraredLevel(v) => ir = Some(v),
                 Input::ResetPin(high) => reset = Some(!high),
                 Input::AnalogPin { pin, millivolts } => self.analog_pins[pin.index()] = millivolts,
+                Input::DigitalPin { pin, level } => self.mcu.gpio.set_digital_level(pin, level),
             }
         }
         self.mcu.gpio.set_analog_levels(

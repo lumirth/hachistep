@@ -1,4 +1,4 @@
-use hs_core::signals::AnalogPin;
+use hs_core::signals::{AnalogPin, DigitalPin};
 use hs_core::{Acceleration, Buttons, Input, Time, TimedInput};
 use std::error::Error;
 
@@ -48,6 +48,20 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
             ("supply", 3) => (Input::SupplyMillivolts(p[2].parse()?), 2),
             ("ir", 3) => (Input::InfraredLevel(bit(p[2])?), 3),
             ("reset", 3) => (Input::ResetPin(bit(p[2])?), 4),
+            ("digital", 4) => {
+                let pin = match p[2] {
+                    "p10" => DigitalPin::P10,
+                    "p11" => DigitalPin::P11,
+                    "p12" => DigitalPin::P12,
+                    _ => return Err(fail("unknown digital fixture pin").into()),
+                };
+                let level = if p[3] == "release" {
+                    None
+                } else {
+                    Some(bit(p[3])?)
+                };
+                (Input::DigitalPin { pin, level }, 12 + pin.index())
+            }
             ("analog", 4) => {
                 let pin = match p[2] {
                     "pb0" => AnalogPin::Pb0,
@@ -107,5 +121,13 @@ mod tests {
         );
         assert!(parse("0,analog,pb6,1000").is_err());
         assert!(parse("0,analog,pb4,1200\n0,analog,pb4,1000").is_err());
+        assert_eq!(
+            parse("0,digital,p10,1\n0,digital,p11,0\n0,digital,p12,release")
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(parse("0,digital,p13,1").is_err());
+        assert!(parse("0,digital,p10,0\n0,digital,p10,1").is_err());
     }
 }

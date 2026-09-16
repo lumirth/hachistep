@@ -1,6 +1,9 @@
 //! Package latches and the fixed board's digital connections. Pin-function
 //! selection is kept separate from the output latch and resolved input level.
-use crate::{error::Error, signals::Buttons};
+use crate::{
+    error::Error,
+    signals::{Buttons, DigitalPin},
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Gpio {
@@ -13,6 +16,9 @@ pub struct Gpio {
     open_drain9: u8,
     buttons: Buttons,
     analog_levels: [Option<bool>; 7],
+    digital_levels: [Option<bool>; 3],
+    aec_pwm: Option<bool>,
+    aec_pwm_enabled: bool,
     pub levels: [u8; 5],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +46,20 @@ impl Gpio {
     pub fn set_buttons(&mut self, buttons: Buttons) {
         self.buttons = buttons;
     }
+    pub fn set_digital_level(&mut self, pin: DigitalPin, level: Option<bool>) {
+        self.digital_levels[pin.index()] = level;
+    }
+    pub fn set_aec_output(&mut self, enabled: bool, level: Option<bool>) {
+        self.aec_pwm_enabled = enabled;
+        self.aec_pwm = level;
+    }
+    pub fn aec_inputs(&self) -> [Option<bool>; 3] {
+        [
+            (self.pmr[0] & 7 == 1).then_some(self.levels[0] & 1 != 0),
+            (self.pmr[0] & 0x18 == 8 && self.pfcr & 0x0c != 8).then_some(self.levels[0] & 2 != 0),
+            (self.pmr[0] & 0x20 != 0 && !self.aec_pwm_enabled).then_some(self.levels[0] & 4 != 0),
+        ]
+    }
     pub fn set_analog_levels(&mut self, levels: [Option<bool>; 7]) {
         self.analog_levels = levels;
     }
@@ -54,9 +74,11 @@ impl Gpio {
     pub fn reset(&mut self) {
         let buttons = self.buttons;
         let analog_levels = self.analog_levels;
+        let digital_levels = self.digital_levels;
         *self = Self::default();
         self.buttons = buttons;
         self.analog_levels = analog_levels;
+        self.digital_levels = digital_levels;
     }
     pub fn handles(a: u16) -> bool {
         matches!(
@@ -181,8 +203,28 @@ impl Gpio {
         if self.pmr[0] & 7 == 0 && timer_mask & 2 != 0 {
             self.levels[0] = (self.levels[0] & !1) | ((timer_levels >> 1) & 1);
         }
-        if self.pmr[0] & 0x18 != 0 && self.pfcr & 0x0c != 8 {
-            self.levels[0] = (self.levels[0] & !2) | (self.pull[0] & 2);
+        // P1 alternate input functions override PCR direction. GPIO input
+        // fixtures also use this path; they cannot overwrite an active output.
+        for i in 0..3 {
+            let alternate = match i {
+                0 => self.pmr[0] & 7 == 1,
+                1 => self.pmr[0] & 0x18 != 0 || self.pfcr & 0x0c == 8,
+                _ => self.pmr[0] & 0x20 != 0,
+            };
+            let timer_output = i == 0 && self.pmr[0] & 7 == 0 && timer_mask & 2 != 0;
+            if alternate || (!timer_output && self.direction[0] & (1 << i) == 0) {
+                let pull = if alternate {
+                    self.pull[0] & (1 << i) != 0
+                } else {
+                    self.levels[0] & (1 << i) != 0
+                };
+                let high = if i == 2 && alternate && self.aec_pwm_enabled {
+                    self.aec_pwm.unwrap_or(pull)
+                } else {
+                    self.digital_levels[i].unwrap_or(pull)
+                };
+                self.levels[0] = (self.levels[0] & !(1 << i)) | (u8::from(high) << i);
+            }
         }
         if let Some((clock, mosi)) = serial {
             if self.pfcr & 0x10 == 0 {

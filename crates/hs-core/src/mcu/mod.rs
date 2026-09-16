@@ -1,4 +1,5 @@
 pub mod adc;
+pub mod aec;
 pub mod clocks;
 pub mod comparators;
 pub mod control;
@@ -12,6 +13,7 @@ pub mod watchdog;
 
 use crate::{cpu::Width, error::Error, signals::Output, time::Time};
 use adc::Adc;
+use aec::Aec;
 use clocks::{Clocks, Frequencies, Tap};
 use comparators::Comparators;
 use control::{Control, Mode};
@@ -40,6 +42,7 @@ pub struct Mcu {
     pub timer_w: TimerW,
     pub watchdog: Watchdog,
     pub adc: Adc,
+    pub aec: Aec,
     pub comparators: Comparators,
 }
 impl Mcu {
@@ -69,6 +72,7 @@ impl Mcu {
             timer_w: TimerW::default(),
             watchdog: Watchdog::default(),
             adc: Adc::default(),
+            aec: Aec::default(),
             comparators: Comparators::default(),
         };
         m.apply_gates(Time::ZERO, &mut ())?;
@@ -87,6 +91,8 @@ impl Mcu {
     /// flag requests an MCU reset; attached device owners are not reconstructed.
     pub fn sync(&mut self, now: Time) -> Result<bool, Error> {
         self.comparators.sync(now)?;
+        self.aec.sync(now, &self.clocks)?;
+        self.collect_aec_requests();
         self.rtc.sync(now, &self.clocks)?;
         if self.timer_b1.sync(now, &self.clocks) {
             self.control.irr2 |= 4;
@@ -94,9 +100,38 @@ impl Mcu {
         self.timer_w.sync(now, &self.clocks)?;
         Ok(self.watchdog.sync(now, &self.clocks))
     }
+    pub fn collect_aec_requests(&mut self) {
+        let requests = self.aec.take_requests();
+        if requests & 1 != 0 {
+            self.control.irr2 |= 1;
+        }
+        if requests & 2 != 0 {
+            self.control.irr1 |= 4;
+        }
+    }
+    fn aec_power(&mut self, now: Time) -> Result<(), Error> {
+        let pad = self.control.mode != Mode::Standby
+            && self.control.stabilizing_from != Some(Mode::Standby);
+        let pwm = if self.aec.pwm_uses_watch() {
+            pad
+        } else {
+            self.control.main_running()
+        };
+        self.aec.set_power(
+            self.control.gate2 & 8 != 0,
+            self.control.main_running(),
+            pwm,
+            pad,
+            now,
+            &self.clocks,
+        )?;
+        self.collect_aec_requests();
+        Ok(())
+    }
     pub fn apply_gates(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
         self.comparators
             .set_gate(self.control.gate2 & 2 != 0, now)?;
+        self.aec_power(now)?;
         let standby = self.control.mode == Mode::Standby;
         let main = self.control.main_running();
         let sub = self.control.sub_running();
@@ -150,6 +185,7 @@ impl Mcu {
         self.timer_b1 = TimerB1::default();
         self.timer_w = TimerW::default();
         self.adc = Adc::default();
+        self.aec = Aec::default();
         self.comparators.reset(now);
         self.watchdog.reset(watchdog, now, &self.clocks);
         self.apply_gates(now, out)
@@ -164,6 +200,7 @@ impl Mcu {
             self.sci.deadline(),
             self.adc.deadline(&self.clocks)?,
             self.comparators.deadline(),
+            self.aec.deadline(&self.clocks)?,
         ]
         .into_iter()
         .flatten()
@@ -263,6 +300,9 @@ impl Mcu {
         if Sci::handles(a) {
             return Ok(self.sci.read(a));
         }
+        if Aec::handles(a) {
+            return Ok(self.aec.read(a));
+        }
         match a {
             0xf067..=0xf06d | 0xf06f => Ok(self.rtc.read(a)),
             0xf0dc..=0xf0de => Ok(self.comparators.read(a)),
@@ -291,6 +331,7 @@ impl Mcu {
         match a {
             0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe => self.timer_w.read_word(a, &self.clocks),
             0xffbc => Ok(self.adc.result()),
+            0xff8c | 0xff8e => self.aec.read_word(a),
             _ => Err(self.unimplemented(a, false, 2)),
         }
     }
@@ -323,6 +364,10 @@ impl Mcu {
         if Sci::handles(a) {
             return self.sci.write(a, v, now, &self.clocks, out);
         }
+        if Aec::handles(a) {
+            self.aec.write(a, v, now, &self.clocks)?;
+            return self.aec_power(now);
+        }
         match a {
             0xf067..=0xf06d | 0xf06f => self.rtc.write(a, v, now, &self.clocks),
             0xf0dc..=0xf0de => self.comparators.write(a, v, now),
@@ -348,6 +393,11 @@ impl Mcu {
                 self.timer_w.write_word(a, v, now, &self.clocks)
             }
             0xffbc => Ok(()),
+            0xff8c | 0xff8e => {
+                self.aec.write_word(a, v, now, &self.clocks)?;
+                self.collect_aec_requests();
+                Ok(())
+            }
             _ => Err(self.unimplemented(a, true, 2)),
         }
     }
@@ -397,6 +447,9 @@ impl Mcu {
         }
         if Sci::handles(a) {
             return Ok(self.sci.peek(a));
+        }
+        if Aec::handles(a) || (0xff8c..=0xff8f).contains(&a) {
+            return Ok(self.aec.peek(a));
         }
         match a {
             0xf067..=0xf06d | 0xf06f => Ok(self.rtc.read(a)),

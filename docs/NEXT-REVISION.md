@@ -71,3 +71,30 @@ completion. Timer output A is routed to P10; B/C/D use P82/83/84. A full guest
 fixture drives a physical GPIO edge, captures a stopped counter, takes vector
 35, writes the captured word to RAM, clears the flag and returns. Full firmware
 partition/snapshot replay still passes.
+
+## Asynchronous event counter
+
+AEC is no longer an unsupported address region. One counter recurrence handles
+external edges and analytical internal counts, with independent eight-bit and
+cascaded sixteen-bit operation. It distinguishes read-qualified OVH/OVL flags
+from controller requests: clearing IRR does not clear overflow status, and a
+later overflow reasserts IRR. The actual IRQAEC/PWM signal gates both counters.
+Fig.13.5's gate-return edge is retained rather than treating the gate as a
+permission check at each incoming event. PWM uses Ndr+1 low clocks and Ncm+1
+period clocks; Ndr>=Ncm stays low. Its clock, counting and output-driver power
+domains are separate (§13.5). Real guest fixtures exercise vectors 18 and 32,
+external pulses, sleep/wake, and snapshot/partition replay.
+
+Digital fixtures target the actual P10/P11/P12 nodes. Alternate AEC/FTCI/IRQ
+input selection overrides GPIO output direction. The AEC PWM output resolves
+physical P12, including its existing EEPROM-select connection; it does not
+bypass serial parsing. The fixture API never overrides an actively driven
+output. Released input levels use the board's documented model pull policy.
+
+The manual does not fully specify prescaler polarity or simultaneous gate/clock
+aperture. Clock-before-gate at one timestamp is a reproducible witness within
+the stated one-count ambiguity, not silicon certification. External IRQ
+synchronization is still at event/reference boundaries, not a characterized
+subcycle model. Module standby currently retains AEC state under §5.4's clock-
+gate interpretation; §13.1's 'initial value' wording is insufficient to claim
+a measured reset-on-gate rule. This remaining question is recorded explicitly.
