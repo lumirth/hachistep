@@ -40,5 +40,19 @@
     "firmware": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607",
     "eeprom": "9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008"
   },
-  "hardware_captures": false
+  "hardware_captures": false,
+  "clean_extraction": {
+    "commit": "29f27d330735fffabe44727c97e67b6a9803a101",
+    "all_manifest_files_verified": 840,
+    "git_clean": true,
+    "git_fsck": true,
+    "offline_check_stages": 9,
+    "private_regression_cases": [
+      "home",
+      "menu"
+    ],
+    "product_history_records_compared": 43812,
+    "complete_event_and_typed_state_private_replay": true,
+    "hardware_captures": false
+  }
 }

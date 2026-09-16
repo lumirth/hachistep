@@ -1,0 +1,22 @@
+test_equal_endpoints_do_not_hide_a_different_history (test_comparison.Comparison.test_equal_endpoints_do_not_hide_a_different_history) ... ok
+test_reports_and_exported_bytes_both_matter (test_comparison.Comparison.test_reports_and_exported_bytes_both_matter) ... ok
+test_truncated_histories_cannot_pass (test_comparison.Comparison.test_truncated_histories_cannot_pass) ... ok
+test_all_firmware_timeline_and_eeprom_inputs_are_hashed (test_conformance.Conformance.test_all_firmware_timeline_and_eeprom_inputs_are_hashed) ... ok
+test_fixture_paths_cannot_escape_the_selected_corpus (test_conformance.Conformance.test_fixture_paths_cannot_escape_the_selected_corpus) ... ok
+test_new_interrupt_expectations_are_actually_compared (test_conformance.Conformance.test_new_interrupt_expectations_are_actually_compared) ... ok
+test_rejects_misspelled_and_out_of_range_expectations (test_conformance.Conformance.test_rejects_misspelled_and_out_of_range_expectations) ... ok
+test_unknown_or_unmeasured_expectations_cannot_be_labeled_hardware (test_conformance.Conformance.test_unknown_or_unmeasured_expectations_cannot_be_labeled_hardware) ... ok
+test_changed_scenario_and_duration_cannot_use_the_same_expectation (test_retail_expectations.RetailExpectations.test_changed_scenario_and_duration_cannot_use_the_same_expectation) ... ok
+test_current_baseline_is_complete_and_not_hardware_evidence (test_retail_expectations.RetailExpectations.test_current_baseline_is_complete_and_not_hardware_evidence) ... ok
+test_frame_and_timing_changes_are_not_hidden_by_successful_execution (test_retail_expectations.RetailExpectations.test_frame_and_timing_changes_are_not_hidden_by_successful_execution) ... ok
+test_missing_semantic_fields_rejected (test_retail_expectations.RetailExpectations.test_missing_semantic_fields_rejected) ... ok
+test_audio_integrates_transitions_instead_of_aliasing_edge_samples (test_tools.HostTools.test_audio_integrates_transitions_instead_of_aliasing_edge_samples) ... ok
+test_audio_refuses_truncation (test_tools.HostTools.test_audio_refuses_truncation) ... ok
+test_bad_input_leaves_no_destination (test_tools.HostTools.test_bad_input_leaves_no_destination) ... ok
+test_import_only_expected_member_and_never_overwrites (test_tools.HostTools.test_import_only_expected_member_and_never_overwrites) ... ok
+test_pgm_preserves_whitespace_valued_pixels (test_tools.HostTools.test_pgm_preserves_whitespace_valued_pixels) ... ok
+
+----------------------------------------------------------------------
+Ran 17 tests in 1.363s
+
+OK
