@@ -84,3 +84,12 @@ def source_identity() -> dict:
         return {'commit': revision, 'dirty': bool(changes), 'changes': changes.splitlines()}
     except (OSError, subprocess.SubprocessError):
         return {'commit': None, 'dirty': None}
+
+
+def release_executable() -> Path:
+    """Respect Cargo target_directory, including CARGO_TARGET_DIR/config overrides."""
+    result = subprocess.check_output([binary('cargo'), 'metadata', '--format-version', '1',
+                                      '--no-deps', '--locked', '--offline'],
+                                     cwd=ROOT, env=environment(), text=True, timeout=30)
+    target = Path(json.loads(result)['target_directory'])
+    return target / 'release' / ('hachistep.exe' if os.name == 'nt' else 'hachistep')

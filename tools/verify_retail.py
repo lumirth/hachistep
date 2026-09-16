@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from _support import ROOT, binary, create_directory, digest, environment, run, versions, write_json, source_identity
+from _support import ROOT, binary, create_directory, digest, environment, run, versions, write_json, source_identity, release_executable
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
@@ -24,7 +24,7 @@ def main() -> None:
     records = []
     records.append(run([cargo, 'test', '-p', 'hs-core', '--release', '--test', 'retail', '--locked', '--offline', '--', '--ignored', '--nocapture'], out, 'partition-and-snapshot', env))
     records.append(run([cargo, 'build', '-p', 'hs-cli', '--release', '--locked', '--offline'], out, 'build'))
-    exe = ROOT / 'target/release' / ('hachistep.exe' if sys.platform == 'win32' else 'hachistep')
+    exe = release_executable()
     cases = [('home', 10_000, None), ('menu', 6_500, ROOT / 'conformance/scenarios/menu.csv')]
     if not a.quick:
         cases += [('walking', 61_000, ROOT / 'conformance/scenarios/walking.csv'), ('idle', 120_000, None)]

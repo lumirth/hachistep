@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from _support import ROOT, binary, create_directory, run, versions, write_json, source_identity
+from _support import ROOT, binary, create_directory, run, versions, write_json, source_identity, release_executable
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
@@ -26,7 +26,7 @@ def main() -> None:
     ]
     for name, command in steps:
         records.append(run(command, out, name))
-    exe = ROOT / 'target/release' / ('hachistep.exe' if sys.platform == 'win32' else 'hachistep')
+    exe = release_executable()
     records.append(run([sys.executable, 'conformance/run.py', '--runner', str(exe),
                         '--fixtures', str(out / 'fixtures'), '--report', str(out / 'conformance.json')], out, 'conformance'))
     write_json(out / 'summary.json', {'schema': 1, 'source': source_identity(), 'toolchain': versions(), 'steps': records,
