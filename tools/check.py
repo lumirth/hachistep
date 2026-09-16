@@ -17,6 +17,7 @@ def main() -> None:
     steps = [
         ('format', [rustfmt, '--check', '--edition', '2021', *sources]),
         ('tests', [cargo, 'test', '--workspace', '--locked', '--offline']),
+        ('release-tests', [cargo, 'test', '--workspace', '--release', '--locked', '--offline']),
         ('trace-tests', [cargo, 'test', '--workspace', '--all-features', '--locked', '--offline']),
         ('clippy', [cargo, 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--offline', '--', '-D', 'warnings']),
         ('release-build', [cargo, 'build', '--workspace', '--release', '--locked', '--offline']),
