@@ -259,3 +259,108 @@ fn displacement24_encodings_reject_the_fixed_selector_bit_and_wrong_size_prefix(
         }
     }
 }
+
+#[test]
+fn eepmov_word_accepts_nmi_only_between_complete_byte_transfers() {
+    let mut b = Bus::new(&[0x7bd4, 0x598f, 0]);
+    b.bytes[0xf800..0xf803].copy_from_slice(&[0xa1, 0xb2, 0xc3]);
+    let mut c = Cpu::new(0x100);
+    c.registers.er[4] = 0x1234_0003;
+    c.registers.er[5] = 0xabcd_f800;
+    c.registers.er[6] = 0x9876_f900;
+    c.registers.er[7] = 0xff70;
+    for _ in 0..5 {
+        b.action(&mut c, None);
+    } // two fetches, two extra reads, data read
+    let a = c.next(Some(7)).unwrap();
+    assert!(matches!(
+        a,
+        Action::Write {
+            address: 0xf900,
+            value: 0xa1,
+            ..
+        }
+    ));
+    b.perform(&mut c, a); // NMI cannot discard an already-read transfer byte
+    let a = c.next(Some(7)).unwrap();
+    assert!(matches!(
+        a,
+        Action::Write {
+            address: 0xff6e,
+            value: 0x104,
+            ..
+        }
+    ));
+    assert_eq!(c.registers.er[4], 0x1234_0002);
+    assert_eq!(c.registers.er[5], 0xabcd_f801);
+    assert_eq!(c.registers.er[6], 0x9876_f901);
+    assert_eq!(&b.bytes[0xf900..0xf903], &[0xa1, 0, 0]);
+    assert_eq!(c.interrupt_entries, 1);
+    assert_eq!(c.retired, 1);
+}
+
+#[test]
+fn eepmov_byte_defers_even_nmi_and_word_defers_maskable_requests() {
+    for (word, irq) in [(false, 7), (true, 19)] {
+        let mut b = Bus::new(&[if word { 0x7bd4 } else { 0x7b5c }, 0x598f, 0]);
+        b.bytes[0xf800..0xf803].copy_from_slice(&[0xa1, 0xb2, 0xc3]);
+        let mut c = Cpu::new(0x100);
+        c.registers.ccr = 0;
+        c.registers.er[4] = 3;
+        c.registers.er[5] = 0xf800;
+        c.registers.er[6] = 0xf900;
+        c.registers.er[7] = 0xff70;
+        for _ in 0..4 {
+            b.action(&mut c, None);
+        }
+        for _ in 0..6 {
+            b.action(&mut c, Some(irq));
+        }
+        assert_eq!(c.registers.er[4], 0);
+        assert_eq!(c.interrupt_entries, 0);
+        assert_eq!(&b.bytes[0xf900..0xf903], &[0xa1, 0xb2, 0xc3]);
+        let a = c.next(Some(irq)).unwrap();
+        assert!(matches!(
+            a,
+            Action::Write {
+                address: 0xff6e,
+                value: 0x104,
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn eepmov_issued_read_is_stable_when_interrupt_offer_changes() {
+    let mut b = Bus::new(&[0x7bd4, 0x598f, 0]);
+    let mut c = Cpu::new(0x100);
+    c.registers.er[4] = 2;
+    c.registers.er[5] = 0xf800;
+    c.registers.er[6] = 0xf900;
+    c.registers.er[7] = 0xff70;
+    for _ in 0..4 {
+        b.action(&mut c, None);
+    }
+    let a = c.next(None).unwrap();
+    assert_eq!(a, c.next(Some(7)).unwrap());
+    assert_eq!(a, c.next(Some(19)).unwrap());
+    assert_eq!(c.interrupt_entries, 0);
+    b.perform(&mut c, a);
+    assert!(matches!(
+        c.next(Some(7)).unwrap(),
+        Action::Write {
+            address: 0xf900,
+            ..
+        }
+    ));
+    b.action(&mut c, Some(7));
+    assert!(matches!(
+        c.next(Some(7)).unwrap(),
+        Action::Write {
+            address: 0xff6e,
+            value: 0x104,
+            ..
+        }
+    ));
+}

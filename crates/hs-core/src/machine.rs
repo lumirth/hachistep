@@ -260,6 +260,9 @@ impl Machine {
         if self.powered {
             return Ok(());
         }
+        if !self.reset_asserted && !self.mcu.control.nmi_level() {
+            return Err(Self::boot_strap_error());
+        }
         self.last_effect = self.now;
         self.mcu.power_on(self.now, out)?;
         self.eeprom.power_cycle()?;
@@ -463,6 +466,7 @@ impl Machine {
             Input::SupplyMillivolts(_) => 2,
             Input::InfraredLevel(_) => 3,
             Input::ResetPin(_) => 4,
+            Input::NmiPin(_) => 15,
             Input::AnalogPin { pin, .. } => 5 + pin.index() as u8,
             Input::DigitalPin { pin, .. } => 12 + pin.index() as u8,
         }
@@ -505,6 +509,14 @@ impl Machine {
         }
         Ok(())
     }
+    fn boot_strap_error() -> Error {
+        Error::Unsupported {
+            component: "reset straps",
+            address: 0,
+            detail:
+                "NMI low at reset release requires unimplemented boot-mode/strap behavior (§6.3)",
+        }
+    }
     fn apply_batch(&mut self, changes: &[TimedInput], out: &mut dyn Output) -> Result<(), Error> {
         self.last_effect = self.now;
         if self.powered && self.mcu.sync(self.now)? {
@@ -512,6 +524,7 @@ impl Machine {
         }
         let mut ir = None;
         let mut reset = None;
+        let mut nmi = None;
         for change in changes {
             match change.input {
                 Input::Buttons(b) => self.mcu.gpio.set_buttons(b),
@@ -519,6 +532,7 @@ impl Machine {
                 Input::SupplyMillivolts(v) => self.conditions.supply_millivolts = v,
                 Input::InfraredLevel(v) => ir = Some(v),
                 Input::ResetPin(high) => reset = Some(!high),
+                Input::NmiPin(high) => nmi = Some(high),
                 Input::AnalogPin { pin, millivolts } => self.analog_pins[pin.index()] = millivolts,
                 Input::DigitalPin { pin, level } => self.mcu.gpio.set_digital_level(pin, level),
             }
@@ -528,7 +542,19 @@ impl Machine {
                 v.map(|v| u32::from(v) * 2 > u32::from(self.conditions.supply_millivolts))
             }),
         );
+        let was_reset = self.reset_asserted;
+        let will_reset = reset.unwrap_or(was_reset);
+        if let Some(high) = nmi {
+            // An edge simultaneous with reset assertion/release is not treated
+            // as a user-mode interrupt. Pins in that aperture are reset straps.
+            self.mcu
+                .control
+                .nmi_input(high, self.powered && !was_reset && !will_reset);
+        }
         if let Some(asserted) = reset {
+            if self.powered && !asserted && was_reset && !self.mcu.control.nmi_level() {
+                return Err(Self::boot_strap_error());
+            }
             if self.powered && asserted && !self.reset_asserted {
                 self.reset_mcu(false, out)?;
             }
@@ -566,7 +592,7 @@ impl Machine {
         }
         if self.cpu.sleeping() {
             let irq = self.mcu.interrupt();
-            if irq.is_none() || self.cpu.registers.ccr & I != 0 {
+            if irq.is_none() || (irq != Some(7) && self.cpu.registers.ccr & I != 0) {
                 return Ok(());
             }
             if self.mcu.control.sleeping() {
@@ -583,6 +609,9 @@ impl Machine {
         }
         loop {
             let action = self.cpu.next(self.mcu.interrupt())?;
+            if self.cpu.entering_vector() == Some(7) {
+                self.mcu.control.acknowledge_nmi();
+            }
             match action {
                 Action::Sleep => {
                     if self.mcu.control.sleeping() {

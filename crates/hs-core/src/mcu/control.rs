@@ -30,6 +30,8 @@ pub struct Control {
     pub mode: Mode,
     pub stabilizing_from: Option<Mode>,
     irq_levels: [Option<bool>; 2],
+    nmi_level: bool,
+    nmi_pending: bool,
 }
 impl Default for Control {
     fn default() -> Self {
@@ -47,10 +49,32 @@ impl Default for Control {
             mode: Mode::Active,
             stabilizing_from: None,
             irq_levels: [None; 2],
+            nmi_level: true,
+            nmi_pending: false,
         }
     }
 }
 impl Control {
+    pub fn reset(&mut self) {
+        let nmi_level = self.nmi_level;
+        *self = Self::default();
+        self.nmi_level = nmi_level; // a reset does not drive an external input
+    }
+    pub fn nmi_level(&self) -> bool {
+        self.nmi_level
+    }
+    pub fn nmi_pending(&self) -> bool {
+        self.nmi_pending
+    }
+    pub fn acknowledge_nmi(&mut self) {
+        self.nmi_pending = false;
+    }
+    pub fn nmi_input(&mut self, high: bool, enabled: bool) {
+        if enabled && high != self.nmi_level && high == (self.iegr & 0x80 != 0) {
+            self.nmi_pending = true;
+        }
+        self.nmi_level = high;
+    }
     pub fn handles(a: u16) -> bool {
         matches!(a, 0xfff0..=0xfff7 | 0xfffa | 0xfffb)
     }

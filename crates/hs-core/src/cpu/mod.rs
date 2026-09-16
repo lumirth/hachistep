@@ -194,6 +194,15 @@ impl Cpu {
     pub fn sleeping(&self) -> bool {
         self.phase == Phase::Sleeping
     }
+    /// Integration acknowledges a latched request only after the CPU selected
+    /// its exception, never merely because a request was offered to `next`.
+    pub(crate) fn entering_vector(&self) -> Option<u8> {
+        if let Phase::ExceptionPc { vector, .. } = self.phase {
+            Some(vector)
+        } else {
+            None
+        }
+    }
     pub fn boundary(&self) -> bool {
         matches!(self.phase, Phase::Boundary | Phase::Sleeping)
     }
@@ -390,11 +399,36 @@ impl Cpu {
                     })
                 }
                 Phase::MulDiv { states, .. } => return Ok(Action::Idle(states)),
-                Phase::Copy { stage, value, .. } => {
+                Phase::Copy {
+                    word_count,
+                    stage,
+                    value,
+                } => {
+                    if word_count && stage == 2 && interrupt == Some(7) {
+                        // REJ09B0152-0300 §3.8.6: .W accepts NMI at a break
+                        // between transfer cycles, saves the NEXT instruction,
+                        // and leaves R4/ER5/ER6 describing the remaining copy.
+                        // .B defers even NMI; an issued read/write pair is never
+                        // split here. Resumption requires the firmware loop.
+                        self.finish();
+                        self.enter_exception(7);
+                        continue;
+                    }
+                    if stage == 2 {
+                        // Commit the admission decision before exposing a read.
+                        // Repeating next() must not replace that outstanding
+                        // physical request when a new interrupt is offered.
+                        self.phase = Phase::Copy {
+                            word_count,
+                            stage: 4,
+                            value,
+                        };
+                        continue;
+                    }
                     let source = self.registers.er[5] as u16;
                     let dest = self.registers.er[6] as u16;
                     return Ok(match stage {
-                        0 | 2 => Action::Read {
+                        0 | 4 => Action::Read {
                             address: source,
                             width: Width::Byte,
                             fetch: false,
@@ -552,7 +586,7 @@ impl Cpu {
                             };
                         }
                     }
-                    2 => {
+                    4 => {
                         self.phase = Phase::Copy {
                             word_count,
                             stage: 3,

@@ -48,6 +48,7 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
             ("supply", 3) => (Input::SupplyMillivolts(p[2].parse()?), 2),
             ("ir", 3) => (Input::InfraredLevel(bit(p[2])?), 3),
             ("reset", 3) => (Input::ResetPin(bit(p[2])?), 4),
+            ("nmi", 3) => (Input::NmiPin(bit(p[2])?), 15),
             ("digital", 4) => {
                 let pin = match p[2] {
                     "p10" => DigitalPin::P10,
@@ -127,6 +128,9 @@ mod tests {
                 .len(),
             3
         );
+        assert_eq!(parse("0,nmi,0\n1,nmi,1").unwrap().len(), 2);
+        assert!(parse("0,nmi,0\n0,nmi,1").is_err());
+        assert!(parse("0,nmi,2").is_err());
         assert!(parse("0,digital,p13,1").is_err());
         assert!(parse("0,digital,p10,0\n0,digital,p10,1").is_err());
     }

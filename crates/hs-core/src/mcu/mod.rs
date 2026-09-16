@@ -177,7 +177,7 @@ impl Mcu {
     pub fn reset(&mut self, now: Time, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         // RAM, flash, watch-source phase, RTC, and external chips survive an MCU
         // reset. Undefined MCU RAM is initialized only by cold construction.
-        self.control = Control::default();
+        self.control.reset();
         self.control.synchronize_clock(now, &mut self.clocks)?;
         self.gpio.reset();
         self.ssu = Ssu::default();
@@ -207,6 +207,9 @@ impl Mcu {
         .min())
     }
     pub fn interrupt(&self) -> Option<u8> {
+        if self.control.nmi_pending() {
+            return Some(7);
+        }
         let mut best = None;
         let mut push = |v: u8| {
             best = Some(best.map_or(v, |old: u8| old.min(v)));

@@ -155,6 +155,9 @@ pub enum Input {
     SupplyMillivolts(u16),
     InfraredLevel(bool),
     ResetPin(bool),
+    /// Dedicated NMI package pin (high is the canonical user-mode idle level).
+    /// This is an electrical fixture, not an additional product button.
+    NmiPin(bool),
     DigitalPin {
         pin: DigitalPin,
         level: Option<bool>,

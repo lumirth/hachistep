@@ -115,3 +115,24 @@ These are specific semantic/encoding corrections, not complete CPU certification
 The comparator external reference's package route is P30/SCK3/VCref, not
 P32/TXD3/IrTXD (§1.3, §8.2). Its analog fixture now updates P30 while preserving
 P32's independent drive; the test checks both states.
+
+## NMI and EEPMOV admission
+
+`Input::NmiPin` and CLI `time_us,nmi,0|1` now drive the dedicated electrical
+input, with IEGR-selected edge detection, a separately acknowledged request
+latch, vector 7 priority, and I-mask-independent sleep/standby wake. The latch
+is acknowledged only when the CPU selects NMI, not when it merely sees a
+request while executing another instruction. A held level does not retrigger.
+Reset preserves physical input level but clears the request. NMI low at reset
+release or ordinary power-on rejects the unimplemented boot-mode/strap case
+instead of incorrectly starting user firmware (§6.3).
+
+EEPMOV.W admits NMI between completed byte transfers, saves the following PC,
+and retains the remaining count and updated pointers (§3.8.6). It does not
+resume the copy magically on RTE. EEPMOV.B still defers NMI until completion;
+both forms defer maskable requests. An exposed read request remains stable if
+`next()` is queried again with a different interrupt offer. Tests cover each
+rule, masked sleep, one-shot latching, a 7,000-partition standby-wake replay and
+snapshot during stabilization. Input-pulse qualification, subcycle NMI
+synchronization and general maskable enable/clear admission races remain open;
+no complete interrupt-accuracy claim is made.
