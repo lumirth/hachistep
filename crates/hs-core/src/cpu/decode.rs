@@ -723,9 +723,7 @@ fn memory(words: &[u16], prefix: usize, selected_size: Size, ccr: bool) -> Decod
             (Address::Absolute(words[used - 1]), used, store, reg, size)
         }
         0x78 => {
-            // The high address-register selector bit is fixed zero, not an
-            // additional store bit. Store direction belongs to word two.
-            if reg != 0 || sel >= 8 {
+            if reg != 0 {
                 return Decode::Invalid;
             }
             if words.len() < prefix + 2 {
@@ -745,6 +743,12 @@ fn memory(words: &[u16], prefix: usize, selected_size: Size, ccr: bool) -> Decod
                 Size::Word
             };
             let actual_reg = (q & 15) as u8;
+            // MOV.L d:24 stores have both documented selector encodings.
+            // GNU emits the high-bit form; byte/word/CCR forms and loads
+            // still require zero. Direction itself belongs to word two.
+            if sel >= 8 && !(actual_size == Size::Long && form == 10) {
+                return Decode::Invalid;
+            }
             if (actual_size == Size::Long && actual_reg >= 8) || (ccr && actual_reg != 0) {
                 return Decode::Invalid;
             }

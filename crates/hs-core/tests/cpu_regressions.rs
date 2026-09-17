@@ -378,8 +378,9 @@ fn ldc_still_defers_an_interrupt_for_the_following_instruction() {
 }
 
 #[test]
-fn displacement24_encodings_reject_the_fixed_selector_bit_and_wrong_size_prefix() {
-    // Independent table 2-5: 0x78 0ers 0; then 6A/6B with 2/A selector.
+fn displacement24_encodings_distinguish_long_store_selectors_and_size_prefixes() {
+    // MOV.L p.127 and GNU movlh.s use the high selector bit for stores;
+    // the consolidated table also lists the zero-bit alternative.
     // Prefixed long/CCR forms always contain 6B, never the byte opcode 6A.
     for prefix in [None, Some(0x0100), Some(0x0140)] {
         for sel in 0..16u16 {
@@ -390,7 +391,8 @@ fn displacement24_encodings_reject_the_fixed_selector_bit_and_wrong_size_prefix(
                         words.push(p);
                     }
                     words.extend([0x7800 | sel << 4, h | direction, 0x00ff, 0xff00]);
-                    let allowed = sel < 8 && (prefix.is_none() || h == 0x6b00);
+                    let selector = sel < 8 || (prefix == Some(0x0100) && direction == 0xa0);
+                    let allowed = selector && (prefix.is_none() || h == 0x6b00);
                     let d = decode(&words);
                     if allowed {
                         let size = match prefix {
@@ -406,7 +408,7 @@ fn displacement24_encodings_reject_the_fixed_selector_bit_and_wrong_size_prefix(
                                     size,
                                     reg: 0,
                                     address: Address::Displaced {
-                                        reg: sel as u8,
+                                        reg: (sel & 7) as u8,
                                         offset: -256
                                     },
                                     store: direction == 0xa0,
