@@ -57,7 +57,7 @@ logical controller output, not a calibrated physical panel or frame-clock
 simulation. `display_enabled` and `display_start_line` expose useful controller
 state. Power-off display rendering is blank.
 
-`firmware`, `ram`, `eeprom`, `eeprom_status`, `sensor_nonvolatile` and `lcd_ram`
+`firmware`, `ram`, `eeprom`, `eeprom_status`, `sensor_nonvolatile`, `lcd_ram` and `lcd_icons`
 return read-only data. No mutable bypass into a guest register or memory array is
 part of the ordinary facade. Guest modifications go through normal execution.
 

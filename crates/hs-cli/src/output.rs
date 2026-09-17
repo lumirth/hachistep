@@ -159,6 +159,7 @@ pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
         ("eeprom.status", &[m.eeprom_status()][..]),
         ("ram.bin", m.ram().as_slice()),
         ("lcd-ram.bin", m.lcd_ram().as_slice()),
+        ("lcd-icons.bin", m.lcd_icons().as_slice()),
         ("sensor-nv.bin", m.sensor_nonvolatile().as_slice()),
     ] {
         write_new(&dir.join(name), data)?;

@@ -20,7 +20,7 @@ pub struct Nt7508 {
     page: u8,
     column_byte: u16,
     start_line: u8,
-    icon: bool,
+    icon_enabled: bool,
     display_on: bool,
     entire_on: bool,
     reverse: bool,
@@ -28,8 +28,22 @@ pub struct Nt7508 {
     common_reverse: bool,
     power_save: bool,
     contrast: u8,
-    saved_column: u16,
-    controls: [u8; 24],
+    saved_column: Option<u16>,
+    initial_com: u8,
+    duty: u8,
+    inversion_lines: u8,
+    regulator: u8,
+    power_control: u8,
+    booster: u8,
+    bias: u8,
+    gray_mode: u8,
+    palette: [u8; 8],
+    temperature_slope: u8,
+    oscillator_control: u8,
+    oscillator_frequency: u8,
+    contrast_trim: u8,
+    otp_control: u8,
+    oscillator_enabled: bool,
 }
 impl Default for Nt7508 {
     fn default() -> Self {
@@ -49,7 +63,7 @@ impl Nt7508 {
             page: 0,
             column_byte: 0,
             start_line: 0,
-            icon: false,
+            icon_enabled: false,
             display_on: false,
             entire_on: false,
             reverse: false,
@@ -57,10 +71,22 @@ impl Nt7508 {
             common_reverse: false,
             power_save: false,
             contrast: 0x20,
-            saved_column: 0,
-            controls: [
-                0, 127, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0,
-            ],
+            saved_column: None,
+            initial_com: 0,
+            duty: 128,
+            inversion_lines: 0,
+            regulator: 0,
+            power_control: 0,
+            booster: 0,
+            bias: 7,
+            gray_mode: 0,
+            palette: [0, 0, 0, 0, 255, 255, 255, 255],
+            temperature_slope: 0,
+            oscillator_control: 0,
+            oscillator_frequency: 0,
+            contrast_trim: 0,
+            otp_control: 0,
+            oscillator_enabled: false,
         }
     }
     pub fn select(&mut self, selected: bool) {
@@ -94,6 +120,9 @@ impl Nt7508 {
     pub fn ram(&self) -> &[u8; 4096] {
         &self.ram
     }
+    pub fn icons(&self) -> &[u8; 256] {
+        &self.icons
+    }
     pub fn contrast(&self) -> u8 {
         self.contrast
     }
@@ -120,36 +149,36 @@ impl Nt7508 {
     }
     fn write_data(&mut self, byte: u8, now: Time, output: &mut dyn Output) {
         let col = usize::from(self.column_byte & 255);
-        if self.icon {
-            self.icons[col] = byte;
+        if self.page == 16 {
+            self.icons[col] = byte & 1;
         } else {
             self.ram[usize::from(self.page & 15) * 256 + col] = byte;
         }
         output.event(Event::LcdWrite {
             at: now,
-            page: if self.icon { 16 } else { self.page },
+            page: self.page,
             column_byte: self.column_byte,
             value: byte,
         });
-        // Nominal wrap witness. Terminal-column wrap/lock ambiguity remains
-        // explicitly identified in STATUS.md; it is not hardware-certified.
+        // The serial-interface and column-command descriptions specify wrap
+        // at the 256-byte page boundary; a generic paragraph contradicts them.
         self.column_byte = (self.column_byte + 1) & 255;
     }
     fn command(&mut self, byte: u8, now: Time, output: &mut dyn Output) -> Result<(), Error> {
         if let Some(command) = self.pending.take() {
             match command {
                 0x40..=0x43 => self.start_line = byte & 127,
-                0x44..=0x47 => self.controls[0] = byte & 127,
-                0x48..=0x4b => self.controls[1] = byte,
-                0x4c..=0x4f => self.controls[2] = byte & 31,
+                0x44..=0x47 => self.initial_com = byte & 127,
+                0x48..=0x4b if (16..=128).contains(&byte) => self.duty = byte,
+                0x48..=0x4b => {}
+                0x4c..=0x4f => self.inversion_lines = byte & 31,
                 0x81 => self.contrast = byte & 0x3f,
-                0x88..=0x8f => self.controls[8 + usize::from(command - 0x88)] = byte,
-                0xe8 => self.controls[16] = byte,
-                0xf1 => self.controls[17] = byte & 1,
-                0xf7 => self.controls[18] = byte & 3,
-                0xf6 => self.controls[19] = byte & 31,
-                0xf3 => self.controls[20] = byte & 31,
-                0xf4 => self.controls[21] = byte & 3,
+                0x88..=0x8f => self.palette[usize::from(command - 0x88)] = byte,
+                0xf1 => self.temperature_slope = byte & 1,
+                0xf7 => self.oscillator_control = byte & 3,
+                0xf6 => self.oscillator_frequency = byte & 31,
+                0xf3 => self.contrast_trim = byte & 15,
+                0xf4 => self.otp_control = byte & 3,
                 _ => return Err(Error::Internal("unrecognized pending LCD parameter")),
             }
             output.event(Event::LcdControl {
@@ -166,61 +195,57 @@ impl Nt7508 {
             0x10..=0x17 => {
                 self.column_byte = ((self.column_byte >> 1 & 0x0f) | u16::from(byte & 7) << 4) << 1
             }
-            0x40..=0x4f | 0x81 | 0x88..=0x8f | 0xe8 | 0xf1 | 0xf3 | 0xf4 | 0xf6 | 0xf7 => {
+            0x40..=0x4f | 0x81 | 0x88..=0x8f | 0xf1 | 0xf3 | 0xf4 | 0xf6 | 0xf7 => {
                 self.pending = Some(byte);
                 return Ok(());
             }
-            0xb0..=0xbf => {
-                self.page = byte & 15;
-                self.icon = false;
-            }
+            0xb0..=0xbf => self.page = byte & 15,
             0xa0 => self.segment_reverse = false,
             0xa1 => self.segment_reverse = true,
-            0xa2 => self.icon = false,
-            0xa3 => self.icon = true,
+            0xa2 => self.icon_enabled = false,
+            0xa3 => {
+                self.icon_enabled = true;
+                self.page = 16;
+            }
             0xa4 => self.entire_on = false,
             0xa5 => self.entire_on = true,
             0xa6 => self.reverse = false,
             0xa7 => self.reverse = true,
             0xa8 => self.power_save = false,
-            0xab => self.controls[22] = 1,
+            0xab => self.oscillator_enabled = true,
             0xa9 => self.power_save = true,
             0xae => self.display_on = false,
             0xaf => self.display_on = true,
             0xc0..=0xc7 => self.common_reverse = false,
             0xc8..=0xcf => self.common_reverse = true,
-            0xe0 => self.saved_column = self.column_byte,
+            0xe0 => self.saved_column = Some(self.column_byte),
             0xe1 => self.power_save = false,
             0xe2 => {
                 self.page = 0;
                 self.column_byte = 0;
                 self.start_line = 0;
-                self.saved_column = 0;
-                self.controls[3] = 0;
+                self.saved_column = None;
+                self.regulator = 0;
                 self.contrast = 32;
-                self.controls[16] = 0;
-                self.controls[7] = 0;
-                self.controls[8..12].fill(0);
-                self.controls[12..16].fill(255);
+                self.gray_mode = 0;
+                self.palette = [0, 0, 0, 0, 255, 255, 255, 255];
                 self.pending = None;
             }
-            0xee => self.column_byte = self.saved_column,
-            0xe3 => {}
-            0xe4 => self.controls[2] = 0,
-            // Retained, non-raster drive controls. Their analog panel effects
-            // are deliberately not claimed to be implemented.
-            0x20..=0x27 => self.controls[3] = byte & 7,
-            0x28..=0x2f => self.controls[4] = byte & 7,
-            0x64..=0x67 | 0x6c..=0x6f => self.controls[5] = byte & 11,
-            0x50..=0x57 => self.controls[6] = byte & 7,
-            0x90..=0x97 => self.controls[7] = byte & 7,
-            _ => {
-                return Err(Error::Unsupported {
-                    component: "NT7508",
-                    detail: "command not implemented; no silent NOP substitution",
-                    address: u16::from(byte),
-                })
+            0xee => {
+                if let Some(column) = self.saved_column.take() {
+                    self.column_byte = column;
+                }
             }
+            0xe3 => {}
+            0xe4 => self.inversion_lines = 0,
+            0x20..=0x27 => self.regulator = byte & 7,
+            0x28..=0x2f => self.power_control = byte & 7,
+            0x64..=0x67 | 0x6c..=0x6f => self.booster = byte & 11,
+            0x50..=0x57 => self.bias = byte & 7,
+            0x90..=0x97 => self.gray_mode = byte & 7,
+            // E8 belongs to the unbonded three-wire interface. Unassigned and
+            // factory-test bytes have no modeled effect on this board.
+            _ => {}
         }
         output.event(Event::LcdControl {
             at: now,
@@ -233,43 +258,60 @@ impl Nt7508 {
     /// waveform fidelity; the raw controller RAM remains available to fixtures.
     pub fn render(&self, pixels: &mut [u8; LCD_WIDTH * LCD_HEIGHT]) {
         for y in 0..LCD_HEIGHT {
+            // The panel occupies SEG0..95 and COM32..95. Direction commands
+            // address the complete 128-output controller before that crop.
+            let common = if self.common_reverse { 95 - y } else { y + 32 };
+            let line = (common + 128 - usize::from(self.initial_com)) & 127;
             for x in 0..LCD_WIDTH {
-                let mut shade = 0;
-                if self.enabled() {
-                    if self.entire_on {
-                        shade = 3;
-                    } else {
-                        let logical_y = if self.common_reverse {
-                            LCD_HEIGHT - 1 - y
-                        } else {
-                            y
-                        };
-                        // Canonical panel wiring witness: the 64-row glass is bonded at
-                        // COM32. COM-start 32 maps RAM start line to the first visible row.
-                        let row = (logical_y + usize::from(self.start_line) + 160
-                            - usize::from(self.controls[0]))
-                            & 127;
-                        let col = if self.segment_reverse {
-                            LCD_WIDTH - 1 - x
-                        } else {
-                            x
-                        };
-                        let index = (row / 8) * 256 + col * 2;
-                        shade = ((self.ram[index] >> (row & 7)) & 1)
-                            | (((self.ram[index + 1] >> (row & 7)) & 1) << 1);
-                    }
-                    if self.reverse {
-                        shade ^= 3;
-                    }
-                }
-                pixels[y * LCD_WIDTH + x] = shade;
+                pixels[y * LCD_WIDTH + x] = if self.enabled() && line < usize::from(self.duty) {
+                    self.shade((line + usize::from(self.start_line)) & 127, x)
+                } else {
+                    0
+                };
             }
+        }
+    }
+    fn shade(&self, row: usize, segment: usize) -> u8 {
+        if self.entire_on {
+            return 3;
+        }
+        let column = if self.segment_reverse {
+            127 - segment
+        } else {
+            segment
+        };
+        let (high, low) = if row == 128 {
+            (self.icons[2 * column], self.icons[2 * column + 1])
+        } else {
+            let index = (row / 8) * 256 + column * 2;
+            (
+                self.ram[index] >> (row & 7),
+                self.ram[index + 1] >> (row & 7),
+            )
+        };
+        let shade = ((high & 1) << 1) | (low & 1);
+        if self.reverse {
+            shade ^ 3
+        } else {
+            shade
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn commands(lcd: &mut Nt7508, bytes: &[u8]) {
+        for &byte in bytes {
+            lcd.write_counted_fixture(false, byte, Time::ZERO, &mut ())
+                .unwrap();
+        }
+    }
+    fn data(lcd: &mut Nt7508, bytes: &[u8]) {
+        for &byte in bytes {
+            lcd.write_counted_fixture(true, byte, Time::ZERO, &mut ())
+                .unwrap();
+        }
+    }
     #[test]
     fn parameter_survives_chip_select() {
         let mut l = Nt7508::new();
@@ -300,5 +342,67 @@ mod tests {
         l.write_counted_fixture(false, 0xe2, Time::ZERO, &mut ())
             .unwrap();
         assert_eq!(l.ram()[2048], 1);
+    }
+    #[test]
+    fn icon_enable_is_independent_of_the_ram_page_and_only_db0_is_stored() {
+        let mut lcd = Nt7508::new();
+        commands(&mut lcd, &[0xa3]);
+        data(&mut lcd, &[0xff, 0xfe]);
+        commands(&mut lcd, &[0xb0]);
+        data(&mut lcd, &[0x55]);
+        assert!(lcd.icon_enabled);
+        assert_eq!(lcd.icons()[..3], [1, 0, 0]);
+        assert_eq!(lcd.ram()[2], 0x55);
+        commands(&mut lcd, &[0xa3, 0xa2]);
+        data(&mut lcd, &[0xff]);
+        assert!(!lcd.icon_enabled);
+        assert_eq!(lcd.icons()[3], 1);
+    }
+    #[test]
+    fn controller_mapping_precedes_viewport_and_duty_gates_entire_on() {
+        let mut lcd = Nt7508::new();
+        commands(&mut lcd, &[0x44, 32, 0x48, 16, 0xaf]);
+        data(&mut lcd, &[1, 0, 0, 1, 1, 1]);
+        let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT];
+        lcd.render(&mut pixels);
+        assert_eq!(&pixels[..4], &[2, 1, 3, 0]);
+        commands(&mut lcd, &[0x17, 0x0f]);
+        data(&mut lcd, &[1, 0]);
+        commands(&mut lcd, &[0xa1]);
+        lcd.render(&mut pixels);
+        assert_eq!(&pixels[..3], &[2, 0, 0]);
+        commands(&mut lcd, &[0xa7, 0xa5, 0x48, 0xff]);
+        lcd.render(&mut pixels);
+        assert!(pixels[..16 * LCD_WIDTH].iter().all(|&shade| shade == 3));
+        assert!(pixels[16 * LCD_WIDTH..].iter().all(|&shade| shade == 0));
+        commands(&mut lcd, &[0xae]);
+        lcd.render(&mut pixels);
+        assert!(pixels.iter().all(|&shade| shade == 0));
+    }
+    #[test]
+    fn software_reset_preserves_drive_configuration_and_unassigned_bytes_do_not_eat_commands() {
+        let mut lcd = Nt7508::new();
+        commands(
+            &mut lcd,
+            &[
+                0x44, 32, 0x48, 64, 0xa1, 0xcf, 0xa3, 0xaf, 0xab, 0x2f, 0x95, 0xf6, 0x0a, 0x81, 8,
+                0xe2,
+            ],
+        );
+        assert!(lcd.icon_enabled && lcd.oscillator_enabled && lcd.enabled());
+        assert!(lcd.segment_reverse && lcd.common_reverse);
+        assert_eq!((lcd.initial_com, lcd.duty, lcd.power_control), (32, 64, 7));
+        assert_eq!(
+            (
+                lcd.page,
+                lcd.contrast,
+                lcd.gray_mode,
+                lcd.oscillator_frequency
+            ),
+            (0, 32, 0, 10)
+        );
+        commands(&mut lcd, &[0xe8, 0xae, 0xf0, 0xaf]);
+        assert!(lcd.enabled());
+        assert!(lcd.pending.is_none());
     }
 }

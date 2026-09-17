@@ -192,6 +192,9 @@ impl Machine {
     pub fn lcd_ram(&self) -> &[u8; 4096] {
         self.lcd.ram()
     }
+    pub fn lcd_icons(&self) -> &[u8; 256] {
+        self.lcd.icons()
+    }
     pub fn display(&self, pixels: &mut [u8; 6144]) {
         if self.powered {
             self.lcd.render(pixels);

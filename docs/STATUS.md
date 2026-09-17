@@ -84,12 +84,18 @@ calibration effects, analog filtering and noise are not implemented.
 
 ### LCD viewport
 
-The COM-start-to-visible-row mapping uses the canonical panel's inferred
-32-line bonding offset. With the supplied initialization script it produces the
-observed home/menu output. It must be validated independently for other COM,
-scan and duty configurations. Logical shade rendering is not electrical LCD
-scan emulation. Several voltage/oscillator/grayscale settings are stored and
-consume parameters, but do not yet modify a calibrated physical display model.
+The panel view uses SEG0–95 and COM32–95. Direction selection acts on the full
+128-output controller before cropping; partial duty leaves inactive commons
+blank. The first byte of each column is the high gray bit, consistent with
+`pw`'s independently named fill patterns. Display-off overrides entire-on,
+which overrides reverse. Icon enable and page selection are independent, and
+only DB0 is stored in the icon page. Software reset retains RAM and the drive
+controls listed as unaffected in the manual's specific reset table.
+
+Logical shade rendering is not yet electrical scan emulation. Oscillator,
+palette, and voltage controls are retained for the scan implementation.
+Unassigned/factory-test bytes are inert in the chosen board model; E8 belongs
+to the unbonded three-wire interface and does not consume a parameter here.
 
 ### Power
 
