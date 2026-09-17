@@ -10,6 +10,8 @@ pub enum Source {
     System,
     Watch,
     OnChip,
+    Oscillator,
+    Subclock,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tap {
@@ -35,6 +37,18 @@ impl Tap {
             divide,
         }
     }
+    pub const fn oscillator() -> Self {
+        Self {
+            source: Source::Oscillator,
+            divide: 1,
+        }
+    }
+    pub const fn subclock() -> Self {
+        Self {
+            source: Source::Subclock,
+            divide: 1,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frequencies {
@@ -57,6 +71,8 @@ pub struct Clocks {
     system: Clock,
     watch: Clock,
     on_chip: Clock,
+    oscillator: Clock,
+    subclock: Clock,
     system_numerator: u64,
     system_denominator: u64,
     revision: u64,
@@ -68,6 +84,8 @@ impl Clocks {
             system: Clock::new(now, frequencies.main_hz, 1)?,
             watch: Clock::new(now, frequencies.watch_hz, 1)?,
             on_chip: Clock::new(now, frequencies.on_chip_hz, 1)?,
+            oscillator: Clock::new(now, frequencies.main_hz, 1)?,
+            subclock: Clock::new(now, frequencies.watch_hz, 8)?,
             system_numerator: frequencies.main_hz,
             system_denominator: 1,
             revision: 0,
@@ -78,6 +96,8 @@ impl Clocks {
             Source::System => &self.system,
             Source::Watch => &self.watch,
             Source::OnChip => &self.on_chip,
+            Source::Oscillator => &self.oscillator,
+            Source::Subclock => &self.subclock,
         }
     }
     /// Edges at `now` have occurred. Owners settle same-time conflicts before
@@ -105,22 +125,55 @@ impl Clocks {
     }
     /// Called only at an established clock-switch boundary, after all system-
     /// clock users have synchronized under the previous frequency.
-    pub fn set_system(&mut self, now: Time, numerator: u64, denominator: u64) -> Result<(), Error> {
-        if (numerator, denominator) == (self.system_numerator, self.system_denominator) {
-            return Ok(());
-        }
+    pub fn select_system(&mut self, now: Time, source: Source, divide: u64) -> Result<(), Error> {
+        let numerator = match source {
+            Source::Oscillator => self.frequencies.main_hz,
+            Source::OnChip => self.frequencies.on_chip_hz,
+            Source::Watch => self.frequencies.watch_hz,
+            _ => return Err(Error::BadInput("system clock needs an oscillator source")),
+        };
         let ordinal = self.ticks(now, Tap::system(1));
-        let mut c = Clock::new(now, numerator, denominator)?;
-        c.ordinal = ordinal;
+        let c = Self::divided(self.source(source), now, divide, ordinal)?;
         let revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
         self.system = c;
         self.revision = revision;
         self.system_numerator = numerator;
-        self.system_denominator = denominator;
+        self.system_denominator = divide;
         Ok(())
+    }
+    pub fn select_subclock(&mut self, now: Time, divide: u64) -> Result<(), Error> {
+        self.subclock = Self::divided(&self.watch, now, divide, self.ticks(now, Tap::subclock()))?;
+        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        Ok(())
+    }
+    fn divided(source: &Clock, now: Time, divide: u64, ordinal: u64) -> Result<Clock, Error> {
+        if divide == 0 {
+            return Err(TimeError::ZeroFrequency.into());
+        }
+        let mut clock = *source;
+        let edges = source.edges_before(Time::from_raw(now.raw().saturating_add(1)));
+        clock.advance(edges / divide * divide)?;
+        let remainder = u128::from(clock.remainder) * u128::from(divide);
+        clock.whole = clock
+            .whole
+            .checked_mul(u128::from(divide))
+            .and_then(|v| v.checked_add(remainder / u128::from(clock.denominator)))
+            .ok_or(TimeError::Overflow)?;
+        clock.remainder = (remainder % u128::from(clock.denominator)) as u64;
+        clock.ordinal = ordinal;
+        Ok(clock)
     }
     pub fn system_rate(&self) -> (u64, u64) {
         (self.system_numerator, self.system_denominator)
+    }
+    /// Starting the stopped oscillator establishes its new physical phase.
+    /// STS waits use this undivided source, independently of the CPU divider.
+    pub fn restart_oscillator(&mut self, now: Time) -> Result<(), Error> {
+        let ordinal = self.ticks(now, Tap::oscillator());
+        self.oscillator = Clock::new(now, self.frequencies.main_hz, 1)?;
+        self.oscillator.ordinal = ordinal;
+        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        Ok(())
     }
 }
 
@@ -236,7 +289,7 @@ mod tests {
     fn clock_change_preserves_edge_ordinal() {
         let mut c = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();
         let t = c.edge(100, Tap::system(1)).unwrap();
-        c.set_system(t, 32768, 1).unwrap();
+        c.select_system(t, Source::Watch, 1).unwrap();
         assert_eq!(c.ticks(t, Tap::system(1)), 100);
         assert_eq!(
             c.ticks(c.after(t, 4, Tap::system(1)).unwrap(), Tap::system(4)),

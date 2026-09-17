@@ -13,7 +13,7 @@ use crate::{
         Mcu,
     },
     signals::{Drive, Event, Input, Output, Piezo, TimedInput},
-    time::{Duration, Time, TimeError},
+    time::{Time, TimeError},
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +60,18 @@ struct Pending {
     lane: u8,
     high: u8,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resume {
+    Sleep(ClockWait),
+    Wake { wait: ClockWait, direct: bool },
+}
+impl Resume {
+    fn wait(self) -> ClockWait {
+        match self {
+            Self::Sleep(wait) | Self::Wake { wait, .. } => wait,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     state: Machine,
@@ -77,7 +89,7 @@ pub struct Machine {
     conditions: Conditions,
     analog_pins: [Option<u16>; 7],
     pending: Option<Pending>,
-    resume_after: Option<Time>,
+    resume_after: Option<Resume>,
     next_devices: Option<Time>,
     serial: SerialLevels,
     piezo: Piezo,
@@ -576,19 +588,52 @@ impl Machine {
             .as_ref()
             .map_or(Ok(None), |p| p.wait.deadline(&self.mcu.clocks))
     }
+    fn resume_deadline(&self) -> Result<Option<Time>, Error> {
+        self.resume_after
+            .map_or(Ok(None), |r| r.wait().deadline(&self.mcu.clocks))
+    }
+    fn enter_sleep(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        self.mcu.control.sleep(self.now, &mut self.mcu.clocks)?;
+        // The intermediate watch/standby state has real module effects even
+        // when a direct transition immediately starts the wake sequence.
+        self.mcu.apply_gates(self.now, out)?;
+        self.resolve_board(out)?;
+        if self.mcu.control.sys2 & 8 != 0 && self.cpu.registers.ccr & I == 0 {
+            let wait = self.mcu.control.wake(self.now, &mut self.mcu.clocks)?;
+            self.mcu.apply_gates(self.now, out)?;
+            self.resolve_board(out)?;
+            if let Some(wait) = wait {
+                self.resume_after = Some(Resume::Wake { wait, direct: true });
+            } else {
+                self.cpu.direct_transition()?;
+            }
+        }
+        self.refresh_deadline()
+    }
     fn queue_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         if self.pending.is_some() || self.reset_asserted || !self.powered {
             return Ok(());
         }
-        if let Some(t) = self.resume_after {
-            if t > self.now {
+        if let Some(resume) = self.resume_after {
+            if self.resume_deadline()? != Some(self.now) {
                 return Ok(());
             }
             self.resume_after = None;
-            self.mcu.control.stabilizing_from = None;
-            self.mcu.apply_gates(self.now, out)?;
-            self.resolve_board(out)?;
-            self.refresh_deadline()?;
+            match resume {
+                Resume::Sleep(_) => self.enter_sleep(out)?,
+                Resume::Wake { direct, .. } => {
+                    self.mcu.control.stabilizing_from = None;
+                    self.mcu.apply_gates(self.now, out)?;
+                    self.resolve_board(out)?;
+                    self.refresh_deadline()?;
+                    if direct {
+                        self.cpu.direct_transition()?;
+                    }
+                }
+            }
+            if self.resume_after.is_some() {
+                return Ok(());
+            }
         }
         if self.cpu.sleeping() && self.mcu.control.sleeping() {
             let irq = self.mcu.interrupt();
@@ -596,13 +641,15 @@ impl Machine {
                 return Ok(());
             }
             if self.mcu.control.sleeping() {
-                let delay = self.mcu.control.wake(self.now, &mut self.mcu.clocks)?;
+                let wait = self.mcu.control.wake(self.now, &mut self.mcu.clocks)?;
                 self.mcu.apply_gates(self.now, out)?;
                 self.resolve_board(out)?;
                 self.refresh_deadline()?;
-                if delay != Duration::ZERO {
-                    self.resume_after =
-                        Some(self.now.checked_add(delay).ok_or(TimeError::Overflow)?);
+                if let Some(wait) = wait {
+                    self.resume_after = Some(Resume::Wake {
+                        wait,
+                        direct: false,
+                    });
                     return Ok(());
                 }
             }
@@ -621,13 +668,15 @@ impl Machine {
                         self.reset_mcu(true, out)?;
                         continue;
                     }
-                    let direct = self.mcu.control.sleep(self.now, &mut self.mcu.clocks)?;
-                    self.mcu.apply_gates(self.now, out)?;
-                    self.resolve_board(out)?;
-                    self.refresh_deadline()?;
-                    if direct {
-                        self.cpu.direct_transition()?;
-                        continue;
+                    if self.mcu.control.sys2 & 8 != 0 {
+                        self.resume_after = Some(Resume::Sleep(ClockWait::after(
+                            self.now,
+                            1,
+                            Tap::system(1),
+                            &self.mcu.clocks,
+                        )?));
+                    } else {
+                        self.enter_sleep(out)?;
                     }
                     return Ok(());
                 }
@@ -801,7 +850,7 @@ impl Machine {
                 self.pending_deadline()?,
                 self.next_devices,
                 inputs.get(consumed).map(|i| i.at),
-                self.resume_after,
+                self.resume_deadline()?,
             ]
             .into_iter()
             .flatten()

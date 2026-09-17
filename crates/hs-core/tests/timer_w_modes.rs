@@ -283,7 +283,8 @@ fn expired_capture_visibility_does_not_survive_a_clock_epoch_change() {
     let mut w = capture(&c, true);
     let now = edge(&c, 12);
     w.sync(now, &c).unwrap();
-    c.set_system(now, 32768, 1).unwrap();
+    c.select_system(now, hs_core::mcu::clocks::Source::Watch, 1)
+        .unwrap();
     w.sync(now, &c).unwrap();
     assert_eq!(w.read_word(0xf0f8, &c).unwrap(), 5);
 }

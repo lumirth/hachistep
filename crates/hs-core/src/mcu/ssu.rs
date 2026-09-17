@@ -83,7 +83,7 @@ impl Ssu {
             4 => Tap::system(8),
             5 => Tap::system(4),
             6 => Tap::system(2),
-            _ => Tap::watch(1),
+            _ => Tap::subclock(),
         }
     }
     fn idle_high(&self) -> bool {

@@ -414,7 +414,8 @@ fn inactive_module_does_not_replay_elapsed_clocks_when_reenabled() {
     a.input_pins(pins, Time::ZERO, &c).unwrap();
     let end = t(&c, 20000);
     a.sync(end, &c).unwrap();
-    c.set_system(end, 32768, 1).unwrap();
+    c.select_system(end, hs_core::mcu::clocks::Source::Watch, 1)
+        .unwrap();
     a.set_power(true, true, true, true, end, &c).unwrap();
     assert_eq!(a.peek(0xff97), 0);
     let next = c

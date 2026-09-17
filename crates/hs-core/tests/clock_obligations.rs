@@ -2,7 +2,8 @@
 use hs_core::{
     mcu::{
         adc::Adc,
-        clocks::{ClockWait, Clocks, Frequencies, Tap},
+        clocks::{ClockWait, Clocks, Frequencies, Source, Tap},
+        control::{Control, Mode},
         gpio::Gpio,
         ssu::Ssu,
     },
@@ -24,11 +25,45 @@ fn plus(t: Time) -> Time {
 }
 
 #[test]
+fn stabilization_counts_oscillator_cycles_before_divided_cpu_cycles() {
+    let mut clocks = clocks();
+    let mut control = Control::default();
+    control.mode = Mode::Subactive;
+    control.write(0xfff0, 0xf7).unwrap(); // STS=16, MA=/64, watch intermediate
+    control.write(0xfff1, 0xec).unwrap(); // direct transition to medium speed
+    let now = Time::from_micros(100);
+    control.sleep(now, &mut clocks).unwrap();
+    assert_eq!(control.mode, Mode::Watch);
+    let wait = control.wake(now, &mut clocks).unwrap().unwrap();
+    let end = wait.deadline(&clocks).unwrap().unwrap();
+    assert_eq!(end.raw() - now.raw(), (16u128 << 64) / 1_000_000);
+    assert_eq!(clocks.system_rate(), (1_000_000, 64));
+    assert!(!control.main_running());
+    control.stabilizing_from = None;
+    assert!(control.main_running());
+}
+
+#[test]
+fn selecting_a_divider_joins_the_running_source_phase() {
+    for microsecond in [1, 5, 13, 37, 79, 123, 251] {
+        let mut c = clocks();
+        let now = Time::from_micros(microsecond);
+        let before = c.ticks(now, Tap::system(1));
+        c.select_system(now, Source::Watch, 4).unwrap();
+        let next = c.after(now, 1, Tap::system(1)).unwrap();
+        let source_edge = (microsecond * 32768 / 1_000_000 / 4 + 1) * 4;
+        assert_eq!(next.raw(), (u128::from(source_edge) << 64) / 32768);
+        assert_eq!(c.ticks(now, Tap::system(1)), before);
+        assert_eq!(c.ticks(next, Tap::system(1)), before + 1);
+    }
+}
+
+#[test]
 fn an_outstanding_obligation_follows_the_new_clock_not_the_old_timestamp() {
     let mut c = clocks();
     let w = ClockWait::after(Time::ZERO, 10, Tap::system(1), &c).unwrap();
     let switch = c.edge(4, Tap::system(1)).unwrap();
-    c.set_system(switch, 500_000, 1).unwrap();
+    c.select_system(switch, Source::Oscillator, 2).unwrap();
     let due = w.deadline(&c).unwrap().unwrap();
     assert_eq!(due, c.edge(10, Tap::system(1)).unwrap());
     assert_eq!(c.ticks(Time::from_raw(due.raw() - 1), Tap::system(1)), 9);
@@ -74,7 +109,7 @@ fn adc_sample_and_result_obligations_survive_a_rate_change() {
     assert_eq!(sample_time, c.edge(4, Tap::system(1)).unwrap());
     assert!(!a.advance(sample_time, 411, &c).unwrap());
     let switch = c.edge(10, Tap::system(1)).unwrap();
-    c.set_system(switch, 250_000, 1).unwrap();
+    c.select_system(switch, Source::Oscillator, 4).unwrap();
     let finish = a.deadline(&c).unwrap().unwrap();
     assert_eq!(finish, c.edge(31, Tap::system(1)).unwrap());
     assert!(a.advance(finish, 999, &c).unwrap());
@@ -109,6 +144,7 @@ fn adc_gate_keeps_both_sample_and_finish_progress() {
 #[test]
 fn ssu_partial_shifter_and_holding_register_survive_gating_and_clock_switch() {
     let mut c = clocks();
+    c.select_system(Time::ZERO, Source::Oscillator, 2).unwrap();
     let mut s = Ssu::default();
     s.set_gate(true, Time::ZERO, &c).unwrap();
     for (a, v) in [
@@ -134,7 +170,7 @@ fn ssu_partial_shifter_and_holding_register_survive_gating_and_clock_switch() {
     s.set_gate(false, pause, &c).unwrap();
     assert_eq!(s.deadline(&c).unwrap(), None);
     let resume = c.edge(101, Tap::system(1)).unwrap();
-    c.set_system(resume, 2_000_000, 1).unwrap();
+    c.select_system(resume, Source::Oscillator, 1).unwrap();
     s.set_gate(true, resume, &c).unwrap();
     assert_eq!(
         s.deadline(&c).unwrap(),
@@ -155,7 +191,8 @@ fn ssu_partial_shifter_and_holding_register_survive_gating_and_clock_switch() {
 
 #[test]
 fn ssu_switches_prescaler_with_a_byte_already_in_flight() {
-    let c = clocks();
+    let mut c = clocks();
+    c.select_subclock(Time::ZERO, 1).unwrap();
     let mut s = Ssu::default();
     s.set_gate(true, Time::ZERO, &c).unwrap();
     for (a, v) in [

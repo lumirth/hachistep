@@ -1,11 +1,8 @@
 //! MCU operating modes, clock/module controls, and external interrupt latches.
 //! Invalid mode combinations stop explicitly; there is no product-level wake
 //! shortcut based on a button name or retail firmware address.
-use super::clocks::{Clocks, Tap};
-use crate::{
-    error::Error,
-    time::{Duration, Time},
-};
+use super::clocks::{ClockWait, Clocks, Source, Tap};
+use crate::{error::Error, time::Time};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Active,
@@ -150,37 +147,22 @@ impl Control {
         if self.stabilizing_from.is_none() && matches!(self.mode, Mode::Subactive | Mode::Subsleep)
         {
             let divide = [8, 4, 2, 1][usize::from(self.sys2 & 3)];
-            c.set_system(now, c.frequencies.watch_hz, divide)
+            c.select_system(now, Source::Watch, divide)
         } else {
             let divide = if self.sys2 & 4 != 0 {
                 [8, 16, 32, 64][usize::from(self.sys1 & 3)]
             } else {
                 1
             };
-            c.set_system(now, c.frequencies.main_hz, divide)
+            c.select_system(now, Source::Oscillator, divide)
         }
     }
-    /// Return true for the architected direct-transition exception (vector 13).
-    pub fn sleep(&mut self, now: Time, c: &mut Clocks) -> Result<bool, Error> {
+    /// Enter the intermediate halt mode. A direct transition subsequently
+    /// wakes through the same clock and retention rules as an interrupt.
+    pub fn sleep(&mut self, now: Time, c: &mut Clocks) -> Result<(), Error> {
+        c.select_subclock(now, [8, 4, 2, 1][usize::from(self.sys2 & 3)])?;
         let standby = self.sys1 & 0x80 != 0;
-        let sub = self.sys1 & 8 != 0;
         let watch = self.sys1 & 4 != 0;
-        let direct = self.sys2 & 8 != 0;
-        if direct {
-            self.mode = if standby && watch && sub {
-                Mode::Subactive
-            } else if !sub {
-                Mode::Active
-            } else {
-                return Err(Error::Unsupported {
-                    component: "power",
-                    detail: "prohibited direct-transition combination",
-                    address: 0xfff0,
-                });
-            };
-            self.select_clock(now, c)?;
-            return Ok(true);
-        }
         self.mode = if standby {
             if watch {
                 Mode::Watch
@@ -192,9 +174,12 @@ impl Control {
         } else {
             Mode::Sleep
         };
-        Ok(false)
+        if matches!(self.mode, Mode::Sleep | Mode::Subsleep) {
+            self.select_clock(now, c)?;
+        }
+        Ok(())
     }
-    pub fn wake(&mut self, now: Time, c: &mut Clocks) -> Result<Duration, Error> {
+    pub fn wake(&mut self, now: Time, c: &mut Clocks) -> Result<Option<ClockWait>, Error> {
         let old = self.mode;
         self.mode = match old {
             Mode::Sleep => Mode::Active,
@@ -203,18 +188,20 @@ impl Control {
             Mode::Watch | Mode::Standby => Mode::Active,
             m => m,
         };
-        self.select_clock(now, c)?;
         if matches!(old, Mode::Watch | Mode::Standby) && self.mode == Mode::Active {
             self.stabilizing_from = Some(old);
+            c.restart_oscillator(now)?;
+            self.select_clock(now, c)?;
             let edges =
                 [8192, 16384, 1024, 2048, 4096, 256, 512, 16][usize::from(self.sys1 >> 4 & 7)];
-            let end = c.after(now, edges, Tap::system(1))?;
-            Ok(end.duration_since(now).unwrap())
+            Ok(Some(ClockWait::after(now, edges, Tap::oscillator(), c)?))
         } else {
-            Ok(Duration::ZERO)
+            self.select_clock(now, c)?;
+            Ok(None)
         }
     }
     pub fn synchronize_clock(&self, now: Time, c: &mut Clocks) -> Result<(), Error> {
+        c.select_subclock(now, [8, 4, 2, 1][usize::from(self.sys2 & 3)])?;
         self.select_clock(now, c)
     }
 }
