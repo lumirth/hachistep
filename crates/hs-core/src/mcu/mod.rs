@@ -121,7 +121,7 @@ impl Mcu {
         let pad = self.control.mode != Mode::Standby
             && self.control.stabilizing_from != Some(Mode::Standby);
         let pwm = if self.aec.pwm_uses_watch() {
-            pad
+            pad && self.clocks.available(Tap::watch(1))
         } else {
             self.control.main_running()
         };
@@ -137,6 +137,27 @@ impl Mcu {
         Ok(())
     }
     pub fn apply_gates(&mut self, now: Time, _out: &mut dyn Output) -> Result<(), Error> {
+        let watch_mode = self.control.mode != Mode::Standby
+            && self.control.stabilizing_from != Some(Mode::Standby);
+        let main = self.control.main_running();
+        let watch_on_chip = self.control.osc & 0x20 != 0;
+        // Table 5.3 leaves X1 under SUBSTP even in standby. The W divider
+        // and consumers halt separately; a stopped consumer cannot rephase X1.
+        let crystal = self.control.osc & 0x80 == 0;
+        let on_chip = self.reset_held
+            || self.watchdog.rosc_for_module(self.control.gate2 & 4 != 0)
+            || (self.control.mode != Mode::Standby && watch_on_chip);
+        self.clocks.power_sources(
+            now,
+            clocks::SourcePower {
+                main,
+                oscillator: main || self.control.stabilizing_from.is_some(),
+                watch: if watch_on_chip { on_chip } else { crystal },
+                crystal,
+                on_chip,
+                watch_on_chip,
+            },
+        )?;
         self.clocks.set_prescalers(
             now,
             !self.reset_held && self.control.main_running(),
@@ -151,12 +172,19 @@ impl Mcu {
         let main = !self.reset_held && self.control.main_running();
         let sub = !self.reset_held && self.control.sub_running();
         self.rtc.set_gate(
-            !standby && self.control.gate1 & 1 != 0 && (main || self.rtc.uses_watch()),
+            !standby
+                && self.control.gate1 & 1 != 0
+                && (main || self.rtc.uses_watch())
+                && (!self.rtc.uses_watch() || (watch_mode && self.clocks.available(Tap::watch(1)))),
             now,
             &self.clocks,
         );
         self.timer_b1.set_gate(
-            !standby && self.control.gate1 & 4 != 0 && (main || self.timer_b1.uses_watch()),
+            !standby
+                && self.control.gate1 & 4 != 0
+                && (main || self.timer_b1.uses_watch())
+                && (!self.timer_b1.uses_watch()
+                    || (watch_mode && self.clocks.available(Tap::watch(1)))),
             now,
             &self.clocks,
         );
@@ -170,7 +198,9 @@ impl Mcu {
         let watchdog_source = match self.watchdog.source() {
             clocks::Source::System => main,
             clocks::Source::Watch => {
-                !standby && self.control.stabilizing_from != Some(Mode::Standby)
+                !standby
+                    && self.control.stabilizing_from != Some(Mode::Standby)
+                    && self.clocks.available(Tap::watch(1))
             }
             _ => true,
         };
@@ -418,9 +448,19 @@ impl Mcu {
             return self.aec_power(now);
         }
         match a {
-            0xf067..=0xf06d | 0xf06f => self.rtc.write(a, v, now, &self.clocks),
+            0xf067..=0xf06d | 0xf06f => {
+                self.rtc.write(a, v, now, &self.clocks)?;
+                if a == 0xf06f {
+                    self.apply_gates(now, out)
+                } else {
+                    Ok(())
+                }
+            }
             0xf0dc..=0xf0de => self.comparators.write(a, v, now),
-            0xf0d0 => self.timer_b1.write(a, v, now, &self.clocks),
+            0xf0d0 => {
+                self.timer_b1.write(a, v, now, &self.clocks)?;
+                self.apply_gates(now, out)
+            }
             0xf0d1 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => {
                 self.ssu.write(a, v, origin.is_mov(), now, &self.clocks)?;
@@ -430,12 +470,26 @@ impl Mcu {
                     Ok(())
                 }
             }
-            0xf0f0..=0xf0f5 => self.timer_w.write(a, v, now, &self.clocks),
+            0xf0f0..=0xf0f5 => {
+                self.timer_w.write(a, v, now, &self.clocks)?;
+                if a == 0xf0f1 {
+                    self.apply_gates(now, out)
+                } else {
+                    Ok(())
+                }
+            }
             0xffb0..=0xffb3 => {
                 self.watchdog.write(a, v, origin, now, &self.clocks)?;
                 self.apply_gates(now, out)
             }
-            0xffbe | 0xffbf => self.adc.write(a, v, now, &self.clocks),
+            0xffbe | 0xffbf => {
+                self.adc.write(a, v, now, &self.clocks)?;
+                if a == 0xffbe {
+                    self.apply_gates(now, out)
+                } else {
+                    Ok(())
+                }
+            }
             0xf020..=0xf023 | 0xf02b if v == 0 => Ok(()),
             _ => Err(self.unimplemented(a, true, 1)),
         }

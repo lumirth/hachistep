@@ -18,6 +18,9 @@ impl<const N: usize> Prescaler<N> {
             running: true,
         }
     }
+    pub fn running(&self) -> bool {
+        self.running
+    }
     fn elapsed(&self, parent: u64) -> u64 {
         if self.running {
             parent.saturating_sub(self.anchor)

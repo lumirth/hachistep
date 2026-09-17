@@ -421,3 +421,51 @@ fn sync_receive_error_blocks_a_preloaded_next_transmit_byte_until_cleared() {
     assert_eq!(s.pins().transmit, Some(false));
     assert_eq!(s.ssr, 0x80);
 }
+
+#[test]
+fn stopped_watch_oscillator_retains_a_partial_character() {
+    use super::super::clocks::SourcePower;
+    let mut c = clocks(1_000_000);
+    let mut s = configured(&c, 1, 0, 0, 0x20);
+    s.write(0xff9b, 0xa5, Time::ZERO, &c).unwrap();
+    let pause = Time::from_micros(350_000);
+    run(&mut s, &c, pause);
+    assert_eq!(s.pins().transmit, Some(false));
+    c.power_sources(
+        pause,
+        SourcePower {
+            main: true,
+            oscillator: true,
+            watch: false,
+            crystal: false,
+            on_chip: true,
+            watch_on_chip: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(s.deadline(&c).unwrap(), None);
+    let resume = Time::from_micros(777_000);
+    run(&mut s, &c, resume);
+    c.power_sources(
+        resume,
+        SourcePower {
+            main: true,
+            oscillator: true,
+            watch: true,
+            crystal: true,
+            on_chip: true,
+            watch_on_chip: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(s.deadline(&c).unwrap(), Some(Time::from_micros(779_000)));
+    let mut restored = s.clone();
+    run(&mut s, &c, Time::from_micros(779_000));
+    assert_eq!(s.pins().transmit, Some(true));
+    run(&mut s, &c, Time::from_micros(1_100_000));
+    for us in (777_000..1_100_000).step_by(723).chain([1_100_000]) {
+        run(&mut restored, &c, Time::from_micros(us));
+    }
+    assert_eq!(s, restored);
+    assert_eq!(s.transmitted, 1);
+}

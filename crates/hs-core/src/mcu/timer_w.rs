@@ -413,7 +413,7 @@ impl TimerW {
         self.schedule_input(now, clocks)
     }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
-        let count = if self.running() && !self.uses_external() {
+        let count = if self.running() && !self.uses_external() && clocks.available(self.tap()) {
             Some(
                 clocks.edge(
                     self.last

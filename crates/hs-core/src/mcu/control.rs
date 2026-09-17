@@ -17,6 +17,7 @@ pub struct Control {
     pub sys1: u8,
     pub sys2: u8,
     pub osc: u8,
+    feedback_cut: bool,
     pub gate1: u8,
     pub gate2: u8,
     pub iegr: u8,
@@ -36,6 +37,7 @@ impl Default for Control {
             sys1: 3,
             sys2: 0xf0,
             osc: 0,
+            feedback_cut: false,
             gate1: 3,
             gate2: 4,
             iegr: 0,
@@ -96,16 +98,9 @@ impl Control {
             0xfff2 => self.iegr = v & 0xa3,
             0xfff3 => self.ien1 = v & 0x87,
             0xfff4 => self.ien2 = v & 0x45,
-            0xfff5 => {
-                if v & 0xc0 != 0 {
-                    return Err(Error::Unsupported {
-                        component: "clocks",
-                        detail: "watch oscillator stop/external source switch is not implemented",
-                        address: a,
-                    });
-                }
-                self.osc = v & 0xe2;
-            }
+            // OSCF is the latched E7_2 reset strap. The board selects the
+            // main crystal; writing this status bit cannot select ROSC.
+            0xfff5 => self.osc = (self.osc & 2) | (v & 0xe0),
             0xfff6 => self.irr1 &= v & 7,
             0xfff7 => self.irr2 &= v & 0x45,
             0xfffa => self.gate1 = v & 0x57,
@@ -174,6 +169,9 @@ impl Control {
         } else {
             Mode::Sleep
         };
+        if matches!(self.mode, Mode::Watch | Mode::Standby | Mode::Subactive) {
+            self.feedback_cut = self.osc & 0x40 != 0;
+        }
         if matches!(self.mode, Mode::Sleep | Mode::Subsleep) {
             self.select_clock(now, c)?;
         }
@@ -188,6 +186,9 @@ impl Control {
             Mode::Watch | Mode::Standby => Mode::Active,
             m => m,
         };
+        if self.mode == Mode::Subactive {
+            self.feedback_cut = self.osc & 0x40 != 0;
+        }
         if matches!(old, Mode::Watch | Mode::Standby) && self.mode == Mode::Active {
             self.stabilizing_from = Some(old);
             c.restart_oscillator(now)?;

@@ -1,11 +1,13 @@
 //! Timing-mechanism tests, not claims about unmeasured oscillator parameters.
 use hs_core::{
+    cpu::WriteOrigin,
     mcu::{
         adc::Adc,
         clocks::{ClockWait, Clocks, Frequencies, Source, Tap},
         control::{Control, Mode},
         gpio::Gpio,
         ssu::Ssu,
+        Mcu,
     },
     Time,
 };
@@ -255,4 +257,102 @@ fn every_pull_register_accepts_writes_and_affects_only_input_configured_pins() {
             assert_eq!(p.read(port) & mask, 0);
         }
     }
+}
+
+#[test]
+fn stopped_watch_crystal_can_be_replaced_by_rosc_without_losing_work() {
+    let mut m = Mcu::new(
+        &[0; 49152],
+        Frequencies {
+            main_hz: 1_000_000,
+            watch_hz: 100_000,
+            on_chip_hz: 640_000,
+        },
+    )
+    .unwrap();
+    let t = Time::from_micros;
+    for (a, v) in [(0xfffb, 0x44), (0xf0f1, 0x40), (0xf0f0, 0x80)] {
+        m.write8(a, v, WriteOrigin::MovByte, t(0), &mut ()).unwrap();
+    }
+    m.sync(t(35)).unwrap();
+    m.write8(0xfff5, 0x82, WriteOrigin::MovByte, t(35), &mut ())
+        .unwrap();
+    assert_eq!(m.read8(0xfff5, t(35)).unwrap(), 0x80); // OSCF is read-only.
+    assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 3);
+    assert!(!m.clocks.available(Tap::watch(1)));
+    let wait = ClockWait::after(t(35), 5, Tap::watch(1), &m.clocks).unwrap();
+    assert_eq!(wait.deadline(&m.clocks).unwrap(), None);
+    m.sync(t(1000)).unwrap();
+    assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 3);
+    m.write8(0xfff5, 0xa0, WriteOrigin::MovByte, t(1000), &mut ())
+        .unwrap();
+    assert_eq!(wait.deadline(&m.clocks).unwrap(), Some(t(1250)));
+    m.sync(t(1200)).unwrap();
+    assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 7);
+    // Starting X1 does not replace the selected ROSC/32 watch source.
+    m.write8(0xfff5, 0x20, WriteOrigin::MovByte, t(1200), &mut ())
+        .unwrap();
+    m.sync(t(1215)).unwrap();
+    m.write8(0xfff5, 0, WriteOrigin::MovByte, t(1215), &mut ())
+        .unwrap();
+    assert_eq!(wait.deadline(&m.clocks).unwrap(), Some(t(1220)));
+    m.sync(t(1220)).unwrap();
+    assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 8);
+}
+
+#[test]
+fn last_rosc_consumer_stops_the_oscillator_at_the_actual_write() {
+    let mut m = Mcu::new(
+        &[0; 49152],
+        Frequencies {
+            main_hz: 1_000_000,
+            on_chip_hz: 1_000_000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let t = Time::from_micros;
+    for v in [0x9e, 0xa2, 0x8e] {
+        m.write8(0xffb1, v, WriteOrigin::MovByte, t(0), &mut ())
+            .unwrap();
+    }
+    m.sync(t(123)).unwrap();
+    m.write8(0xfffb, 0, WriteOrigin::MovByte, t(123), &mut ())
+        .unwrap();
+    assert!(!m.clocks.available(Tap::on_chip(1)));
+    assert_eq!(m.clocks.ticks(t(999), Tap::on_chip(1)), 123);
+    m.sync(t(999)).unwrap();
+    m.write8(0xfff5, 0x20, WriteOrigin::MovByte, t(999), &mut ())
+        .unwrap();
+    assert!(m.clocks.available(Tap::on_chip(1)));
+    assert_eq!(m.clocks.after(t(999), 1, Tap::on_chip(1)).unwrap(), t(1000));
+}
+
+#[test]
+fn standby_holds_prescaler_w_without_stopping_the_enabled_watch_crystal() {
+    let mut m = Mcu::new(
+        &[0; 49152],
+        Frequencies {
+            main_hz: 1_000_000,
+            watch_hz: 100_000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let t = Time::from_micros;
+    m.sync(t(85)).unwrap();
+    m.control.mode = Mode::Standby;
+    m.apply_gates(t(85), &mut ()).unwrap();
+    assert_eq!(m.clocks.ticks(t(1015), Tap::watch(1)), 101);
+    assert_eq!(m.clocks.ticks(t(1015), Tap::watch(16)), 0);
+    assert_eq!(m.clocks.ticks(t(1015), Tap::oscillator()), 85);
+    m.sync(t(1015)).unwrap();
+    m.control.wake(t(1015), &mut m.clocks).unwrap();
+    m.apply_gates(t(1015), &mut ()).unwrap();
+    assert_eq!(m.clocks.ticks(t(2000), Tap::watch(16)), 0);
+    m.sync(t(2000)).unwrap();
+    m.control.stabilizing_from = None;
+    m.apply_gates(t(2000), &mut ()).unwrap();
+    // W retained its first two phiW/4 inputs (40,80 us). X1 continued.
+    assert_eq!(m.clocks.after(t(2000), 1, Tap::watch(16)).unwrap(), t(2080));
 }

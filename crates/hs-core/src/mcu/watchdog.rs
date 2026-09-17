@@ -57,7 +57,10 @@ impl Watchdog {
         self.control1 & 4 != 0 && self.source_available && !self.reset_held && self.tap().is_some()
     }
     pub fn rosc_required(&self) -> bool {
-        self.mode & 15 <= 3 && (self.gate || self.control1 & 4 != 0) && !self.reset_held
+        !self.reset_held && self.rosc_for_module(self.gate)
+    }
+    pub fn rosc_for_module(&self, gate: bool) -> bool {
+        self.mode & 15 <= 3 && (gate || self.control1 & 4 != 0)
     }
     fn tick(&self, now: Time, clocks: &Clocks) -> u64 {
         if self.mode & 15 <= 3 {

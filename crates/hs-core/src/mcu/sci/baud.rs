@@ -86,7 +86,7 @@ impl Baud {
         }
     }
     pub fn deadline(&self, half: u64, clocks: &Clocks, reload: u16) -> Result<Option<Time>, Error> {
-        if !self.running || self.external {
+        if !self.running || self.external || !clocks.available(self.tap) {
             return Ok(None);
         }
         let delta = half.checked_sub(self.half).ok_or(TimeError::Reversed)?;

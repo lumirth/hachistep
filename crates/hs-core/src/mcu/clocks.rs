@@ -1,10 +1,12 @@
 //! Shared clock phases. A peripheral records a consumed divider-edge ordinal;
 //! stopping a downstream gate does not restart the oscillator or its divider.
+mod domain;
 mod prescaler;
 use crate::{
     error::Error,
-    time::{Clock, Time, TimeError},
+    time::{Time, TimeError},
 };
+use domain::Domain;
 use prescaler::Prescaler;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,38 +79,56 @@ impl Default for Frequencies {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Clocks {
     pub frequencies: Frequencies,
-    system: Clock,
-    cpu: Clock,
+    system: Domain,
+    cpu: Domain,
     cpu_uses_subclock: bool,
     prescaler_s: Prescaler<13>,
     prescaler_w: Prescaler<8>,
-    watch: Clock,
-    on_chip: Clock,
-    oscillator: Clock,
-    subclock: Clock,
+    watch: Domain,
+    on_chip: Domain,
+    oscillator: Domain,
+    subclock: Domain,
+    watch_crystal: Domain,
+    watch_uses_on_chip: bool,
+    subclock_divide: u64,
+    system_source: Source,
+    system_divide: u64,
     system_numerator: u64,
     system_denominator: u64,
     revision: u64,
+}
+pub(crate) struct SourcePower {
+    pub main: bool,
+    pub oscillator: bool,
+    pub watch: bool,
+    pub crystal: bool,
+    pub on_chip: bool,
+    pub watch_on_chip: bool,
 }
 impl Clocks {
     pub fn new(now: Time, frequencies: Frequencies) -> Result<Self, Error> {
         Ok(Self {
             frequencies,
-            system: Clock::new(now, frequencies.main_hz, 1)?,
-            cpu: Clock::new(now, frequencies.main_hz, 1)?,
+            system: Domain::new(now, frequencies.main_hz, 1)?,
+            cpu: Domain::new(now, frequencies.main_hz, 1)?,
             cpu_uses_subclock: false,
             prescaler_s: Prescaler::new(),
             prescaler_w: Prescaler::new(),
-            watch: Clock::new(now, frequencies.watch_hz, 1)?,
-            on_chip: Clock::new(now, frequencies.on_chip_hz, 1)?,
-            oscillator: Clock::new(now, frequencies.main_hz, 1)?,
-            subclock: Clock::new(now, frequencies.watch_hz, 8)?,
+            watch: Domain::new(now, frequencies.watch_hz, 1)?,
+            on_chip: Domain::new(now, frequencies.on_chip_hz, 1)?,
+            oscillator: Domain::new(now, frequencies.main_hz, 1)?,
+            subclock: Domain::new(now, frequencies.watch_hz, 8)?,
+            watch_crystal: Domain::new(now, frequencies.watch_hz, 1)?,
+            watch_uses_on_chip: false,
+            subclock_divide: 8,
+            system_source: Source::Oscillator,
+            system_divide: 1,
             system_numerator: frequencies.main_hz,
             system_denominator: 1,
             revision: 0,
         })
     }
-    fn source(&self, source: Source) -> &Clock {
+    fn source(&self, source: Source) -> &Domain {
         match source {
             Source::System => &self.system,
             Source::Cpu => &self.cpu,
@@ -138,9 +158,7 @@ impl Clocks {
         raw / u64::from(tap.divide)
     }
     fn raw_ticks(&self, now: Time, source: Source) -> u64 {
-        let c = self.source(source);
-        let inclusive = Time::from_raw(now.raw().saturating_add(1));
-        c.ordinal().saturating_add(c.edges_before(inclusive))
+        self.source(source).ticks(now)
     }
     pub fn edge(&self, tick: u64, tap: Tap) -> Result<Time, Error> {
         let target = match (tap.source, tap.divide) {
@@ -156,7 +174,7 @@ impl Clocks {
                 .checked_mul(u64::from(tap.divide))
                 .ok_or(TimeError::Overflow)?,
         };
-        let c = self.source(tap.source);
+        let c = &self.source(tap.source).clock;
         let delta = target.checked_sub(c.ordinal()).ok_or(TimeError::Reversed)?;
         Ok(c.after(delta)?)
     }
@@ -175,7 +193,9 @@ impl Clocks {
             // At a reference-clock rising edge its level is high. Between
             // edges the rational period places the falling edge halfway.
             _ => {
-                let c = self.source(tap.source);
+                let domain = self.source(tap.source);
+                let now = domain.time(now);
+                let c = &domain.clock;
                 let edge = c.after(raw - c.ordinal()).unwrap_or(now);
                 let next = c.after(raw - c.ordinal() + 1).unwrap_or(Time::MAX);
                 now.raw() - edge.raw() < (next.raw() - edge.raw()) / 2
@@ -214,10 +234,11 @@ impl Clocks {
     /// Called only at an established clock-switch boundary, after all system-
     /// clock users have synchronized under the previous frequency.
     pub fn select_system(&mut self, now: Time, source: Source, divide: u64) -> Result<(), Error> {
-        let numerator = match source {
-            Source::Oscillator => self.frequencies.main_hz,
-            Source::OnChip => self.frequencies.on_chip_hz,
-            Source::Watch => self.frequencies.watch_hz,
+        let (numerator, denominator) = match source {
+            Source::Oscillator => (self.frequencies.main_hz, 1),
+            Source::OnChip => (self.frequencies.on_chip_hz, 1),
+            Source::Watch if self.watch_uses_on_chip => (self.frequencies.on_chip_hz, 32),
+            Source::Watch => (self.frequencies.watch_hz, 1),
             _ => return Err(Error::BadInput("system clock needs an oscillator source")),
         };
         let ordinal = self.ticks(now, Tap::system(1));
@@ -226,13 +247,16 @@ impl Clocks {
         self.system = c;
         self.revision = revision;
         self.system_numerator = numerator;
-        self.system_denominator = divide;
+        self.system_denominator = divide.checked_mul(denominator).ok_or(TimeError::Overflow)?;
+        self.system_source = source;
+        self.system_divide = divide;
         if !self.cpu_uses_subclock {
             self.select_cpu(now, false)?;
         }
         Ok(())
     }
     pub fn select_subclock(&mut self, now: Time, divide: u64) -> Result<(), Error> {
+        self.subclock_divide = divide;
         self.subclock = Self::divided(&self.watch, now, divide, self.ticks(now, Tap::subclock()))?;
         if self.cpu_uses_subclock {
             self.select_cpu(now, true)?;
@@ -255,12 +279,13 @@ impl Clocks {
         self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
         Ok(())
     }
-    fn divided(source: &Clock, now: Time, divide: u64, ordinal: u64) -> Result<Clock, Error> {
+    fn divided(source: &Domain, now: Time, divide: u64, ordinal: u64) -> Result<Domain, Error> {
         if divide == 0 {
             return Err(TimeError::ZeroFrequency.into());
         }
-        let mut clock = *source;
-        let edges = source.edges_before(Time::from_raw(now.raw().saturating_add(1)));
+        let mut clock = source.clock;
+        let time = source.time(now);
+        let edges = clock.edges_before(Time::from_raw(time.raw().saturating_add(1)));
         clock.advance(edges / divide * divide)?;
         let remainder = u128::from(clock.remainder) * u128::from(divide);
         clock.whole = clock
@@ -270,7 +295,11 @@ impl Clocks {
             .ok_or(TimeError::Overflow)?;
         clock.remainder = (remainder % u128::from(clock.denominator)) as u64;
         clock.ordinal = ordinal;
-        Ok(clock)
+        Ok(Domain {
+            clock,
+            running: source.running,
+            held_at: time,
+        })
     }
     pub fn system_rate(&self) -> (u64, u64) {
         (self.system_numerator, self.system_denominator)
@@ -278,17 +307,79 @@ impl Clocks {
     /// Starting the stopped oscillator establishes its new physical phase.
     /// STS waits use this undivided source, independently of the CPU divider.
     pub fn restart_oscillator(&mut self, now: Time) -> Result<(), Error> {
-        let ordinal = self.ticks(now, Tap::oscillator());
-        self.oscillator = Clock::new(now, self.frequencies.main_hz, 1)?;
-        self.oscillator.ordinal = ordinal;
+        self.oscillator.start(now, self.frequencies.main_hz)?;
         self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
         Ok(())
     }
     pub fn restart_on_chip(&mut self, now: Time) -> Result<(), Error> {
-        let ordinal = self.ticks(now, Tap::on_chip(1));
-        self.on_chip = Clock::new(now, self.frequencies.on_chip_hz, 1)?;
-        self.on_chip.ordinal = ordinal;
+        self.on_chip.start(now, self.frequencies.on_chip_hz)?;
         self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        Ok(())
+    }
+    pub fn available(&self, tap: Tap) -> bool {
+        self.source(tap.source).running
+            && match (tap.source, tap.divide) {
+                (Source::System, 2..=8192) => self.prescaler_s.running(),
+                (Source::Watch, 8..=1024) => self.prescaler_w.running(),
+                _ => true,
+            }
+    }
+    /// Source consumers are fixed hardware: main phi, the watch mux, and WDT.
+    /// Call after settling their old rules. Ordinary register writes that do
+    /// not change availability leave every phase and projection untouched.
+    pub(crate) fn power_sources(&mut self, now: Time, power: SourcePower) -> Result<(), Error> {
+        let watch_changed =
+            self.watch.running != power.watch || self.watch_uses_on_chip != power.watch_on_chip;
+        let system_changed = self.system.running != power.main;
+        if watch_changed {
+            if self.cpu_uses_subclock {
+                self.cpu.stop(now)?;
+            }
+            self.subclock.stop(now)?;
+            self.watch.stop(now)?;
+        }
+        if system_changed {
+            if !self.cpu_uses_subclock {
+                self.cpu.stop(now)?;
+            }
+            self.system.stop(now)?;
+        }
+        let oscillator_changed =
+            self.oscillator
+                .set_running(power.oscillator, now, self.frequencies.main_hz)?;
+        let rosc_changed =
+            self.on_chip
+                .set_running(power.on_chip, now, self.frequencies.on_chip_hz)?;
+        let crystal_changed =
+            self.watch_crystal
+                .set_running(power.crystal, now, self.frequencies.watch_hz)?;
+        if watch_changed {
+            self.watch_uses_on_chip = power.watch_on_chip;
+            if power.watch {
+                let source = if power.watch_on_chip {
+                    &self.on_chip
+                } else {
+                    &self.watch_crystal
+                };
+                self.watch = Self::divided(
+                    source,
+                    now,
+                    if power.watch_on_chip { 32 } else { 1 },
+                    self.watch.ticks(now),
+                )?;
+            }
+            self.select_subclock(now, self.subclock_divide)?;
+        }
+        if system_changed {
+            if power.main {
+                self.select_system(now, self.system_source, self.system_divide)?;
+            } else if !self.cpu_uses_subclock {
+                self.select_cpu(now, false)?;
+            }
+        }
+        if oscillator_changed || rosc_changed || crystal_changed {
+            self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        }
         Ok(())
     }
 }
@@ -329,7 +420,11 @@ impl ClockWait {
                 .ok_or(TimeError::Overflow)?;
             WaitState::Running {
                 target,
-                cached: clocks.edge(target, tap)?,
+                cached: if clocks.available(tap) {
+                    clocks.edge(target, tap)?
+                } else {
+                    Time::MAX
+                },
                 revision: clocks.revision,
             }
         };
@@ -341,12 +436,12 @@ impl ClockWait {
                 target,
                 cached,
                 revision,
-            } => Ok(Some(if revision == clocks.revision {
+            } if clocks.available(self.tap) => Ok(Some(if revision == clocks.revision {
                 cached
             } else {
                 clocks.edge(target, self.tap)?
             })),
-            WaitState::Paused { .. } => Ok(None),
+            WaitState::Running { .. } | WaitState::Paused { .. } => Ok(None),
             WaitState::Ready(at) => Ok(Some(at)),
         }
     }

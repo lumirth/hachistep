@@ -390,3 +390,29 @@ Validation: `out/prescaler-check` passes all source, debug/release/trace, lint,
 CLI and 71 independent guest checks. `out/prescaler-retail` passes the two quick
 retail baselines and partition/snapshot replay; firmware observations retain
 the previous baseline while device appointments reflect the corrected phases.
+
+## Oscillator controls, 2026-09-17
+
+OSCCR writes now retain SUBSTP, RFCUT and SUBSEL; OSCF remains the board's
+read-only main-oscillator strap. SUBSTP stops X1 alone; SUBSEL routes ROSC/32
+through the watch domain even with X1 stopped. RFCUT is latched at the specified
+low-power transition; the prescribed oscillator frequency is still the physical
+input to this digital model, rather than an analog feedback-resistor simulation.
+
+Source lifetimes follow §5.5. ROSC stops when WDT, reset and the subclock generator
+all release it. Stopped sources retain their emitted count and create no virtual
+elapsed edges. Restart establishes a fresh source phase. Consumers retain their
+unfinished edge obligations, including a partially transmitted watch-clock SCI
+character. Source reconfiguration refreshes clock projections without restarting
+the peripheral operation. Programmed SYSCR divisors still latch through SLEEP.
+
+Table 5.3, printed p.86, specifically lists the subclock oscillator as
+functions/halted in standby: X1 remains under SUBSTP control. Prescaler W and
+watch consumers halt independently, including standby wake stabilization. This
+preserves X1's phase through standby when it was left enabled. The ROSC-backed
+watch generator follows whether the shared ROSC still has a consumer.
+
+The independent guest diagnostic checks stopped-crystal Timer W, ROSC/32 while
+SUBSTP stays set, and read-only OSCF. Controlled-frequency tests check exact
+counter edges, source-stop obligations, last-consumer ROSC shutdown, standby
+phase retention, and partitioned restoration in a paused serial character.
