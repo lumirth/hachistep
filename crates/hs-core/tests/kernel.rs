@@ -14,6 +14,60 @@ const LOOP: &[u8] = &[
     0x79, 0x07, 0xff, 0x80, 0xf8, 0x2a, 0x6a, 0x88, 0xf7, 0x80, 0x0a, 0x08, 0x40, 0xf8,
 ];
 #[test]
+fn watch_counter_keeps_the_last_tick_of_oscillator_stabilization() {
+    // Timer B1 uses the independent watch source. NMI restarts the 1-MHz
+    // main oscillator at 258 us; STS=000 ends its 8192-cycle wait at 8450 us.
+    // The watch/256 edge at 8448 us must survive that gate transition.
+    let mut code = vec![0x79, 7, 0xff, 0x70];
+    for (a, v) in [
+        (0xfffa_u16, 5),
+        (0xf0d0, 0x3f),
+        (0xf0d1, 0),
+        (0xf0d0, 0x7f),
+        (0xfff0, 0x84),
+    ] {
+        code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+    }
+    code.extend([0x01, 0x80, 0x40, 0xfe]);
+    let mut rom = vec![0; 49152];
+    rom[..2].copy_from_slice(&0x100u16.to_be_bytes());
+    rom[14..16].copy_from_slice(&0x200u16.to_be_bytes());
+    rom[0x100..0x100 + code.len()].copy_from_slice(&code);
+    rom[0x200..0x202].copy_from_slice(&[0x40, 0xfe]);
+    let mut a = Machine::with_conditions(
+        Images {
+            firmware: &rom,
+            eeprom: &[0xff; 65536],
+            eeprom_status: 0,
+        },
+        hs_core::Conditions {
+            clocks: hs_core::mcu::clocks::Frequencies {
+                main_hz: 1_000_000,
+                watch_hz: 1_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut b = a.clone();
+    let wake = TimedInput {
+        at: Time::from_micros(258),
+        input: Input::NmiPin(false),
+    };
+    let harmless = TimedInput {
+        at: Time::from_micros(8449),
+        input: Input::SupplyMillivolts(3000),
+    };
+    a.run_until(Time::from_micros(8705), &[wake], &mut ())
+        .unwrap();
+    b.run_until(Time::from_micros(8705), &[wake, harmless], &mut ())
+        .unwrap();
+    assert_eq!(a.peek(0xf0d1).unwrap(), 34);
+    assert_eq!(b.peek(0xf0d1).unwrap(), 34);
+    assert_eq!(a.registers(), b.registers());
+}
+#[test]
 fn run_partition_and_snapshot_replay_preserve_all_state_and_events() {
     let mut long = machine(LOOP);
     let mut short = long.clone();

@@ -69,13 +69,21 @@ silicon/board evidence before extending accuracy claims.
 
 ### Sensor front end
 
-Default input is stationary +1 g on Z. Conversion clamps to signed ten-bit
-range; nominal range scaling applies. Filter window is currently
-`1 << (6 - min(bandwidth, 6))`, with integer truncation and an unfiltered startup
-until sufficient history exists. All three axes publish together at nominal
-3 kHz. Temperature is a canonical 20 C value. These are explicit model choices,
-not verified filter transfer/quantization/axis-skew facts. Sleep stabilization,
-image reload and sensor EEPROM timing have separate nominal appointments.
+Default input is stationary +1 g on Z at 20 °C. The factory image uses the
+documented ±4 g/1500 Hz defaults; firmware normally selects ±2 g itself.
+Temperature, X, Y and Z publish in successive 12 kHz slots. Axis input is
+sampled at its own boundary; a Z publication requests new-data IRQ only when
+all three freshness flags are set. Cold acquisition waits 3 ms.
+
+The filter retains 64 actual samples per axis with running sums. Bandwidth
+selects 64/32/16/8/4/2/1 samples, arithmetic-shift floor rounding, and raw output
+until the chosen window fills. Bandwidth changes reuse history. Offset-binary
+trim acts relative to the fixed modeled factory midpoint 512, at +31.25 mg
+per step, before signed ten-bit ADC clamping and filtering. Range and trim
+changes therefore pass through existing filter history. Reserved range/filter
+codes retain their register bits and use the widest/unfiltered realization.
+The research note identifies the timing and rounding choices alongside their
+Bosch evidence. Temperature follows code/2−30 °C and is an explicit input.
 
 Basic data-ready and any-motion state are present, but their physical board IRQ
 connection is not asserted without evidence. Low-g/high-g/alert, autonomous

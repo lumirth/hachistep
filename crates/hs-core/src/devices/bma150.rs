@@ -1,9 +1,6 @@
-//! BMA150 digital signal, register and four-wire serial owner.
-//!
-//! The moving-average window mapping is a nominal behavioral model. Analog
-//! transfer, undocumented 0x1e effects, filter rounding and axis publication
-//! skew are NOT certified silicon behavior; see docs/STATUS.md. There is one
-//! model, not a raw-register shortcut beside a physical-input model.
+//! BMA150 conversion, filtering, register and serial state. Physical inputs
+//! pass through calibrated ADC codes and the same filter used by interrupts.
+mod filter;
 use super::nv::WriteCycle;
 use crate::{
     error::Error,
@@ -34,9 +31,9 @@ pub struct Bma150 {
     tx_shadow: bool,
     turnaround: bool,
     input: Acceleration,
-    history: [[i16; 3]; 64],
-    history_at: u8,
-    fill: u8,
+    temperature_millicelsius: i32,
+    filter: filter::Filter,
+    filtered: [i16; 3],
     sample_clock: Clock,
     wake_deadline: Option<Time>,
     nv_operation: Option<(WriteCycle, u8, u8)>,
@@ -46,6 +43,7 @@ pub struct Bma150 {
     motion_divider: u8,
     motion_set: u8,
     motion_clear: u8,
+    motion_fill: u8,
     data_ready: bool,
     motion_irq: bool,
 }
@@ -54,11 +52,12 @@ impl Bma150 {
         let mut registers = [0; COUNT];
         registers[0] = 2;
         registers[1] = 0x10;
-        registers[0x14] = 6;
-        registers[0x15] = 0x80;
-        let mut nonvolatile = [0; 0x13];
-        nonvolatile[0x14 - 0x0b] = 6;
-        nonvolatile[0x15 - 0x0b] = 0x80;
+        // Register-map defaults; offset binary 512 is the modeled calibrated
+        // unit's fixed physical baseline, including after EEPROM reloads.
+        let nonvolatile = [
+            3, 20, 150, 160, 150, 0, 0, 162, 13, 0x0e, 0x80, 0, 0, 0, 0, 128, 128, 128, 0,
+        ];
+        registers[0x0b..=0x1d].copy_from_slice(&nonvolatile);
         Self {
             registers,
             nonvolatile,
@@ -75,11 +74,11 @@ impl Bma150 {
             tx_shadow: false,
             turnaround: false,
             input: Acceleration::STILL,
-            history: [[0; 3]; 64],
-            history_at: 0,
-            fill: 0,
-            sample_clock: Clock::new(now, 3000, 1).expect("constant sensor frequency"),
-            wake_deadline: None,
+            temperature_millicelsius: 20_000,
+            filter: filter::Filter::new(6),
+            filtered: [0; 3],
+            sample_clock: Clock::new(now, 12000, 1).expect("constant sensor frequency"),
+            wake_deadline: now.checked_add(Duration::from_millis(3)),
             nv_operation: None,
             image_deadline: None,
             motion_history: [[0; 3]; 3],
@@ -87,6 +86,7 @@ impl Bma150 {
             motion_divider: 0,
             motion_set: 0,
             motion_clear: 0,
+            motion_fill: 0,
             data_ready: false,
             motion_irq: false,
         }
@@ -139,9 +139,11 @@ impl Bma150 {
     pub fn power_on(&mut self, now: Time) {
         let image = self.nonvolatile;
         let input = self.input;
+        let temperature = self.temperature_millicelsius;
         *self = Self::new(now);
         self.nonvolatile = image;
         self.input = input;
+        self.temperature_millicelsius = temperature;
         self.copy_image();
     }
     pub fn set_input(&mut self, input: Acceleration) -> Result<(), Error> {
@@ -155,6 +157,9 @@ impl Bma150 {
         }
         self.input = input;
         Ok(())
+    }
+    pub fn set_temperature(&mut self, millicelsius: i32) {
+        self.temperature_millicelsius = millicelsius;
     }
     pub fn sleeping(&self) -> bool {
         self.registers[0x0a] & 1 != 0
@@ -215,17 +220,18 @@ impl Bma150 {
         }
         if self.wake_deadline == Some(now) {
             self.wake_deadline = None;
-            self.sample_clock.rebase(now);
+            self.sample_clock = Clock::new(now, 12000, 1)?;
         }
         if self.next_sample() == Some(now) {
             self.sample_clock.advance(1)?;
-            self.sample();
+            self.sample_phase();
         }
         Ok(())
     }
     fn copy_image(&mut self) {
         self.registers[0x0b..=0x1d].copy_from_slice(&self.nonvolatile);
         self.shadows = [None; 3];
+        self.filter.select(self.registers[0x14] & 7);
     }
     fn range_g(&self) -> i64 {
         match (self.registers[0x14] >> 3) & 3 {
@@ -235,49 +241,48 @@ impl Bma150 {
         }
     }
     fn window(&self) -> usize {
-        1usize << (6 - (self.registers[0x14] & 7).min(6))
+        self.filter.window()
     }
-    fn sample(&mut self) {
+    fn sample_phase(&mut self) {
+        let phase = (self.sample_clock.ordinal() - 1) & 3;
+        if phase == 0 {
+            self.registers[8] =
+                ((i64::from(self.temperature_millicelsius) + 30_000) / 500).clamp(0, 255) as u8;
+            return;
+        }
+        let axis = phase as usize - 1;
         let range = self.range_g();
         let input = [self.input.x, self.input.y, self.input.z];
-        let mut codes = [0i16; 3];
-        for axis in 0..3 {
-            codes[axis] =
-                ((i64::from(input[axis]) * 512) / (range * 1_000_000)).clamp(-512, 511) as i16;
+        let offset = (u16::from(self.registers[0x1a + axis]) << 2)
+            | u16::from(self.registers[0x16 + axis] >> 6);
+        let acceleration = i64::from(input[axis]) + (i64::from(offset) - 512) * 31_250;
+        let code = ((acceleration * 512) / (range * 1_000_000)).clamp(-512, 511) as i16;
+        self.filtered[axis] = self.filter.push(axis, code);
+        let raw = self.filtered[axis] as u16 & 0x3ff;
+        self.registers[2 + axis * 2] = ((raw & 3) as u8) << 6 | 1;
+        self.registers[3 + axis * 2] = (raw >> 2) as u8;
+        if axis != 2 {
+            return;
         }
-        self.history[usize::from(self.history_at)] = codes;
-        self.history_at = (self.history_at + 1) & 63;
-        self.fill = self.fill.saturating_add(1).min(64);
-        let window = self.window();
-        let count = if usize::from(self.fill) >= window {
-            window
-        } else {
-            1
-        };
-        let mut filtered = [0i16; 3];
-        for (axis, filtered_axis) in filtered.iter_mut().enumerate() {
-            let mut sum = 0i32;
-            for n in 0..count {
-                sum += i32::from(self.history[(usize::from(self.history_at) + 63 - n) & 63][axis]);
-            }
-            *filtered_axis = (sum / count as i32) as i16;
-            let raw = *filtered_axis as u16 & 0x3ff;
-            self.registers[2 + axis * 2] = ((raw & 3) as u8) << 6 | 1;
-            self.registers[3 + axis * 2] = (raw >> 2) as u8;
-        }
-        self.registers[8] = 80; // canonical 20 C input; temperature frontend not yet calibrated.
-        if self.registers[0x15] & 0x20 != 0 {
+        if self.registers[0x15] & 0x20 != 0
+            && [2, 4, 6].iter().all(|&lo| self.registers[lo] & 1 != 0)
+        {
             self.data_ready = true;
         }
+        let window = self.window();
         self.motion_divider = self.motion_divider.wrapping_add(1);
         if usize::from(self.motion_divider) >= window {
             self.motion_divider = 0;
             let previous = self.motion_history[usize::from(self.motion_at)];
-            self.motion_history[usize::from(self.motion_at)] = filtered;
+            self.motion_history[usize::from(self.motion_at)] = self.filtered;
             self.motion_at = (self.motion_at + 1) % 3;
+            if self.motion_fill < 3 {
+                self.motion_fill += 1;
+                return;
+            }
             let threshold = i32::from(self.registers[0x10]) * 4;
             let active = (0..3).any(|axis| {
-                (i32::from(filtered[axis]) - i32::from(previous[axis])).abs() >= threshold
+                (i32::from(self.filtered[axis]) - i32::from(previous[axis])).abs() >= threshold
             });
             let need = [1, 3, 5, 7][usize::from(self.registers[0x11] >> 6)];
             if self.registers[0x15] & 0x40 != 0 && self.registers[0x0b] & 0x40 != 0 {
@@ -389,7 +394,7 @@ impl Bma150 {
                 if value & 2 != 0 {
                     self.copy_image();
                     self.registers[0x0a] = 0;
-                    self.fill = 0;
+                    self.filter = filter::Filter::new(self.registers[0x14] & 7);
                     self.shadows = [None; 3];
                     self.wake_deadline = Some(
                         now.checked_add(Duration::from_millis(1))
@@ -405,7 +410,9 @@ impl Bma150 {
                         self.motion_clear = 0;
                     }
                     if was_asleep && value & 1 == 0 {
-                        self.fill = 0;
+                        self.filter = filter::Filter::new(self.registers[0x14] & 7);
+                        self.motion_fill = 0;
+                        self.motion_divider = 0;
                         self.shadows = [None; 3];
                         self.wake_deadline = Some(
                             now.checked_add(Duration::from_millis(1))
@@ -421,14 +428,8 @@ impl Bma150 {
                 }
             }
             0x14 => {
-                if value & 7 == 7 || (value >> 3) & 3 == 3 {
-                    return Err(Error::Unsupported {
-                        component: "BMA150",
-                        detail: "reserved bandwidth or range code",
-                        address: 0x14,
-                    });
-                }
                 self.registers[i] = value;
+                self.filter.select(value & 7);
             }
             0x15 => {
                 if value & 1 != 0 {
@@ -572,7 +573,7 @@ mod tests {
         let mut r = 0;
         for n in (0..8).rev() {
             r = (r << 1) | u8::from(b.falling() != Drive::Low);
-            b.rising(v & (1 << n) != 0, Time::ZERO).unwrap();
+            b.rising(v & (1 << n) != 0, b.sample_clock.at).unwrap();
         }
         r
     }
@@ -589,6 +590,14 @@ mod tests {
         b.set_selected(false);
         value
     }
+    fn sample_cycle(b: &mut Bma150) {
+        if let Some(at) = b.wake_deadline {
+            b.at_deadline(at, &mut ()).unwrap();
+        }
+        for _ in 0..4 {
+            b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap();
+        }
+    }
     #[test]
     fn protected_window_and_identity() {
         let mut b = Bma150::new(Time::ZERO);
@@ -603,7 +612,8 @@ mod tests {
     #[test]
     fn physical_force_and_paired_shadow() {
         let mut b = Bma150::new(Time::ZERO);
-        b.sample();
+        write(&mut b, 0x14, 6); // ±2 g, unaveraged output.
+        sample_cycle(&mut b);
         assert_eq!(b.peek(7), Some(64));
         let lo = read(&mut b, 6);
         b.set_input(Acceleration {
@@ -612,7 +622,7 @@ mod tests {
             z: -1_000_000,
         })
         .unwrap();
-        b.sample();
+        sample_cycle(&mut b);
         assert_eq!(lo & 0xc0, 0);
         assert_eq!(read(&mut b, 7), 64);
         read(&mut b, 6);
@@ -627,7 +637,7 @@ mod tests {
         }
         b.set_selected(false);
         assert_eq!((b.peek(0x0c), b.peek(0x0d)), (Some(32), Some(2)));
-        b.sample();
+        sample_cycle(&mut b);
         read(&mut b, 2);
         read(&mut b, 3); // next sequential address is Y LSB, but never sampled.
         assert_eq!(b.peek(4).unwrap() & 1, 1);
@@ -657,6 +667,42 @@ mod tests {
         assert_eq!(word, 0x0210);
         b.set_selected(false);
         assert_eq!(b.data_output(), Drive::Floating);
+    }
+    #[test]
+    fn factory_offset_changes_have_the_vendor_calibration_scale_in_each_range() {
+        for (range, expected) in [(6, 264u16), (14, 132), (22, 66)] {
+            let mut b = Bma150::new(Time::ZERO);
+            write(&mut b, 0x14, range);
+            write(&mut b, 0x0a, 0x10);
+            write(&mut b, 0x18, 0x40); // Z offset 512 -> 513.
+            sample_cycle(&mut b);
+            assert_eq!(
+                u16::from(read(&mut b, 6) >> 6) | (u16::from(read(&mut b, 7)) << 2),
+                expected
+            );
+            assert_eq!(read(&mut b, 8), 100);
+        }
+    }
+    #[test]
+    fn axes_publish_sequentially_and_new_data_waits_for_every_axis() {
+        let mut b = Bma150::new(Time::ZERO);
+        write(&mut b, 0x15, 0xa0);
+        b.at_deadline(Time::from_micros(3000), &mut ()).unwrap();
+        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // T
+        assert_eq!(b.peek(8), Some(100));
+        assert_eq!(b.peek(2), Some(0));
+        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // X
+        assert_eq!(read(&mut b, 2) & 1, 1);
+        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // Y
+        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // Z
+        assert!(!b.interrupt());
+        sample_cycle(&mut b);
+        assert!(b.interrupt());
+        read(&mut b, 2);
+        assert!(!b.interrupt());
+        b.set_temperature(35_000);
+        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap();
+        assert_eq!(read(&mut b, 8), 130);
     }
     #[test]
     fn nonvolatile_completion_reloads_the_whole_image_and_power_loss_retains_partial_cells() {

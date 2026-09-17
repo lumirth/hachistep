@@ -168,6 +168,7 @@ pub enum Input {
     Buttons(Buttons),
     Acceleration(Acceleration),
     SupplyMillivolts(u16),
+    TemperatureMillicelsius(i32),
     InfraredLevel(bool),
     ResetPin(bool),
     /// Dedicated NMI package pin (high is the canonical user-mode idle level).

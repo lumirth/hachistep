@@ -26,6 +26,7 @@ pub struct Images<'a> {
 pub struct Conditions {
     pub clocks: Frequencies,
     pub supply_millivolts: u16,
+    pub temperature_millicelsius: i32,
     /// Uncalibrated board transfer witness, not a measured Pokewalker constant.
     pub adc_reference_millivolts: u16,
 }
@@ -34,6 +35,7 @@ impl Default for Conditions {
         Self {
             clocks: Frequencies::default(),
             supply_millivolts: 3000,
+            temperature_millicelsius: 20_000,
             adc_reference_millivolts: 3300,
         }
     }
@@ -141,6 +143,8 @@ impl Machine {
             fault: None,
             stats: Statistics::default(),
         };
+        m.sensor
+            .set_temperature(conditions.temperature_millicelsius);
         if m.powered {
             m.resolve_board(&mut ())?;
         }
@@ -509,6 +513,7 @@ impl Machine {
             Input::Buttons(_) => 0,
             Input::Acceleration(_) => 1,
             Input::SupplyMillivolts(_) => 2,
+            Input::TemperatureMillicelsius(_) => 23,
             Input::InfraredLevel(_) => 3,
             Input::ResetPin(_) => 4,
             Input::NmiPin(_) => 31,
@@ -578,6 +583,10 @@ impl Machine {
                 Input::Buttons(b) => self.mcu.gpio.set_buttons(b),
                 Input::Acceleration(a) => self.sensor.set_input(a)?,
                 Input::SupplyMillivolts(v) => self.conditions.supply_millivolts = v,
+                Input::TemperatureMillicelsius(v) => {
+                    self.conditions.temperature_millicelsius = v;
+                    self.sensor.set_temperature(v);
+                }
                 Input::InfraredLevel(v) => ir = Some(v),
                 Input::ResetPin(high) => reset = Some(!high),
                 Input::NmiPin(high) => nmi = Some(high),
@@ -641,6 +650,12 @@ impl Machine {
             .map_or(Ok(None), |r| r.wait().deadline(&self.mcu.clocks))
     }
     fn enter_sleep(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        // A clock transition is itself an effect boundary. Peripherals which
+        // keep running through it must consume the old clock/gate interval,
+        // even when no other device happened to schedule an appointment here.
+        if self.mcu.sync(self.now)? {
+            return self.reset_mcu(true, out);
+        }
         self.mcu.control.sleep(self.now, &mut self.mcu.clocks)?;
         // The intermediate watch/standby state has real module effects even
         // when a direct transition immediately starts the wake sequence.
@@ -670,12 +685,16 @@ impl Machine {
             match resume {
                 Resume::Sleep(_) => self.enter_sleep(out)?,
                 Resume::Wake { direct, .. } => {
-                    self.mcu.control.stabilizing_from = None;
-                    self.mcu.apply_gates(self.now, out)?;
-                    self.resolve_board(out)?;
-                    self.refresh_deadline()?;
-                    if direct {
-                        self.cpu.direct_transition()?;
+                    if self.mcu.sync(self.now)? {
+                        self.reset_mcu(true, out)?;
+                    } else {
+                        self.mcu.control.stabilizing_from = None;
+                        self.mcu.apply_gates(self.now, out)?;
+                        self.resolve_board(out)?;
+                        self.refresh_deadline()?;
+                        if direct {
+                            self.cpu.direct_transition()?;
+                        }
                     }
                 }
             }

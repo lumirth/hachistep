@@ -47,6 +47,7 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
                 1,
             ),
             ("supply", 3) => (Input::SupplyMillivolts(p[2].parse()?), 2),
+            ("temperature", 3) => (Input::TemperatureMillicelsius(p[2].parse()?), 23),
             ("ir", 3) => (Input::InfraredLevel(bit(p[2])?), 3),
             ("reset", 3) => (Input::ResetPin(bit(p[2])?), 4),
             ("nmi", 3) => (Input::NmiPin(bit(p[2])?), 31),

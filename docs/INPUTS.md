@@ -43,6 +43,7 @@ assignment to each property is allowed at a timestamp. There is no header row.
 | `1000,buttons,0,1,0` | Left released, center pressed, right released. |
 | `2000,buttons,0,0,0` | Release all buttons. |
 | `0,accel,0,0,1000000` | Specific force: +1 g on device Z. |
+| `0,temperature,20000` | Sensor temperature in millidegrees Celsius: 20 °C. |
 | `500000,supply,2900` | Change supply witness to 2,900 mV. |
 | `500000,supply,0` | Collapse the board rail; stop activity and retain partial nonvolatile writes. |
 | `600000,supply,3000` | Restore the rail after a zero-voltage interval. |
