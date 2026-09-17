@@ -57,6 +57,12 @@ logical controller output, not a calibrated physical panel or frame-clock
 simulation. `display_enabled` and `display_start_line` expose useful controller
 state. Power-off display rendering is blank.
 
+`display_drive()` projects the LCD controller's digital output at the current
+observation point: selected COM (128 for the icon), two 64-bit SEG masks, and
+AC polarity. It includes PWM/FRC, the output latch, and frame-latched start
+line. It does not advance the guest or alter snapshot state. Power-save and
+display-off return inactive drive. This is separate from analog glass response.
+
 `firmware`, `ram`, `eeprom`, `eeprom_status`, `sensor_nonvolatile`, `lcd_ram` and `lcd_icons`
 return read-only data. No mutable bypass into a guest register or memory array is
 part of the ordinary facade. Guest modifications go through normal execution.

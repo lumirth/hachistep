@@ -205,6 +205,13 @@ impl Machine {
     pub fn display_enabled(&self) -> bool {
         self.powered && self.lcd.enabled()
     }
+    pub fn display_drive(&self) -> Result<crate::devices::nt7508::LcdDrive, Error> {
+        if !self.powered {
+            return Ok(crate::devices::nt7508::LcdDrive::OFF);
+        }
+        let at = Time::from_raw(self.now.raw().saturating_sub(1)).max(self.last_effect);
+        self.lcd.drive(at)
+    }
     pub fn display_start_line(&self) -> u8 {
         self.lcd.start_line()
     }

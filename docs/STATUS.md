@@ -92,8 +92,17 @@ which overrides reverse. Icon enable and page selection are independent, and
 only DB0 is stored in the icon page. Software reset retains RAM and the drive
 controls listed as unaffected in the manual's specific reset table.
 
-Logical shade rendering is not yet electrical scan emulation. Oscillator,
-palette, and voltage controls are retained for the scan implementation.
+The digital scan retains oscillator/divider phase, a binary 128-SEG output
+latch, row/PWM/FRC counters, frame-latched geometry/start line, and continuous
+n-line inversion. Stable intervals advance arithmetically without scheduler
+appointments. Palette nibbles select documented PWM widths; entire-on uses
+the black palette. Display-off gates drive; power save stops scan; release
+restarts at row zero with retained RAM. External OSC1 is undriven on the modeled
+board. Live-change boundary choices are centralized in the cited research note.
+
+`display_drive` exposes this digital drive; the existing shade raster remains
+a logical RAM view. Voltage/contrast controls are retained, but calibrated
+panel response, analog settling and physical luminance are not implemented.
 Unassigned/factory-test bytes are inert in the chosen board model; E8 belongs
 to the unbonded three-wire interface and does not consume a parameter here.
 

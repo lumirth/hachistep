@@ -23,8 +23,8 @@ not require a calibrated model of LCD appearance. Sources are Novatek
 
 The digital corrections now preserve high-plane-first order, full-width
 mapping, override priority, valid duty, and independent icon/page state.
-The remaining oscillator, palette, frequency, and inversion work is described
-in the scan section below.
+Oscillator, palette, frequency, latch and inversion behavior are implemented
+by the analytic scan described below.
 
 The apparent wrap ambiguity can be resolved now: p. 15 contains a conflicting
 generic lock sentence, but the command-specific description on p. 33 expressly

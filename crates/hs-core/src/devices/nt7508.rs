@@ -6,6 +6,8 @@ use crate::{
     signals::{Event, Output},
     time::Time,
 };
+mod scan;
+pub use scan::LcdDrive;
 pub const LCD_WIDTH: usize = 96;
 pub const LCD_HEIGHT: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +46,7 @@ pub struct Nt7508 {
     contrast_trim: u8,
     otp_control: u8,
     oscillator_enabled: bool,
+    scan: scan::Scan,
 }
 impl Default for Nt7508 {
     fn default() -> Self {
@@ -87,6 +90,7 @@ impl Nt7508 {
             contrast_trim: 0,
             otp_control: 0,
             oscillator_enabled: false,
+            scan: scan::Scan::default(),
         }
     }
     pub fn select(&mut self, selected: bool) {
@@ -109,11 +113,14 @@ impl Nt7508 {
             let v = self.shift;
             self.bits = 0;
             self.shift = 0;
+            self.scan = self.project_scan(now)?;
+            let was_running = self.oscillator_enabled && !self.power_save;
             if self.data {
                 self.write_data(v, now, output);
             } else {
                 self.command(v, now, output)?;
             }
+            self.update_clock(now, was_running)?;
         }
         Ok(())
     }
