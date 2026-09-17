@@ -182,7 +182,7 @@ impl Gpio {
         serial: Pins,
         timer_levels: u8,
         timer_mask: u8,
-        miso: Option<bool>,
+        external_data: [Option<bool>; 2],
     ) -> SerialLevels {
         for i in 0..4 {
             self.levels[i] = self.latch[i] & self.direction[i] | self.pull[i] & !self.direction[i];
@@ -260,7 +260,11 @@ impl Gpio {
                 Drive::Low => false,
                 Drive::High => true,
                 Drive::Floating => self.digital_levels[6 + bit]
-                    .or(if bit == 3 { miso } else { None })
+                    .or(if bit >= 2 {
+                        external_data[bit - 2]
+                    } else {
+                        None
+                    })
                     .unwrap_or(
                         bit == 0 || (self.pull[3] & mask != 0 && self.direction[3] & mask == 0),
                     ),
@@ -333,7 +337,7 @@ mod tests {
             right: true,
         });
         p.write(0xffca, 1).unwrap();
-        p.resolve(Default::default(), 0, 0, None);
+        p.resolve(Default::default(), 0, 0, [None; 2]);
         assert_eq!(p.read(0xffde) & 0x15, 0x14);
         assert_eq!(p.irq_levels()[0], Some(false));
     }
@@ -354,7 +358,7 @@ mod tests {
             },
             0,
             0,
-            Some(false),
+            [None, Some(false)],
         );
         assert!(s.lcd_selected);
         assert!(!s.eeprom_selected);

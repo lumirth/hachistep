@@ -392,9 +392,15 @@ fn pwm_output_pin_route_and_digital_collision_validation() {
     let mut g = hs_core::mcu::gpio::Gpio::default();
     g.write(0xffc0, 0x20).unwrap();
     g.set_aec_output(true, Some(false));
-    assert!(g.resolve(Default::default(), 0, 0, None).eeprom_selected);
+    assert!(
+        g.resolve(Default::default(), 0, 0, [None; 2])
+            .eeprom_selected
+    );
     g.set_aec_output(true, Some(true));
-    assert!(!g.resolve(Default::default(), 0, 0, None).eeprom_selected);
+    assert!(
+        !g.resolve(Default::default(), 0, 0, [None; 2])
+            .eeprom_selected
+    );
     // Same-node contradictions are rejected before run/input mutation.
     let change = pin(0, DigitalPin::P12, true);
     let before = m.clone();

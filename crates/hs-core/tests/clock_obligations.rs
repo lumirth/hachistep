@@ -247,11 +247,11 @@ fn every_pull_register_accepts_writes_and_affects_only_input_configured_pins() {
             let mut p = Gpio::default();
             p.write(reg, value).unwrap();
             assert_eq!(p.read(reg), value & mask);
-            p.resolve(Default::default(), 0, 0, None);
+            p.resolve(Default::default(), 0, 0, [None; 2]);
             assert_eq!(p.read(port) & value & mask, value & mask);
             p.write(dir, mask).unwrap();
             p.write(port, 0).unwrap();
-            p.resolve(Default::default(), 0, 0, None);
+            p.resolve(Default::default(), 0, 0, [None; 2]);
             assert_eq!(p.read(port) & mask, 0);
         }
     }

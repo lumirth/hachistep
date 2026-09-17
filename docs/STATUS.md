@@ -79,7 +79,11 @@ image reload and sensor EEPROM timing have separate nominal appointments.
 
 Basic data-ready and any-motion state are present, but their physical board IRQ
 connection is not asserted without evidence. Low-g/high-g/alert, autonomous
-wake-pause, self-test and three-wire operation stop explicitly. I2C, complete
+wake-pause and self-test still stop explicitly. Four-wire reads and three-wire
+turnaround share the serial parser; only reads auto-increment. Three-wire drives
+SDI and leaves SDO floating, with MCU sampling preceding the sensor's same-edge
+output change. A launched but unclocked next byte has no read side effects.
+I2C, complete
 calibration effects, analog filtering and noise are not implemented.
 
 ### LCD viewport

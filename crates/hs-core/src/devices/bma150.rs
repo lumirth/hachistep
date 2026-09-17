@@ -28,7 +28,11 @@ pub struct Bma150 {
     tx: Option<u8>,
     tx_bit: u8,
     driven: Drive,
-    shadows: [Option<u8>; 3],
+    shadows: [Option<[u8; 2]>; 3],
+    last_msb: [u8; 3],
+    tx_pair: Option<[u8; 2]>,
+    tx_shadow: bool,
+    turnaround: bool,
     input: Acceleration,
     history: [[i16; 3]; 64],
     history_at: u8,
@@ -66,6 +70,10 @@ impl Bma150 {
             tx_bit: 8,
             driven: Drive::Floating,
             shadows: [None; 3],
+            last_msb: [0; 3],
+            tx_pair: None,
+            tx_shadow: false,
+            turnaround: false,
             input: Acceleration::STILL,
             history: [[0; 3]; 64],
             history_at: 0,
@@ -306,22 +314,46 @@ impl Bma150 {
         }
         Some(self.registers[i])
     }
-    fn read_register(&mut self, address: u8) -> Option<u8> {
+    fn prepare_read(&mut self, address: u8) -> Option<u8> {
+        self.tx_pair = None;
+        self.tx_shadow = false;
         let mut v = self.peek(address)?;
         if (2..=7).contains(&address) {
             let axis = usize::from((address - 2) / 2);
             let lo = 2 + axis * 2;
             if self.registers[0x15] & 8 == 0 {
+                self.tx_shadow = true;
                 if address & 1 == 0 {
-                    self.shadows[axis] = Some(self.registers[lo + 1]);
+                    let pair =
+                        self.shadows[axis].unwrap_or([self.registers[lo], self.registers[lo + 1]]);
+                    self.tx_pair = Some(pair);
+                    v = pair[0];
                 } else {
-                    v = self.shadows[axis].take().unwrap_or(self.registers[lo + 1]);
+                    v = self.shadows[axis].map_or(self.last_msb[axis], |pair| pair[1]);
+                }
+            }
+        }
+        Some(v)
+    }
+    fn acknowledge_read(&mut self, address: u8) {
+        if self.tx.is_none() {
+            return;
+        }
+        if (2..=7).contains(&address) {
+            let axis = usize::from((address - 2) / 2);
+            let lo = 2 + axis * 2;
+            if self.tx_shadow {
+                if let Some(mut pair) = self.tx_pair {
+                    pair[0] &= !1;
+                    self.shadows[axis] = Some(pair);
+                } else {
+                    self.last_msb[axis] = self.tx.unwrap_or(0);
+                    self.shadows[axis] = None;
                 }
             }
             self.registers[lo] &= !1;
             self.data_ready = false;
         }
-        Some(v)
     }
     fn write_register(&mut self, address: u8, value: u8, now: Time) -> Result<(), Error> {
         let i = usize::from(address);
@@ -399,13 +431,6 @@ impl Bma150 {
                 self.registers[i] = value;
             }
             0x15 => {
-                if value & 0x80 == 0 {
-                    return Err(Error::Unsupported {
-                        component: "BMA150",
-                        detail: "three-wire SPI turnaround is not implemented",
-                        address: 0x15,
-                    });
-                }
                 if value & 1 != 0 {
                     return Err(Error::Unsupported {
                         component: "BMA150",
@@ -440,21 +465,47 @@ impl Bma150 {
             self.rx_bits = 0;
             self.tx = None;
             self.tx_bit = 8;
+            self.tx_pair = None;
+            self.tx_shadow = false;
+            self.turnaround = false;
             self.driven = Drive::Floating;
         }
     }
     pub fn output(&self) -> Drive {
-        if self.selected {
+        if self.selected && self.four_wire() {
             self.driven
         } else {
             Drive::Floating
         }
     }
+    pub fn data_output(&self) -> Drive {
+        if self.selected && !self.four_wire() {
+            self.driven
+        } else {
+            Drive::Floating
+        }
+    }
+    fn four_wire(&self) -> bool {
+        self.registers[0x15] & 0x80 != 0
+    }
     pub fn falling(&mut self) -> Drive {
+        if self.four_wire() {
+            self.shift_output();
+        }
+        self.output()
+    }
+    fn shift_output(&mut self) {
+        if let Serial::Read(address) = self.serial {
+            if self.tx_bit == 0 {
+                self.tx = self.prepare_read(address);
+            }
+        } else {
+            self.driven = Drive::Floating;
+            return;
+        }
         self.driven = match self.tx {
             Some(byte) if self.selected && self.tx_bit < 8 => {
                 let bit = byte & (0x80 >> self.tx_bit) != 0;
-                self.tx_bit += 1;
                 if bit {
                     Drive::High
                 } else {
@@ -463,41 +514,54 @@ impl Bma150 {
             }
             _ => Drive::Floating,
         };
-        self.driven
+        self.tx_bit = self.tx_bit.saturating_add(1).min(8);
     }
     pub fn rising(&mut self, mosi: bool, now: Time) -> Result<(), Error> {
         if !self.selected {
             return Ok(());
         }
-        self.rx = self.rx << 1 | u8::from(mosi);
-        self.rx_bits += 1;
-        if self.rx_bits != 8 {
+        if self.turnaround {
+            self.turnaround = false;
+            self.shift_output();
             return Ok(());
         }
-        let value = self.rx;
-        self.rx = 0;
-        self.rx_bits = 0;
-        self.serial = match self.serial {
-            Serial::Address => {
-                if value & 0x80 == 0 {
-                    Serial::Write(value & 0x7f)
-                } else {
-                    self.tx = self.read_register(value & 0x7f);
-                    self.tx_bit = 0;
-                    Serial::Read(value & 0x7f)
+        if let Serial::Read(address) = self.serial {
+            if self.rx_bits == 0 {
+                self.acknowledge_read(address);
+            }
+        }
+        self.rx = self.rx << 1 | u8::from(mosi);
+        self.rx_bits += 1;
+        if self.rx_bits == 8 {
+            let value = self.rx;
+            self.rx = 0;
+            self.rx_bits = 0;
+            self.serial = match self.serial {
+                Serial::Address => {
+                    if value & 0x80 == 0 {
+                        Serial::Write(value & 0x7f)
+                    } else {
+                        self.tx = None;
+                        self.tx_bit = 0;
+                        self.turnaround = !self.four_wire();
+                        Serial::Read(value & 0x7f)
+                    }
                 }
-            }
-            Serial::Read(address) => {
-                let next = address.wrapping_add(1) & 0x7f;
-                self.tx = self.read_register(next);
-                self.tx_bit = 0;
-                Serial::Read(next)
-            }
-            Serial::Write(address) => {
-                self.write_register(address, value, now)?;
-                Serial::Write(address.wrapping_add(1) & 0x7f)
-            }
-        };
+                Serial::Read(address) => {
+                    let next = address.wrapping_add(1) & 0x7f;
+                    self.tx = None;
+                    self.tx_bit = 0;
+                    Serial::Read(next)
+                }
+                Serial::Write(address) => {
+                    self.write_register(address, value, now)?;
+                    Serial::Address
+                }
+            };
+        }
+        if !self.four_wire() && !self.turnaround {
+            self.shift_output();
+        }
         Ok(())
     }
 }
@@ -518,6 +582,13 @@ mod tests {
         xfer(b, v);
         b.set_selected(false);
     }
+    fn read(b: &mut Bma150, address: u8) -> u8 {
+        b.set_selected(true);
+        xfer(b, address | 0x80);
+        let value = xfer(b, 0);
+        b.set_selected(false);
+        value
+    }
     #[test]
     fn protected_window_and_identity() {
         let mut b = Bma150::new(Time::ZERO);
@@ -534,7 +605,7 @@ mod tests {
         let mut b = Bma150::new(Time::ZERO);
         b.sample();
         assert_eq!(b.peek(7), Some(64));
-        let lo = b.read_register(6).unwrap();
+        let lo = read(&mut b, 6);
         b.set_input(Acceleration {
             x: 0,
             y: 0,
@@ -543,9 +614,49 @@ mod tests {
         .unwrap();
         b.sample();
         assert_eq!(lo & 0xc0, 0);
-        assert_eq!(b.read_register(7), Some(64));
-        b.read_register(6);
-        assert_eq!(b.read_register(7), Some(192));
+        assert_eq!(read(&mut b, 7), 64);
+        read(&mut b, 6);
+        assert_eq!(read(&mut b, 7), 192);
+    }
+    #[test]
+    fn writes_are_address_data_pairs_and_unclocked_read_bytes_have_no_effect() {
+        let mut b = Bma150::new(Time::ZERO);
+        b.set_selected(true);
+        for byte in [0x0c, 0x20, 0x0d, 2] {
+            xfer(&mut b, byte);
+        }
+        b.set_selected(false);
+        assert_eq!((b.peek(0x0c), b.peek(0x0d)), (Some(32), Some(2)));
+        b.sample();
+        read(&mut b, 2);
+        read(&mut b, 3); // next sequential address is Y LSB, but never sampled.
+        assert_eq!(b.peek(4).unwrap() & 1, 1);
+        b.set_selected(true);
+        xfer(&mut b, 0x84); // An address alone is not a read of Y.
+        b.falling(); // Launching its first bit is still not an acknowledgement.
+        b.set_selected(false);
+        assert_eq!(b.peek(4).unwrap() & 1, 1);
+        assert_eq!(read(&mut b, 4) & 1, 1);
+        assert_eq!(b.peek(4).unwrap() & 1, 0);
+    }
+    #[test]
+    fn three_wire_has_one_turnaround_and_drives_only_sda() {
+        let mut b = Bma150::new(Time::ZERO);
+        write(&mut b, 0x15, 0);
+        b.set_selected(true);
+        xfer(&mut b, 0x80);
+        assert_eq!(b.data_output(), Drive::Floating);
+        b.rising(false, Time::ZERO).unwrap(); // Ninth clock launches D7.
+        let mut word = 0u16;
+        for _ in 0..16 {
+            assert_eq!(b.output(), Drive::Floating);
+            word = (word << 1) | u16::from(b.data_output() == Drive::High);
+            b.falling();
+            b.rising(false, Time::ZERO).unwrap();
+        }
+        assert_eq!(word, 0x0210);
+        b.set_selected(false);
+        assert_eq!(b.data_output(), Drive::Floating);
     }
     #[test]
     fn nonvolatile_completion_reloads_the_whole_image_and_power_loss_retains_partial_cells() {

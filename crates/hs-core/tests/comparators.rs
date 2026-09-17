@@ -218,10 +218,10 @@ fn vcref_is_p30_not_the_p32_transmit_pin() {
     let mut levels = [None; 7];
     levels[6] = Some(false);
     g.set_analog_levels(levels);
-    g.resolve(Default::default(), 0, 0, None);
+    g.resolve(Default::default(), 0, 0, [None; 2]);
     assert_eq!(g.read(0xffd6) & 5, 4);
     levels[6] = Some(true);
     g.set_analog_levels(levels);
-    g.resolve(Default::default(), 0, 0, None);
+    g.resolve(Default::default(), 0, 0, [None; 2]);
     assert_eq!(g.read(0xffd6) & 5, 5);
 }

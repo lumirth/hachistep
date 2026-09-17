@@ -322,14 +322,36 @@ impl Machine {
         }
         Ok(())
     }
-    fn resolve_board(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+    fn serial_data(&self) -> Result<[Option<bool>; 2], Error> {
+        let miso = match (self.eeprom.output(), self.sensor.output()) {
+            (Drive::Low, Drive::High) | (Drive::High, Drive::Low) => {
+                return Err(Error::Unsupported {
+                    component: "board serial net",
+                    detail: "opposing external push-pull drivers",
+                    address: 0xffdc,
+                });
+            }
+            (Drive::Low, _) | (_, Drive::Low) => Some(false),
+            (Drive::High, _) | (_, Drive::High) => Some(true),
+            _ => None,
+        };
+        let mosi = match self.sensor.data_output() {
+            Drive::Low => Some(false),
+            Drive::High => Some(true),
+            Drive::Floating => None,
+        };
+        Ok([mosi, miso])
+    }
+    fn resolve_board(&mut self, out: &mut dyn Output) -> Result<[bool; 4], Error> {
         self.mcu
             .gpio
             .set_aec_output(self.mcu.aec.pwm_enabled(), self.mcu.aec.pwm_output());
         let pins = self.mcu.ssu.pins();
         let timer = self.mcu.timer_w.outputs() << 1;
         let timer_mask = self.mcu.timer_w.drives() << 1;
-        let levels = self.mcu.gpio.resolve(pins, timer, timer_mask, None);
+        let data = self.serial_data()?;
+        let levels = self.mcu.gpio.resolve(pins, timer, timer_mask, data);
+        let sampled = self.mcu.gpio.serial_inputs();
         self.eeprom.set_selected(levels.eeprom_selected, self.now)?;
         self.sensor.set_selected(levels.sensor_selected);
         self.lcd.select(levels.lcd_selected);
@@ -344,33 +366,20 @@ impl Machine {
                 self.sensor.falling();
             }
         }
-        let e = self.eeprom.output();
-        let a = self.sensor.output();
-        let miso = match (e, a) {
-            (Drive::Low, Drive::High) | (Drive::High, Drive::Low) => {
-                return Err(Error::Unsupported {
-                    component: "board serial net",
-                    detail: "opposing external push-pull drivers",
-                    address: 0xffdc,
-                })
-            }
-            (Drive::Low, _) | (_, Drive::Low) => Some(false),
-            (Drive::High, _) | (_, Drive::High) => Some(true),
-            _ => None,
-        };
-        self.mcu.gpio.resolve(pins, timer, timer_mask, miso);
+        let data = self.serial_data()?;
+        self.mcu.gpio.resolve(pins, timer, timer_mask, data);
         self.serial = levels;
         let serial = self.mcu.gpio.serial_inputs();
         if let Some(edge) = self.mcu.ssu.input_pins(serial[0], serial[1]) {
             if edge.sample {
-                self.mcu.ssu.sample(serial[self.mcu.ssu.input_pin()]);
+                self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
             }
             self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
         }
         // Selection and an external clock edge can change the SSU's output
         // drivers. Resolve that electrical consequence at this same instant.
         if self.mcu.ssu.pins() != pins {
-            return self.resolve_board(out);
+            self.resolve_board(out)?;
         }
         self.mcu.control.pins(self.mcu.gpio.irq_levels());
         let (b, c) = self.mcu.gpio.piezo_levels();
@@ -402,7 +411,7 @@ impl Machine {
             .aec
             .input_pins(self.mcu.gpio.aec_inputs(), self.now, &self.mcu.clocks)?;
         self.mcu.collect_aec_requests();
-        Ok(())
+        Ok(sampled)
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         self.mcu.reset(self.now, watchdog, out)?;
@@ -483,12 +492,10 @@ impl Machine {
         }
         if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
             let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;
-            self.resolve_board(out)?;
+            let sampled = self.resolve_board(out)?;
             if let Some(edge) = edge {
                 if edge.sample {
-                    self.mcu
-                        .ssu
-                        .sample(self.mcu.gpio.serial_inputs()[self.mcu.ssu.input_pin()]);
+                    self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
                 }
                 self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
             }
