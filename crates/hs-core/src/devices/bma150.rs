@@ -4,6 +4,7 @@
 //! transfer, undocumented 0x1e effects, filter rounding and axis publication
 //! skew are NOT certified silicon behavior; see docs/STATUS.md. There is one
 //! model, not a raw-register shortcut beside a physical-input model.
+use super::nv::WriteCycle;
 use crate::{
     error::Error,
     signals::{Acceleration, Drive, Event, NvDomain, Output},
@@ -34,7 +35,7 @@ pub struct Bma150 {
     fill: u8,
     sample_clock: Clock,
     wake_deadline: Option<Time>,
-    nv_operation: Option<(Time, u8, u8)>,
+    nv_operation: Option<(WriteCycle, u8, u8)>,
     image_deadline: Option<Time>,
     motion_history: [[i16; 3]; 3],
     motion_at: u8,
@@ -102,21 +103,38 @@ impl Bma150 {
     pub fn nonvolatile_busy(&self) -> bool {
         self.nv_operation.is_some()
     }
-    pub fn power_cycle(&mut self, now: Time) -> Result<(), Error> {
-        if self.nonvolatile_busy() {
-            return Err(Error::Unsupported {
-                component: "BMA150",
-                detail: "interrupted nonvolatile programming is not characterized",
-                address: 0x0a,
+    pub fn power_off(&mut self, now: Time, output: &mut dyn Output) {
+        if let Some((cycle, address, value)) = self.nv_operation.take() {
+            let index = usize::from(address - 0x2b);
+            let value = cycle.byte(
+                self.nonvolatile[index],
+                value,
+                0x20000 + u32::from(address),
+                now,
+            );
+            self.nonvolatile[index] = value;
+            output.event(Event::NvByte {
+                at: now,
+                domain: NvDomain::Sensor,
+                address: u16::from(address),
+                value,
+            });
+            output.event(Event::NvInterrupted {
+                at: now,
+                domain: NvDomain::Sensor,
+                address: u16::from(address),
+                length: 1,
             });
         }
+        self.set_selected(false);
+    }
+    pub fn power_on(&mut self, now: Time) {
         let image = self.nonvolatile;
         let input = self.input;
         *self = Self::new(now);
         self.nonvolatile = image;
         self.input = input;
         self.copy_image();
-        Ok(())
     }
     pub fn set_input(&mut self, input: Acceleration) -> Result<(), Error> {
         if [input.x, input.y, input.z]
@@ -136,8 +154,13 @@ impl Bma150 {
     pub fn interrupt(&self) -> bool {
         self.data_ready || self.motion_irq
     }
-    pub fn nonvolatile(&self) -> &[u8; 0x13] {
-        &self.nonvolatile
+    pub fn nonvolatile(&self, now: Time) -> [u8; 0x13] {
+        let mut image = self.nonvolatile;
+        if let Some((cycle, address, value)) = self.nv_operation {
+            let index = usize::from(address - 0x2b);
+            image[index] = cycle.byte(image[index], value, 0x20000 + u32::from(address), now);
+        }
+        image
     }
     pub fn next_sample(&self) -> Option<Time> {
         if self.sleeping() || self.wake_deadline.is_some() {
@@ -150,7 +173,7 @@ impl Bma150 {
         [
             self.next_sample(),
             self.wake_deadline,
-            self.nv_operation.map(|v| v.0),
+            self.nv_operation.map(|v| v.0.deadline),
             self.image_deadline,
         ]
         .into_iter()
@@ -158,10 +181,11 @@ impl Bma150 {
         .min()
     }
     pub fn at_deadline(&mut self, now: Time, output: &mut dyn Output) -> Result<(), Error> {
-        if let Some((at, address, value)) = self.nv_operation {
-            if at == now {
+        if let Some((cycle, address, value)) = self.nv_operation {
+            if cycle.deadline == now {
                 self.nonvolatile[usize::from(address - 0x2b)] = value;
                 self.nv_operation = None;
+                self.copy_image();
                 output.event(Event::NvByte {
                     at: now,
                     domain: NvDomain::Sensor,
@@ -278,7 +302,7 @@ impl Bma150 {
             return None;
         }
         if address >= 0x2b {
-            return Some(self.nonvolatile[i - 0x2b]);
+            return None; // EEPROM is write-only; read its downloaded image.
         }
         Some(self.registers[i])
     }
@@ -312,16 +336,13 @@ impl Bma150 {
         }
         if address >= 0x2b {
             if self.nv_operation.is_some() {
-                return Err(Error::Unsupported {
-                    component: "BMA150",
-                    detail: "overlapping nonvolatile writes",
-                    address: u16::from(address),
-                });
+                return Ok(()); // The programming engine is occupied.
             }
-            let at = now
-                .checked_add(Duration::from_millis(28))
-                .ok_or(crate::time::TimeError::Overflow)?;
-            self.nv_operation = Some((at, address, value));
+            self.nv_operation = Some((
+                WriteCycle::start(now, Duration::from_millis(28))?,
+                address,
+                value,
+            ));
             return Ok(());
         }
         match address {
@@ -525,5 +546,31 @@ mod tests {
         assert_eq!(b.read_register(7), Some(64));
         b.read_register(6);
         assert_eq!(b.read_register(7), Some(192));
+    }
+    #[test]
+    fn nonvolatile_completion_reloads_the_whole_image_and_power_loss_retains_partial_cells() {
+        let mut b = Bma150::new(Time::ZERO);
+        write(&mut b, 0x0a, 0x10);
+        write(&mut b, 0x12, 0x11);
+        write(&mut b, 0x32, 0xa5);
+        assert_eq!(b.peek(0x32), None);
+        assert_eq!(b.peek(0x12), Some(0x11));
+        let mut interrupted = b.clone();
+        interrupted.power_off(Time::from_micros(14000), &mut ());
+        interrupted.power_on(Time::from_micros(50000));
+        assert_eq!(interrupted.nonvolatile(Time::from_micros(50000))[7], 0);
+        assert_eq!(interrupted.peek(0x12), Some(0));
+        let mut events = Vec::new();
+        b.at_deadline(Time::from_micros(28000), &mut events)
+            .unwrap();
+        assert_eq!(b.peek(0x12), Some(0xa5));
+        assert_eq!(b.nonvolatile(Time::from_micros(28000))[7], 0xa5);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::NvCommit {
+                domain: NvDomain::Sensor,
+                ..
+            }
+        )));
     }
 }

@@ -137,11 +137,13 @@ impl Machine {
             serial: SerialLevels::default(),
             piezo: Piezo::Neutral,
             reset_asserted: false,
-            powered: true,
+            powered: conditions.supply_millivolts != 0,
             fault: None,
             stats: Statistics::default(),
         };
-        m.resolve_board(&mut ())?;
+        if m.powered {
+            m.resolve_board(&mut ())?;
+        }
         m.refresh_deadline()?;
         Ok(m)
     }
@@ -178,14 +180,14 @@ impl Machine {
     pub fn ram(&self) -> &[u8; 2048] {
         self.mcu.ram()
     }
-    pub fn eeprom(&self) -> &[u8; 65_536] {
-        self.eeprom.bytes()
+    pub fn eeprom(&self) -> [u8; 65_536] {
+        self.eeprom.bytes(self.now)
     }
     pub fn eeprom_status(&self) -> u8 {
-        self.eeprom.persistent_status()
+        self.eeprom.persistent_status(self.now)
     }
-    pub fn sensor_nonvolatile(&self) -> &[u8; 0x13] {
-        self.sensor.nonvolatile()
+    pub fn sensor_nonvolatile(&self) -> [u8; 0x13] {
+        self.sensor.nonvolatile(self.now)
     }
     pub fn lcd_ram(&self) -> &[u8; 4096] {
         self.lcd.ram()
@@ -238,17 +240,17 @@ impl Machine {
     pub fn powered(&self) -> bool {
         self.powered
     }
-    /// Supply removal is supported outside nonvolatile programming. A request
-    /// during programming is rejected, preserving the machine, rather than
-    /// inventing atomic loss behavior. ResetPin is a different MCU-only input.
+    /// Remove board power, retaining partially programmed nonvolatile cells.
+    /// ResetPin is a different MCU-only input and leaves external chips powered.
     pub fn power_off(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         if !self.powered {
             return Ok(());
         }
-        if self.eeprom.busy() || self.sensor.nonvolatile_busy() {
-            return Err(Error::Unsupported {component:"power", detail:"power loss during nonvolatile programming needs a measured partial-programming model", address:0});
+        if self.next_devices == Some(self.now) {
+            self.devices_at_boundary(out)?;
         }
-        self.eeprom.power_cycle()?;
+        self.eeprom.power_off(self.now, out);
+        self.sensor.power_off(self.now, out);
         self.last_effect = self.now;
         self.mcu.sci.set_gate(false, self.now, out);
         if self.piezo != Piezo::Neutral {
@@ -269,7 +271,7 @@ impl Machine {
         Ok(())
     }
     pub fn power_on(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if self.powered {
+        if self.powered || self.conditions.supply_millivolts == 0 {
             return Ok(());
         }
         if !self.reset_asserted && !self.mcu.control.nmi_level() {
@@ -277,8 +279,7 @@ impl Machine {
         }
         self.last_effect = self.now;
         self.mcu.power_on(self.now, out)?;
-        self.eeprom.power_cycle()?;
-        self.sensor.power_cycle(self.now)?;
+        self.sensor.power_on(self.now);
         self.lcd = Nt7508::new();
         self.cpu = Cpu::reset();
         self.serial = SerialLevels::default();
@@ -487,6 +488,7 @@ impl Machine {
     }
     fn input_tag(input: Input) -> u8 {
         match input {
+            Input::Power(_) => 22,
             Input::Buttons(_) => 0,
             Input::Acceleration(_) => 1,
             Input::SupplyMillivolts(_) => 2,
@@ -551,8 +553,11 @@ impl Machine {
         let mut ir = None;
         let mut reset = None;
         let mut nmi = None;
+        let mut power = None;
+        let prior_supply = self.conditions.supply_millivolts;
         for change in changes {
             match change.input {
+                Input::Power(on) => power = Some(on),
                 Input::Buttons(b) => self.mcu.gpio.set_buttons(b),
                 Input::Acceleration(a) => self.sensor.set_input(a)?,
                 Input::SupplyMillivolts(v) => self.conditions.supply_millivolts = v,
@@ -562,6 +567,11 @@ impl Machine {
                 Input::AnalogPin { pin, millivolts } => self.analog_pins[pin.index()] = millivolts,
                 Input::DigitalPin { pin, level } => self.mcu.gpio.set_digital_level(pin, level),
             }
+        }
+        if self.conditions.supply_millivolts == 0 {
+            power = Some(false);
+        } else if prior_supply == 0 && power != Some(false) {
+            power = Some(true);
         }
         self.mcu.gpio.set_analog_levels(
             self.analog_pins.map(|v| {
@@ -573,9 +583,13 @@ impl Machine {
         if let Some(high) = nmi {
             // An edge simultaneous with reset assertion/release is not treated
             // as a user-mode interrupt. Pins in that aperture are reset straps.
-            self.mcu
-                .control
-                .nmi_input(high, self.powered && !was_reset && !will_reset);
+            self.mcu.control.nmi_input(
+                high,
+                self.powered && power != Some(false) && !was_reset && !will_reset,
+            );
+        }
+        if power == Some(false) {
+            self.power_off(out)?;
         }
         if let Some(asserted) = reset {
             if self.powered && !asserted && was_reset && !self.mcu.control.nmi_level() {
@@ -585,6 +599,9 @@ impl Machine {
                 self.reset_mcu(false, out)?;
             }
             self.reset_asserted = asserted;
+        }
+        if power == Some(true) {
+            self.power_on(out)?;
         }
         if let Some(light) = ir {
             self.mcu

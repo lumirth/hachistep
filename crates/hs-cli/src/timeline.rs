@@ -29,6 +29,7 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
             }
         };
         let (input, tag) = match (p[1], p.len()) {
+            ("power", 3) => (Input::Power(bit(p[2])?), 22),
             ("buttons", 5) => (
                 Input::Buttons(Buttons {
                     left: bit(p[2])?,

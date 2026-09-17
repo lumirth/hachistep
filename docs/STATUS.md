@@ -39,7 +39,7 @@ listed explicitly below. An absence of model faults is not a completeness proof.
 | `mcu/adc.rs` | Separate sample aperture and conversion result, word result access, channel selection, completion and gating. | Aperture timing is provisional; battery conversion uses a linear switched-supply/3.3 V reference witness. External triggers and active channel/clock changes stop. Full reset retention is not complete. |
 | `mcu/ssu.rs` | One shifter for master and external-clock slave TX/RX, all four SPI phases, bidirectional pin routing, hardware SCS arbitration/deselection, queued data, receive-only/overrun/single-stop sequencing, live CKS continuation and retained sequencer reset. SOL readback/protection and open-drain release are implemented; independent guest cases cover package-level transfers. | Internal pin synchronization is an edge abstraction. Exact active clock-mux glitches and some out-of-sequence configuration effects remain inferred. |
 | `mcu/sci.rs` | Asynchronous TX/RX, holding and shift state, UART framing, parity, receive status and IrDA pulses. Independent TX/RX fixtures pass. | Synchronous/external-clock and multiprocessor modes are unsupported. Full two-stop-bit receive/error corner cases, mid-frame changes and actual optical transceiver response are incomplete. HGSS peer interoperability has not been tested. |
-| `devices/m95512.rs` | Bit-level SPI commands, sequential reads, 128-byte page wrap, WEL/WIP, block protection, status writes, delayed commits. | Five-millisecond programming time is a nominal witness. Board HOLD/WP routes are not invented. Power loss during programming is rejected; no partial-cell model. |
+| `devices/m95512.rs` | Bit-level SPI commands, sequential reads, 128-byte page wrap, WEL through write completion, protection, exact WRSR length, POR selection qualification, and delayed commits. Power loss retains partial addressed cells; exports project the same cells without completing the write. | Five-millisecond programming time, equal erase/program phases and fixed per-cell thresholds describe the canonical part. Threshold distribution is inferred. Board HOLD/WP routes are not invented. |
 | `devices/bma150.rs` | Physical micro-g input, quantization, bounded filter history, register/shadow state, protected window, working/nonvolatile image, four-wire SPI, basic data-ready/any-motion state. | Exact filter window mapping, rounding, calibration effects, staggered axis publication, interrupt algorithms and physical parameters are not certified. See details below. |
 | `devices/nt7508.rs` | 4 KiB RAM plus icons, serial parser, persistent pending parameters across deselection, command/control state, addressing/bitplanes, logical 96x64 rendering. | Analog drive/FRC/PWM/scan timing and several retained analog control effects are not simulated. Panel COM mapping and terminal-column behavior are witnesses. |
 | MCU flash | Fixed image reads, execution and mutation-aware design boundaries. | Programming/erase/verify are unsupported. Flash control reads returning reset values and accepted zero writes are scaffolding, not full flash logic. |
@@ -94,11 +94,16 @@ consume parameters, but do not yet modify a calibrated physical display model.
 ### Power
 
 `Input::ResetPin` is an MCU reset assertion/release; `Machine::power_off/on`
-acts on the whole product. Input supply voltage affects the modeled battery
-measurement but does not automatically reproduce brownout/reset thresholds.
-Cold RAM/CPU unspecified values are initialized deterministically. NMI defaults high as the user-mode strap. A low NMI at reset release/power-on rejects unimplemented bootstrap modes rather than silently executing user firmware. The selected NMI edge is latched independently of IEN/IRR; short-pulse synchronizer behavior is not characterized. Power loss
-while either external nonvolatile owner is programming is a rejected lifecycle
-request. That is a limitation, not a claim that real hardware refuses power loss.
+acts on the whole product. Input supply voltage affects the modeled battery measurement; a zero-voltage
+interval also invokes board power loss/restoration. Nonzero voltage changes do
+not invent a clean brownout reset.
+Cold RAM/CPU unspecified values are initialized deterministically. NMI defaults high as the user-mode strap. A low NMI at reset release/power-on rejects unimplemented bootstrap modes rather than silently executing user firmware. The selected NMI edge is latched independently of IEN/IRR; short-pulse synchronizer behavior is not characterized. A zero-voltage rail or explicit power-off stops all activity and resolves partial
+EEPROM/sensor writes. Completed writes emit NvCommit; interrupted writes emit
+NvInterrupted after their persistent-byte observations. The shared cell model
+uses zero as its erased state (documented for ST; inferred for Bosch), fixed
+thresholds and equal erase/program phases. RES-capacitor discharge, chip-specific
+undervoltage availability and cold-start readiness still need integration; a
+minimum rated operating voltage is not treated as a clean reset threshold.
 
 ## Performance boundary
 

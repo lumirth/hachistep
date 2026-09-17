@@ -67,12 +67,18 @@ pub enum Event {
         address: u16,
         length: u16,
     },
+    NvInterrupted {
+        at: Time,
+        domain: NvDomain,
+        address: u16,
+        length: u16,
+    },
     Reset {
         at: Time,
         watchdog: bool,
     },
 }
-/// Events are delivered synchronously. NvByte records precede their NvCommit
+/// Events are delivered synchronously. NvByte records precede NvCommit or NvInterrupted
 /// at one timestamp, so consumers never have to infer intermediate writes from
 /// a later memory image. No re-entry is allowed.
 pub trait Output {
@@ -157,6 +163,8 @@ impl DigitalPin {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Input {
+    /// Connect or remove the board's common power supply.
+    Power(bool),
     Buttons(Buttons),
     Acceleration(Acceleration),
     SupplyMillivolts(u16),
@@ -191,6 +199,7 @@ impl Event {
             | Event::Infrared { at, .. }
             | Event::NvByte { at, .. }
             | Event::NvCommit { at, .. }
+            | Event::NvInterrupted { at, .. }
             | Event::Reset { at, .. } => at,
             #[cfg(feature = "trace")]
             Event::Bus { at, .. } => at,

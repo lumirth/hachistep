@@ -149,7 +149,7 @@ pub fn report(
       conditions.clocks.main_hz, conditions.clocks.watch_hz, conditions.clocks.on_chip_hz,
       metadata.requested.raw(),m.now().raw(),m.now().as_micros(),wall,
       m.registers().pc,m.instruction_pc(),m.phase_name(),registers,m.registers().ccr,m.retired(),m.interrupt_entries(),m.sleeping(),m.display_enabled(),m.display_start_line(),
-      e.count,e.lcd,e.nv,e.buzzer,e.ir,serial_tx,serial_rx,s.bus_reads,s.bus_writes,s.resets,sha256(m.ram()),sha256(m.lcd_ram()),sha256(m.eeprom()),m.eeprom_status(),fault,e.trace_count,e.trace_limit,e.trace_dropped,e.trace.is_some() && e.trace_dropped == 0)
+      e.count,e.lcd,e.nv,e.buzzer,e.ir,serial_tx,serial_rx,s.bus_reads,s.bus_writes,s.resets,sha256(m.ram()),sha256(m.lcd_ram()),sha256(&m.eeprom()),m.eeprom_status(),fault,e.trace_count,e.trace_limit,e.trace_dropped,e.trace.is_some() && e.trace_dropped == 0)
 }
 pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
     // Caller creates a new directory before running. Each file is create_new;

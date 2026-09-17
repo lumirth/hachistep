@@ -1,6 +1,7 @@
 //! ST M95512 main-array protocol. Pin-level input and output are canonical;
 //! no MCU-only byte shortcut exists. Serial command state and an ongoing
 //! nonvolatile operation have independent lifetimes.
+use super::nv::WriteCycle;
 use crate::{
     error::Error,
     signals::{Drive, Event, NvDomain, Output},
@@ -25,8 +26,8 @@ enum Command {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Programming {
     None,
-    Page { deadline: Time, base: u16 },
-    Status { deadline: Time, value: u8 },
+    Page { cycle: WriteCycle, base: u16 },
+    Status { cycle: WriteCycle, value: u8 },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct M95512 {
@@ -34,6 +35,7 @@ pub struct M95512 {
     status: u8,
     wel: bool,
     selected: bool,
+    select_high_seen: bool,
     command: Command,
     rx: u8,
     rx_bits: u8,
@@ -71,6 +73,7 @@ impl M95512 {
             status,
             wel: false,
             selected: false,
+            select_high_seen: false,
             command: Command::Opcode,
             rx: 0,
             rx_bits: 0,
@@ -87,11 +90,32 @@ impl M95512 {
             write_protect_low: false,
         })
     }
-    pub fn bytes(&self) -> &[u8; EEPROM_SIZE] {
-        &self.array
+    /// Project persistent cells without advancing protocol state or committing
+    /// a pending operation. The caller owns this ordinary EEPROM-save image.
+    pub fn bytes(&self, now: Time) -> [u8; EEPROM_SIZE] {
+        let mut bytes = *self.array;
+        if let Programming::Page { cycle, base } = self.programming {
+            for index in 0..PAGE_SIZE {
+                if self.written[index / 64] & (1u64 << (index % 64)) != 0 {
+                    let address = base + index as u16;
+                    bytes[usize::from(address)] = cycle.byte(
+                        self.array[usize::from(address)],
+                        self.page[index],
+                        u32::from(address),
+                        now,
+                    );
+                }
+            }
+        }
+        bytes
     }
-    pub fn persistent_status(&self) -> u8 {
-        self.status
+    pub fn persistent_status(&self, now: Time) -> u8 {
+        match self.programming {
+            Programming::Status { cycle, value } => {
+                cycle.byte(self.status, value, 0x10000, now) & PERSISTENT_MASK
+            }
+            _ => self.status,
+        }
     }
     pub fn busy(&self) -> bool {
         self.programming != Programming::None
@@ -102,8 +126,8 @@ impl M95512 {
     pub fn deadline(&self) -> Option<Time> {
         match self.programming {
             Programming::None => None,
-            Programming::Page { deadline, .. } | Programming::Status { deadline, .. } => {
-                Some(deadline)
+            Programming::Page { cycle, .. } | Programming::Status { cycle, .. } => {
+                Some(cycle.deadline)
             }
         }
     }
@@ -121,6 +145,11 @@ impl M95512 {
         self.write_protect_low = low;
     }
     pub fn set_selected(&mut self, selected: bool, now: Time) -> Result<(), Error> {
+        if !selected {
+            self.select_high_seen = true;
+        } else if !self.select_high_seen {
+            return Ok(());
+        }
         if self.selected == selected {
             return Ok(());
         }
@@ -139,11 +168,10 @@ impl M95512 {
                             _ => 0,
                         };
                         if usize::from(base) < protected_start {
-                            let deadline = now
-                                .checked_add(self.write_time)
-                                .ok_or(crate::time::TimeError::Overflow)?;
-                            self.programming = Programming::Page { deadline, base };
-                            self.wel = false;
+                            self.programming = Programming::Page {
+                                cycle: WriteCycle::start(now, self.write_time)?,
+                                base,
+                            };
                         }
                     }
                     Command::WriteStatus
@@ -152,11 +180,10 @@ impl M95512 {
                             && !(self.write_protect_low && self.status & 0x80 != 0) =>
                     {
                         let value = self.pending_status.unwrap_or(0) & PERSISTENT_MASK;
-                        let deadline = now
-                            .checked_add(self.write_time)
-                            .ok_or(crate::time::TimeError::Overflow)?;
-                        self.programming = Programming::Status { deadline, value };
-                        self.wel = false;
+                        self.programming = Programming::Status {
+                            cycle: WriteCycle::start(now, self.write_time)?,
+                            value,
+                        };
                     }
                     _ => {}
                 }
@@ -244,7 +271,11 @@ impl M95512 {
             Command::Enable | Command::Disable => self.command = Command::Ignore,
             Command::ReadStatus => self.transmit(self.status()),
             Command::WriteStatus => {
-                self.pending_status = Some(byte);
+                if self.pending_status.is_some() {
+                    self.command = Command::Ignore;
+                } else {
+                    self.pending_status = Some(byte);
+                }
             }
             Command::Address { write, high: None } => {
                 self.command = Command::Address {
@@ -285,13 +316,22 @@ impl M95512 {
                 "EEPROM completion must occur at its scheduled boundary",
             ));
         }
-        match self.programming {
-            Programming::Page { base, .. } => {
+        self.settle_cells(now, output, true);
+        Ok(())
+    }
+    fn settle_cells(&mut self, now: Time, output: &mut dyn Output, complete: bool) {
+        let (domain, base, count) = match self.programming {
+            Programming::Page { cycle, base } => {
                 let mut count = 0u16;
                 for index in 0..PAGE_SIZE {
                     if self.written[index / 64] & (1u64 << (index % 64)) != 0 {
                         let address = base + index as u16;
-                        let value = self.page[index];
+                        let value = cycle.byte(
+                            self.array[usize::from(address)],
+                            self.page[index],
+                            u32::from(address),
+                            now,
+                        );
                         self.array[usize::from(address)] = value;
                         output.event(Event::NvByte {
                             at: now,
@@ -302,14 +342,10 @@ impl M95512 {
                         count += 1;
                     }
                 }
-                output.event(Event::NvCommit {
-                    at: now,
-                    domain: NvDomain::EepromArray,
-                    address: base,
-                    length: count,
-                });
+                (NvDomain::EepromArray, base, count)
             }
-            Programming::Status { value, .. } => {
+            Programming::Status { .. } => {
+                let value = self.persistent_status(now);
                 self.status = value;
                 output.event(Event::NvByte {
                     at: now,
@@ -317,29 +353,34 @@ impl M95512 {
                     address: 0,
                     value,
                 });
-                output.event(Event::NvCommit {
-                    at: now,
-                    domain: NvDomain::EepromStatus,
-                    address: 0,
-                    length: 1,
-                });
+                (NvDomain::EepromStatus, 0, 1)
             }
-            Programming::None => {}
-        }
+            Programming::None => return,
+        };
+        output.event(if complete {
+            Event::NvCommit {
+                at: now,
+                domain,
+                address: base,
+                length: count,
+            }
+        } else {
+            Event::NvInterrupted {
+                at: now,
+                domain,
+                address: base,
+                length: count,
+            }
+        });
         self.programming = Programming::None;
+        self.wel = false;
         self.written = [0; 2];
-        Ok(())
     }
-    pub fn power_cycle(&mut self) -> Result<(), Error> {
-        if self.busy() {
-            return Err(Error::Unsupported {
-                component: "M95512",
-                detail: "interrupted programming contents require hardware characterization",
-                address: self.address,
-            });
-        }
+    pub fn power_off(&mut self, now: Time, output: &mut dyn Output) {
+        self.settle_cells(now, output, false);
         self.wel = false;
         self.selected = false;
+        self.select_high_seen = false;
         self.command = Command::Opcode;
         self.rx = 0;
         self.rx_bits = 0;
@@ -348,7 +389,6 @@ impl M95512 {
         self.pending_status = None;
         self.data_count = 0;
         self.written = [0; 2];
-        Ok(())
     }
 }
 
@@ -365,6 +405,7 @@ mod tests {
         result
     }
     fn command(e: &mut M95512, bytes: &[u8]) {
+        e.set_selected(false, Time::ZERO).unwrap();
         e.set_selected(true, Time::ZERO).unwrap();
         for &v in bytes {
             xfer(e, v);
@@ -377,10 +418,16 @@ mod tests {
         command(&mut e, &[6]);
         command(&mut e, &[2, 0, 0x7e, 0xaa, 0xbb, 0xcc, 0xdd]);
         assert!(e.busy());
-        assert_eq!(e.bytes()[0], 0xff);
-        e.complete(e.deadline().unwrap(), &mut ()).unwrap();
+        assert_eq!(e.bytes(Time::ZERO)[0], 0xff);
+        let completed = e.deadline().unwrap();
+        e.complete(completed, &mut ()).unwrap();
         assert_eq!(
-            [e.bytes()[0x7e], e.bytes()[0x7f], e.bytes()[0], e.bytes()[1]],
+            [
+                e.bytes(completed)[0x7e],
+                e.bytes(completed)[0x7f],
+                e.bytes(completed)[0],
+                e.bytes(completed)[1]
+            ],
             [0xaa, 0xbb, 0xcc, 0xdd]
         );
         assert!(!e.busy());
@@ -405,11 +452,77 @@ mod tests {
         bytes[65535] = 0x12;
         bytes[0] = 0x34;
         let mut e = M95512::new(&bytes, 0).unwrap();
+        e.set_selected(false, Time::ZERO).unwrap();
         e.set_selected(true, Time::ZERO).unwrap();
         for v in [3, 255, 255] {
             xfer(&mut e, v);
         }
         assert_eq!(xfer(&mut e, 0), 0x12);
         assert_eq!(xfer(&mut e, 0), 0x34);
+    }
+    #[test]
+    fn interrupted_write_has_erase_then_program_progress_in_only_addressed_cells() {
+        let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
+        command(&mut e, &[6]);
+        command(&mut e, &[2, 0, 0x7f, 0xa5, 0xff]);
+        assert_eq!(e.status() & 3, 3, "WEL remains set during WIP");
+        let original = e.clone();
+        let mut previous = e.bytes(Time::ZERO);
+        for us in (0..=2500).step_by(125) {
+            let bytes = e.bytes(Time::from_micros(us));
+            for index in [0, 127] {
+                assert_eq!(bytes[index] & previous[index], bytes[index]);
+            }
+            previous = bytes;
+        }
+        assert_eq!([previous[0], previous[127]], [0, 0]);
+        for us in (2500..=5000).step_by(125) {
+            let bytes = e.bytes(Time::from_micros(us));
+            for (index, target) in [(0, 0xff), (127, 0xa5)] {
+                assert_eq!(bytes[index] | previous[index], bytes[index]);
+                assert_eq!(bytes[index] & target, bytes[index]);
+            }
+            assert!(bytes[1..127].iter().all(|&v| v == 0xff));
+            previous = bytes;
+        }
+        assert_eq!(e, original, "observation never mutates the write engine");
+        for us in [0, 625, 2500, 3750] {
+            let mut cut = original.clone();
+            let now = Time::from_micros(us);
+            let expected = cut.bytes(now);
+            cut.power_off(now, &mut ());
+            assert_eq!(cut.bytes(Time::from_micros(10000)), expected);
+            assert_eq!(cut.status() & 3, 0);
+            assert_eq!(cut.deadline(), None);
+        }
+        e.complete(Time::from_micros(5000), &mut ()).unwrap();
+        assert_eq!([e.array[0], e.array[127]], [0xff, 0xa5]);
+    }
+    #[test]
+    fn status_write_has_one_data_byte_and_preserves_visible_status_until_completion() {
+        let mut e = M95512::new(&[0; EEPROM_SIZE], 0x80).unwrap();
+        command(&mut e, &[6]);
+        command(&mut e, &[1, 0x8c, 0]);
+        assert_eq!(e.status(), 0x82);
+        assert!(!e.busy());
+        command(&mut e, &[1, 0x8c]);
+        assert_eq!(e.status(), 0x83);
+        assert_eq!(e.persistent_status(Time::from_micros(2500)), 0);
+        let mut cut = e.clone();
+        cut.power_off(Time::from_micros(2500), &mut ());
+        assert_eq!(cut.status(), 0);
+        assert!(cut.array.iter().all(|&v| v == 0));
+        e.complete(Time::from_micros(5000), &mut ()).unwrap();
+        assert_eq!(e.status(), 0x8c);
+    }
+    #[test]
+    fn power_up_requires_a_high_select_before_the_first_command() {
+        let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
+        e.set_selected(true, Time::ZERO).unwrap();
+        xfer(&mut e, 6);
+        e.set_selected(false, Time::ZERO).unwrap();
+        assert_eq!(e.status(), 0);
+        command(&mut e, &[6]);
+        assert_eq!(e.status(), 2);
     }
 }

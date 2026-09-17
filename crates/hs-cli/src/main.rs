@@ -74,7 +74,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         conditions,
         sensor_nv.as_deref(),
     )?;
-    let sensor_hash = digest::sha256(m.sensor_nonvolatile());
+    let sensor_hash = digest::sha256(&m.sensor_nonvolatile());
     println!(
         "firmware_bytes={} eeprom_bytes={} reset_pc={:04x}",
         firmware.len(),

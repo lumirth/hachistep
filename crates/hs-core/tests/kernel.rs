@@ -253,8 +253,43 @@ fn guest_serial_page_write_reaches_the_real_device_owner_and_commits_later() {
     let mut events = Vec::new();
     m.run_until(Time::from_micros(1000), &[], &mut events)
         .unwrap();
-    assert_eq!(m.eeprom()[0x7e], 0xff);
+    assert_eq!(m.eeprom()[2], 0xff, "unaddressed cells remain untouched");
     assert!(!events.iter().any(|e| matches!(e, Event::NvCommit { .. })));
+    let snapshot = m.snapshot();
+    let mut interrupted = Machine::from_snapshot(&snapshot);
+    let partial = interrupted.eeprom();
+    assert_ne!(partial[0x7e], 0xff, "erase has physically started");
+    let mut loss = Vec::new();
+    interrupted
+        .run_until(
+            Time::from_micros(7000),
+            &[TimedInput {
+                at: Time::from_micros(1000),
+                input: Input::Power(false),
+            }],
+            &mut loss,
+        )
+        .unwrap();
+    assert_eq!(interrupted.eeprom(), partial);
+    assert!(!interrupted.powered());
+    assert!(loss
+        .iter()
+        .any(|e| matches!(e, Event::NvInterrupted { .. })));
+    assert!(!loss.iter().any(|e| matches!(e, Event::NvCommit { .. })));
+    interrupted.power_on(&mut ()).unwrap();
+    assert_eq!(interrupted.eeprom(), partial);
+    let mut reset = Machine::from_snapshot(&snapshot);
+    reset
+        .run_until(
+            Time::from_micros(7000),
+            &[TimedInput {
+                at: Time::from_micros(1000),
+                input: Input::ResetPin(false),
+            }],
+            &mut (),
+        )
+        .unwrap();
+    assert_eq!(&reset.eeprom()[0x7e..0x80], &[0xaa, 0xbb]);
     m.run_until(Time::from_micros(7000), &[], &mut events)
         .unwrap();
     assert_eq!(&m.eeprom()[0x7e..0x80], &[0xaa, 0xbb]);
@@ -289,32 +324,66 @@ fn power_cycle_and_mcu_reset_are_distinct() {
 fn all_nonvolatile_domains_can_be_reloaded_without_a_snapshot() {
     use hs_core::Conditions;
     let m = machine(LOOP);
-    let mut sensor = *m.sensor_nonvolatile();
+    let mut sensor = m.sensor_nonvolatile();
     sensor[0x12 - 0x0b] = 0x5a; // BMA150 customer EEPROM working-image byte.
     let mut restored = Machine::with_persistent_state(
         Images {
             firmware: m.firmware(),
-            eeprom: m.eeprom(),
+            eeprom: &m.eeprom(),
             eeprom_status: 0x84,
         },
         Conditions::default(),
         Some(&sensor),
     )
     .unwrap();
-    assert_eq!(restored.sensor_nonvolatile(), &sensor);
+    assert_eq!(restored.sensor_nonvolatile(), sensor);
     assert_eq!(restored.eeprom_status(), 0x84);
     restored.power_off(&mut ()).unwrap();
     restored.power_on(&mut ()).unwrap();
-    assert_eq!(restored.sensor_nonvolatile(), &sensor);
+    assert_eq!(restored.sensor_nonvolatile(), sensor);
     assert_eq!(restored.eeprom_status(), 0x84);
     assert!(Machine::with_persistent_state(
         Images {
             firmware: m.firmware(),
-            eeprom: m.eeprom(),
+            eeprom: &m.eeprom(),
             eeprom_status: 0
         },
         Conditions::default(),
         Some(&sensor[..18]),
     )
     .is_err());
+}
+
+#[test]
+fn zero_supply_stops_the_board_and_restoration_uses_the_power_domain() {
+    let mut m = machine(LOOP);
+    m.run_until(Time::from_micros(20), &[], &mut ()).unwrap();
+    let retired = m.retired();
+    let change = |us, mv| TimedInput {
+        at: Time::from_micros(us),
+        input: Input::SupplyMillivolts(mv),
+    };
+    m.run_until(Time::from_micros(100), &[change(20, 0)], &mut ())
+        .unwrap();
+    assert!(!m.powered());
+    assert_eq!(m.retired(), retired);
+    m.run_until(Time::from_micros(130), &[change(100, 3000)], &mut ())
+        .unwrap();
+    assert!(m.powered());
+    assert!(m.retired() > 0);
+    let mut off = Machine::with_conditions(
+        Images {
+            firmware: m.firmware(),
+            eeprom: &m.eeprom(),
+            eeprom_status: 0,
+        },
+        hs_core::Conditions {
+            supply_millivolts: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    off.run_until(Time::from_micros(100), &[], &mut ()).unwrap();
+    assert!(!off.powered());
+    assert_eq!(off.retired(), 0);
 }

@@ -10,6 +10,9 @@ All original files are read-only host inputs.
 
 An exported EEPROM/status/sensor image set starts a new cold session. It does not
 resume partial CPU or device operations. Use the in-memory snapshot API for that.
+Exports project persistent cells at the current time. During programming they
+can contain a partially erased/programmed value; exporting does not complete or
+cancel the operation. A snapshot also retains the operation needed to continue.
 The CLI's `eeprom.status` export is binary, not the decimal text accepted by the
 `--status` argument. For example, this Python snippet invokes a cold restart:
 
@@ -41,6 +44,10 @@ assignment to each property is allowed at a timestamp. There is no header row.
 | `2000,buttons,0,0,0` | Release all buttons. |
 | `0,accel,0,0,1000000` | Specific force: +1 g on device Z. |
 | `500000,supply,2900` | Change supply witness to 2,900 mV. |
+| `500000,supply,0` | Collapse the board rail; stop activity and retain partial nonvolatile writes. |
+| `600000,supply,3000` | Restore the rail after a zero-voltage interval. |
+| `500000,power,0` | Remove board power at the current configured voltage. |
+| `600000,power,1` | Reconnect board power. |
 | `100,ir,1` | Incident optical emission present. |
 | `103,ir,0` | Incident emission absent. |
 | `1000,reset,0` | Assert the MCU's active-low reset input. |
