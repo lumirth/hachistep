@@ -142,6 +142,13 @@ pub enum DigitalPin {
     P10,
     P11,
     P12,
+    P30,
+    P31,
+    P32,
+    P90,
+    P91,
+    P92,
+    P93,
 }
 impl DigitalPin {
     pub const fn index(self) -> usize {

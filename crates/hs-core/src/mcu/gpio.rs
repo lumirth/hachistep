@@ -1,8 +1,9 @@
 //! Package latches and the fixed board's digital connections. Pin-function
 //! selection is kept separate from the output latch and resolved input level.
+use super::ssu::Pins;
 use crate::{
     error::Error,
-    signals::{Buttons, DigitalPin},
+    signals::{Buttons, DigitalPin, Drive},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -16,7 +17,7 @@ pub struct Gpio {
     open_drain9: u8,
     buttons: Buttons,
     analog_levels: [Option<bool>; 7],
-    digital_levels: [Option<bool>; 3],
+    digital_levels: [Option<bool>; 10],
     aec_pwm: Option<bool>,
     aec_pwm_enabled: bool,
     pub levels: [u8; 5],
@@ -178,7 +179,7 @@ impl Gpio {
     /// STATUS.md; no undocumented contention model is synthesized here.
     pub fn resolve(
         &mut self,
-        serial: Option<(bool, bool)>,
+        serial: Pins,
         timer_levels: u8,
         timer_mask: u8,
         miso: Option<bool>,
@@ -226,15 +227,45 @@ impl Gpio {
                 self.levels[0] = (self.levels[0] & !(1 << i)) | (u8::from(high) << i);
             }
         }
-        if let Some((clock, mosi)) = serial {
-            if self.pfcr & 0x10 == 0 {
-                self.levels[3] = (self.levels[3] & !6) | u8::from(clock) << 1 | u8::from(mosi) << 2;
-            } else {
-                self.levels[3] = (self.levels[3] & !6) | u8::from(clock) << 2 | u8::from(mosi) << 1;
+        for bit in 0..3 {
+            if self.direction[1] & (1 << bit) == 0 {
+                if let Some(high) = self.digital_levels[3 + bit] {
+                    self.levels[1] = (self.levels[1] & !(1 << bit)) | u8::from(high) << bit;
+                }
             }
         }
-        if let Some(high) = miso {
-            self.levels[3] = (self.levels[3] & !8) | u8::from(high) << 3;
+        for bit in 0..4 {
+            let mask = 1 << bit;
+            let function = if self.pfcr & 0x10 == 0 { bit } else { 3 - bit };
+            let irq = (bit == 2 && self.pfcr & 3 == 1) || (bit == 3 && self.pfcr & 0x0c == 4);
+            let mut drive = if irq {
+                Drive::Floating
+            } else {
+                serial.drives[function].unwrap_or_else(|| {
+                    if self.direction[3] & mask == 0 {
+                        Drive::Floating
+                    } else if self.latch[3] & mask == 0 {
+                        Drive::Low
+                    } else if self.open_drain9 & mask != 0 {
+                        Drive::Floating
+                    } else {
+                        Drive::High
+                    }
+                })
+            };
+            if serial.data_open_drain && function >= 2 && drive == Drive::High {
+                drive = Drive::Floating;
+            }
+            let high = match drive {
+                Drive::Low => false,
+                Drive::High => true,
+                Drive::Floating => self.digital_levels[6 + bit]
+                    .or(if bit == 3 { miso } else { None })
+                    .unwrap_or(
+                        bit == 0 || (self.pull[3] & mask != 0 && self.direction[3] & mask == 0),
+                    ),
+            };
+            self.levels[3] = (self.levels[3] & !mask) | u8::from(high) << bit;
         }
         SerialLevels {
             lcd_selected: self.levels[0] & 1 == 0,
@@ -257,8 +288,15 @@ impl Gpio {
             (self.pmr[0] & 0x10 != 0 && self.pfcr & 0x0c != 8).then_some(self.levels[0] & 2 != 0),
         ]
     }
-    pub fn serial_input(&self) -> bool {
-        self.levels[3] & if self.pfcr & 0x10 == 0 { 8 } else { 1 } != 0
+    pub fn serial_inputs(&self) -> [bool; 4] {
+        std::array::from_fn(|function| {
+            let bit = if self.pfcr & 0x10 == 0 {
+                function
+            } else {
+                3 - function
+            };
+            self.levels[3] & (1 << bit) != 0
+        })
     }
     pub fn irq_levels(&self) -> [Option<bool>; 2] {
         [
@@ -295,7 +333,7 @@ mod tests {
             right: true,
         });
         p.write(0xffca, 1).unwrap();
-        p.resolve(None, 0, 0, None);
+        p.resolve(Default::default(), 0, 0, None);
         assert_eq!(p.read(0xffde) & 0x15, 0x14);
         assert_eq!(p.irq_levels()[0], Some(false));
     }
@@ -304,10 +342,23 @@ mod tests {
         let mut p = Gpio::default();
         p.write(0xffe4, 7).unwrap();
         p.write(0xffd4, 4).unwrap();
-        let s = p.resolve(Some((true, true)), 0, 0, Some(false));
+        let s = p.resolve(
+            Pins {
+                drives: [
+                    None,
+                    Some(Drive::High),
+                    Some(Drive::High),
+                    Some(Drive::Floating),
+                ],
+                data_open_drain: false,
+            },
+            0,
+            0,
+            Some(false),
+        );
         assert!(s.lcd_selected);
         assert!(!s.eeprom_selected);
         assert!(!s.data);
-        assert!(!p.serial_input());
+        assert!(!p.serial_inputs()[3]);
     }
 }

@@ -1,4 +1,4 @@
-use hs_core::{Buttons, Event, Images, Input, Machine, Time, TimedInput};
+use hs_core::{Buttons, DigitalPin, Event, Images, Input, Machine, Time, TimedInput};
 fn machine(code: &[u8]) -> Machine {
     let mut flash = vec![0u8; 49152];
     flash[..2].copy_from_slice(&0x0100u16.to_be_bytes());
@@ -62,6 +62,60 @@ fn horizon_and_input_timestamps_are_exclusive() {
         .unwrap();
     assert_eq!(result.inputs_consumed, 1);
     assert_eq!(m.peek(0xffde).unwrap() & 1, 1);
+}
+#[test]
+fn external_serial_edges_survive_partition_and_restore_inside_a_byte() {
+    let mut code = Vec::new();
+    for (address, value) in [
+        (0xfffbu16, 0x14),
+        (0xf0e0, 0x0d),
+        (0xf0e1, 0x40),
+        (0xf0e2, 0x80),
+        (0xf0e3, 0x40),
+    ] {
+        code.extend([0xf8, value, 0x6a, 0x88, (address >> 8) as u8, address as u8]);
+    }
+    code.extend([0x40, 0xfe]);
+    let pin = |us, pin, high| TimedInput {
+        at: Time::from_micros(us),
+        input: Input::DigitalPin {
+            pin,
+            level: Some(high),
+        },
+    };
+    let mut inputs = vec![
+        pin(0, DigitalPin::P90, true),
+        pin(0, DigitalPin::P91, true),
+        pin(500, DigitalPin::P90, false),
+    ];
+    for bit in 0..8 {
+        inputs.extend([
+            pin(515 + 20 * bit, DigitalPin::P92, 0x96 & (0x80 >> bit) != 0),
+            pin(520 + 20 * bit, DigitalPin::P91, false),
+            pin(530 + 20 * bit, DigitalPin::P91, true),
+        ]);
+    }
+    inputs.push(pin(680, DigitalPin::P90, true));
+    let mut whole = machine(&code);
+    let mut split = whole.clone();
+    let mut a = Vec::new();
+    let mut b = Vec::new();
+    whole
+        .run_until(Time::from_micros(1000), &inputs, &mut a)
+        .unwrap();
+    let mut consumed = 0;
+    for us in (1..1000).step_by(7).chain([1000]) {
+        consumed += split
+            .run_until(Time::from_micros(us), &inputs[consumed..], &mut b)
+            .unwrap()
+            .inputs_consumed;
+        if (520..670).contains(&us) {
+            split = Machine::from_snapshot(&split.snapshot());
+        }
+    }
+    assert_eq!(whole.peek(0xf0e9).unwrap(), 0x96);
+    assert_eq!(whole, split);
+    assert_eq!(a, b);
 }
 #[test]
 fn invalid_timeline_is_rejected_before_mutation() {

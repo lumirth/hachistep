@@ -154,7 +154,7 @@ fn ssu_partial_shifter_and_holding_register_survive_gating_and_clock_switch() {
         (0xf0e3, 0xc0),
         (0xf0eb, 0xa6),
     ] {
-        s.write(a, v, Time::ZERO, &c).unwrap();
+        s.write(a, v, true, Time::ZERO, &c).unwrap();
     }
     // Load plus three real edges, then gate with a partial byte still in flight.
     for _ in 0..4 {
@@ -184,7 +184,7 @@ fn ssu_partial_shifter_and_holding_register_survive_gating_and_clock_switch() {
             s.finish_edge(t, &c).unwrap();
         }
     }
-    assert_eq!(s.read(0xf0e9, resume, &c).unwrap(), 0xa6);
+    assert_eq!(s.peek(0xf0e9), 0xa6);
     assert_eq!(s.transmitted, 1);
     assert_eq!(s.received, 1);
 }
@@ -202,7 +202,7 @@ fn ssu_switches_prescaler_with_a_byte_already_in_flight() {
         (0xf0e3, 0xc0),
         (0xf0eb, 0xa6),
     ] {
-        s.write(a, v, Time::ZERO, &c).unwrap();
+        s.write(a, v, true, Time::ZERO, &c).unwrap();
     }
     // Load, then six watch-clock half edges: a partial byte, not a restart.
     for _ in 0..7 {
@@ -215,7 +215,7 @@ fn ssu_switches_prescaler_with_a_byte_already_in_flight() {
         }
     }
     let switch = Time::from_micros(190);
-    s.write(0xf0e2, 0x86, switch, &c).unwrap();
+    s.write(0xf0e2, 0x86, true, switch, &c).unwrap();
     assert_eq!(
         s.deadline(&c).unwrap(),
         Some(c.after(switch, 1, Tap::system(2)).unwrap())
@@ -230,7 +230,7 @@ fn ssu_switches_prescaler_with_a_byte_already_in_flight() {
         remaining += 1;
     }
     assert_eq!(remaining, 10);
-    assert_eq!(s.read(0xf0e9, switch, &c).unwrap(), 0xa6);
+    assert_eq!(s.peek(0xf0e9), 0xa6);
     assert_eq!(s.transmitted, 1);
     assert_eq!(s.received, 1);
 }
@@ -247,11 +247,11 @@ fn every_pull_register_accepts_writes_and_affects_only_input_configured_pins() {
             let mut p = Gpio::default();
             p.write(reg, value).unwrap();
             assert_eq!(p.read(reg), value & mask);
-            p.resolve(None, 0, 0, None);
+            p.resolve(Default::default(), 0, 0, None);
             assert_eq!(p.read(port) & value & mask, value & mask);
             p.write(dir, mask).unwrap();
             p.write(port, 0).unwrap();
-            p.resolve(None, 0, 0, None);
+            p.resolve(Default::default(), 0, 0, None);
             assert_eq!(p.read(port) & mask, 0);
         }
     }

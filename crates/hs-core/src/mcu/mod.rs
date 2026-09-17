@@ -376,7 +376,7 @@ impl Mcu {
             0xf0dc..=0xf0de => self.comparators.write(a, v, now),
             0xf0d0 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0d1 => self.timer_b1.write(a, v, now, &self.clocks),
-            0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => self.ssu.write(a, v, now, &self.clocks),
+            0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => self.ssu.write(a, v, mov, now, &self.clocks),
             0xf0f0..=0xf0f5 => self.timer_w.write(a, v, now, &self.clocks),
             0xffb0..=0xffb3 => self.watchdog.write(a, v, mov, now, &self.clocks),
             0xffbe | 0xffbf => self.adc.write(a, v, now, &self.clocks),

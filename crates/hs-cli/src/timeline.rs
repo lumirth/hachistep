@@ -6,7 +6,7 @@ use std::error::Error;
 pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
     let mut result = Vec::new();
     let mut prior = None;
-    let mut seen = 0u16;
+    let mut seen = 0u32;
     for (line_no, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
@@ -48,12 +48,19 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
             ("supply", 3) => (Input::SupplyMillivolts(p[2].parse()?), 2),
             ("ir", 3) => (Input::InfraredLevel(bit(p[2])?), 3),
             ("reset", 3) => (Input::ResetPin(bit(p[2])?), 4),
-            ("nmi", 3) => (Input::NmiPin(bit(p[2])?), 15),
+            ("nmi", 3) => (Input::NmiPin(bit(p[2])?), 31),
             ("digital", 4) => {
                 let pin = match p[2] {
                     "p10" => DigitalPin::P10,
                     "p11" => DigitalPin::P11,
                     "p12" => DigitalPin::P12,
+                    "p30" => DigitalPin::P30,
+                    "p31" => DigitalPin::P31,
+                    "p32" => DigitalPin::P32,
+                    "p90" => DigitalPin::P90,
+                    "p91" => DigitalPin::P91,
+                    "p92" => DigitalPin::P92,
+                    "p93" => DigitalPin::P93,
                     _ => return Err(fail("unknown digital fixture pin").into()),
                 };
                 let level = if p[3] == "release" {

@@ -1,7 +1,7 @@
 //! SSU holding registers and one edge-level shifter. The board handles every
 //! emitted edge; no completed-byte route into an attached device exists.
 use super::clocks::{ClockWait, Clocks, Tap};
-use crate::{error::Error, time::Time};
+use crate::{error::Error, signals::Drive, time::Time};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Load,
@@ -12,6 +12,13 @@ pub struct Edge {
     pub clock: bool,
     pub mosi: bool,
     pub sample: bool,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pins {
+    /// Logical SCS, SSCK, SSO, SSI; None retains the GPIO function.
+    pub drives: [Option<Drive>; 4],
+    /// SOOS also applies to GPIO use of SSO/SSI, independently of TE/RE.
+    pub data_open_drain: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ssu {
@@ -24,6 +31,12 @@ pub struct Ssu {
     tdr: u8,
     rdr: u8,
     receive_started: bool,
+    active: bool,
+    transmitting: bool,
+    select_active: bool,
+    select_high: bool,
+    external_clock: bool,
+    sol_protected: bool,
     msb_first: bool,
     tx: u8,
     rx: u8,
@@ -50,6 +63,12 @@ impl Default for Ssu {
             tdr: 0,
             rdr: 0,
             receive_started: false,
+            active: false,
+            transmitting: false,
+            select_active: false,
+            select_high: true,
+            external_clock: true,
+            sol_protected: true,
             msb_first: false,
             tx: 0,
             rx: 0,
@@ -72,9 +91,81 @@ impl Ssu {
             .as_ref()
             .map_or(Ok(None), |wait| wait.deadline(clocks))
     }
-    pub fn pins(&self) -> Option<(bool, bool)> {
-        (self.gate && self.high & 0x84 == 0x84 && self.enable & 0xc0 != 0)
-            .then_some((self.clock_high, self.mosi))
+    fn master(&self) -> bool {
+        self.high & 0x80 != 0
+    }
+    fn four_line(&self) -> bool {
+        self.low & 0x40 != 0
+    }
+    fn bidirectional(&self) -> bool {
+        self.four_line() && self.high & 0x40 != 0
+    }
+    fn selected(&self) -> bool {
+        !self.four_line() || self.high & 3 == 0 || !self.select_high
+    }
+    pub fn input_pin(&self) -> usize {
+        if self.four_line() && (!self.master() || self.bidirectional()) {
+            2 // SSO
+        } else {
+            3 // SSI
+        }
+    }
+    /// Logical SCS, SSCK, SSO, SSI functions, before the package's SSEL mux.
+    /// None leaves the pin to GPIO; Floating selects a released serial pin.
+    pub fn pins(&self) -> Pins {
+        let mut pins = Pins {
+            data_open_drain: self.high & 0x20 != 0,
+            ..Pins::default()
+        };
+        if !self.gate {
+            return pins;
+        }
+        let drive = |high: bool, open_drain: bool| {
+            if !high {
+                Drive::Low
+            } else if open_drain {
+                Drive::Floating
+            } else {
+                Drive::High
+            }
+        };
+        if self.four_line() && self.high & 3 != 0 {
+            pins.drives[0] = Some(
+                if self.master() && self.high & 2 != 0 && self.select_active {
+                    Drive::Low
+                } else {
+                    Drive::Floating
+                },
+            );
+        }
+        if self.high & 4 != 0 {
+            pins.drives[1] = Some(if self.master() {
+                drive(self.clock_high, self.low & 0x10 != 0)
+            } else {
+                Drive::Floating
+            });
+        }
+        if self.enable & 0x40 != 0 {
+            pins.drives[self.input_pin()] = Some(Drive::Floating);
+        }
+        if self.enable & 0x80 != 0 {
+            let output = if self.four_line() && !self.master() && !self.bidirectional() {
+                3
+            } else {
+                2
+            };
+            let enabled = if self.master() && self.four_line() && self.high & 2 != 0 {
+                self.select_active
+            } else {
+                self.selected()
+            };
+            pins.drives[output] = Some(if enabled {
+                drive(self.mosi, self.high & 0x20 != 0)
+            } else {
+                Drive::Floating
+            });
+        }
+        pins
     }
     fn half_period(&self) -> Tap {
         match self.mode & 7 {
@@ -99,26 +190,24 @@ impl Ssu {
         self.tx & (1u8 << shift) != 0
     }
     fn schedule_load(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
-        if self.next.is_none()
-            && ((self.enable & 0x80 != 0 && self.status & 4 == 0)
-                || (self.enable & 0xc0 == 0x40 && self.receive_started))
-            && self.status & 0x40 == 0
+        let overrun = self.status & 0x40 != 0;
+        let transmit =
+            self.enable & 0x80 != 0 && self.status & 4 == 0 && (!self.master() || !overrun);
+        let receive = self.enable & 0x40 != 0
+            && !overrun
+            && (!self.master() || (self.enable & 0x80 == 0 && self.receive_started));
+        // A receive-enabled slave can be waiting for its very first external
+        // edge when software supplies transmit data. The empty shifter can
+        // still accept that byte; preparing reception did not consume a frame.
+        if !self.master() && self.active && self.edges == 0 && !self.transmitting && transmit {
+            self.active = false;
+        }
+        if !self.active
+            && self.next.is_none()
+            && (transmit || receive)
+            && self.status & 1 == 0
             && self.gate
         {
-            if self.high & 0x80 == 0 {
-                return Err(Error::Unsupported {
-                    component: "SSU",
-                    detail: "slave-clock routing is not implemented",
-                    address: 0xf0e0,
-                });
-            }
-            if self.high & 0x40 != 0 {
-                return Err(Error::Unsupported {
-                    component: "SSU",
-                    detail: "bidirectional turnaround is not implemented",
-                    address: 0xf0e0,
-                });
-            }
             self.phase = Phase::Load;
             self.next = Some(ClockWait::after(now, 1, Tap::system(1), clocks)?);
         }
@@ -146,7 +235,7 @@ impl Ssu {
     }
     pub fn peek(&self, address: u16) -> u8 {
         match address {
-            0xf0e0 => self.high,
+            0xf0e0 => self.high | u8::from(self.mosi) << 4,
             0xf0e1 => self.low,
             0xf0e2 => self.mode,
             0xf0e3 => self.enable,
@@ -175,12 +264,31 @@ impl Ssu {
         &mut self,
         address: u16,
         value: u8,
+        mov: bool,
         now: Time,
         clocks: &Clocks,
     ) -> Result<(), Error> {
         match address {
             0xf0e0 => {
-                self.high = (value & 0xf7) | 8;
+                let was_master = self.master();
+                // The documented SOLP 0->1 transition can still change SOL.
+                if mov && (value & 8 == 0 || !self.sol_protected) {
+                    self.mosi = value & 0x10 != 0;
+                }
+                self.sol_protected = value & 8 != 0;
+                self.high = (value & 0xe7) | 8;
+                if self.active && was_master != self.master() {
+                    self.next = if self.master() {
+                        Some(ClockWait::after(now, 1, self.half_period(), clocks)?)
+                    } else {
+                        None
+                    };
+                    if !self.gate {
+                        if let Some(wait) = &mut self.next {
+                            wait.pause(now, clocks)?;
+                        }
+                    }
+                }
             }
             0xf0e1 => {
                 self.low = value & 0x58;
@@ -190,6 +298,9 @@ impl Ssu {
                     self.sampled = 0;
                     self.shifted = 0;
                     self.receive_started = false;
+                    self.active = false;
+                    self.select_active = false;
+                    self.clock_high = self.idle_high();
                 }
             }
             0xf0e2 => {
@@ -217,6 +328,9 @@ impl Ssu {
                 }
                 if self.enable & 0xc0 == 0 {
                     self.next = None;
+                    self.active = false;
+                    self.select_active = false;
+                    self.clock_high = self.idle_high();
                 }
             }
             0xf0e4 => {
@@ -251,42 +365,93 @@ impl Ssu {
         }
         match self.phase {
             Phase::Load => {
-                self.tx = self.tdr;
+                self.next = None;
+                if self.master()
+                    && self.four_line()
+                    && self.high & 2 != 0
+                    && !self.select_active
+                    && !self.select_high
+                {
+                    self.conflict();
+                    return Ok(None);
+                }
+                self.transmitting = self.enable & 0x80 != 0 && self.status & 4 == 0;
+                if self.transmitting {
+                    self.tx = self.tdr;
+                    self.status |= 4;
+                }
+                self.active = true;
+                self.select_active = self.master();
                 self.msb_first = self.mode & 0x80 != 0;
-                self.status |= 4;
                 self.rx = 0;
                 self.edges = 0;
                 self.shifted = 0;
                 self.sampled = 0;
                 self.clock_high = self.idle_high();
-                if self.first_edge_samples() {
+                if self.first_edge_samples() && self.transmitting {
                     self.mosi = self.output_bit(0);
                     self.shifted = 1;
                 }
                 self.phase = Phase::Edge;
-                self.next = Some(ClockWait::after(now, 1, self.half_period(), clocks)?);
+                if self.master() {
+                    self.next = Some(ClockWait::after(now, 1, self.half_period(), clocks)?);
+                }
                 Ok(None)
             }
             Phase::Edge => {
                 self.clock_high = !self.clock_high;
-                let first = self.edges & 1 == 0;
-                let sample = first == self.first_edge_samples();
-                if !sample && self.shifted < 8 {
-                    self.mosi = self.output_bit(self.shifted);
-                    self.shifted += 1;
-                }
-                self.edges += 1;
+                let edge = self.shift_edge();
                 self.next = if self.edges < 16 {
                     Some(ClockWait::after(now, 1, self.half_period(), clocks)?)
                 } else {
                     None
                 };
-                Ok(Some(Edge {
-                    clock: self.clock_high,
-                    mosi: self.mosi,
-                    sample,
-                }))
+                Ok(Some(edge))
             }
+        }
+    }
+    fn conflict(&mut self) {
+        self.status |= 1;
+        self.high &= !0x80;
+        self.active = false;
+        self.select_active = false;
+        self.next = None;
+    }
+    fn shift_edge(&mut self) -> Edge {
+        let sample = (self.edges & 1 == 0) == self.first_edge_samples();
+        if !sample && self.shifted < 8 && self.transmitting {
+            self.mosi = self.output_bit(self.shifted);
+            self.shifted += 1;
+        }
+        self.edges += 1;
+        Edge {
+            clock: self.clock_high,
+            mosi: self.mosi,
+            sample,
+        }
+    }
+    /// Observe resolved package levels. External and internal clocks enter the
+    /// same shifter; selection changes cannot complete or discard a whole byte.
+    pub fn input_pins(&mut self, select_high: bool, clock: bool) -> Option<Edge> {
+        let deselected = !self.select_high && select_high;
+        let changed = self.external_clock != clock;
+        self.select_high = select_high;
+        self.external_clock = clock;
+        if !self.gate || self.master() || self.high & 4 == 0 {
+            return None;
+        }
+        if self.four_line() && self.high & 3 != 0 && deselected && self.active && self.edges != 0 {
+            self.conflict();
+        }
+        if self.active
+            && self.selected()
+            && changed
+            && (self.edges != 0 || clock != self.idle_high())
+        {
+            self.clock_high = clock;
+            Some(self.shift_edge())
+        } else {
+            None
         }
     }
     pub fn sample(&mut self, high: bool) {
@@ -310,8 +475,9 @@ impl Ssu {
         }
     }
     pub fn finish_edge(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
-        if self.edges == 16 && self.next.is_none() {
-            if self.enable & 0x80 != 0 {
+        if self.active && self.edges == 16 && self.next.is_none() {
+            self.active = false;
+            if self.transmitting && self.enable & 0x80 != 0 {
                 self.transmitted = self.transmitted.wrapping_add(1);
                 if self.status & 4 != 0 {
                     self.status |= 8;
@@ -321,6 +487,9 @@ impl Ssu {
                 self.receive_started = false;
             }
             self.schedule_load(now, clocks)?;
+            if self.next.is_none() {
+                self.select_active = false;
+            }
         }
         Ok(())
     }
@@ -340,13 +509,15 @@ mod tests {
             (0xf0e3, 0xc0),
             (0xf0eb, 0x35),
         ] {
-            s.write(a, v, Time::ZERO, &c).unwrap();
+            s.write(a, v, true, Time::ZERO, &c).unwrap();
         }
         assert_eq!(s.status & 12, 0);
         let t = s.deadline(&c).unwrap().unwrap();
+        let mut completed = t;
         assert!(s.advance(t, &c).unwrap().is_none());
         assert_eq!(s.status & 12, 4);
         while let Some(t) = s.deadline(&c).unwrap() {
+            completed = t;
             if let Some(edge) = s.advance(t, &c).unwrap() {
                 if edge.sample {
                     s.sample(edge.mosi);
@@ -354,7 +525,7 @@ mod tests {
                 s.finish_edge(t, &c).unwrap();
             }
         }
-        assert_eq!(s.read(0xf0e9, t, &c).unwrap(), 0x35);
+        assert_eq!(s.read(0xf0e9, completed, &c).unwrap(), 0x35);
         assert_eq!(s.status & 14, 12);
     }
 }

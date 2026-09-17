@@ -348,8 +348,20 @@ impl Machine {
             _ => None,
         };
         self.mcu.gpio.resolve(pins, timer, timer_mask, miso);
-        self.mcu.control.pins(self.mcu.gpio.irq_levels());
         self.serial = levels;
+        let serial = self.mcu.gpio.serial_inputs();
+        if let Some(edge) = self.mcu.ssu.input_pins(serial[0], serial[1]) {
+            if edge.sample {
+                self.mcu.ssu.sample(serial[self.mcu.ssu.input_pin()]);
+            }
+            self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
+        }
+        // Selection and an external clock edge can change the SSU's output
+        // drivers. Resolve that electrical consequence at this same instant.
+        if self.mcu.ssu.pins() != pins {
+            return self.resolve_board(out);
+        }
+        self.mcu.control.pins(self.mcu.gpio.irq_levels());
         let (b, c) = self.mcu.gpio.piezo_levels();
         let drive = match (b, c) {
             (true, false) => Piezo::Positive,
@@ -463,7 +475,9 @@ impl Machine {
             self.resolve_board(out)?;
             if let Some(edge) = edge {
                 if edge.sample {
-                    self.mcu.ssu.sample(self.mcu.gpio.serial_input());
+                    self.mcu
+                        .ssu
+                        .sample(self.mcu.gpio.serial_inputs()[self.mcu.ssu.input_pin()]);
                 }
                 self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
             }
@@ -478,7 +492,7 @@ impl Machine {
             Input::SupplyMillivolts(_) => 2,
             Input::InfraredLevel(_) => 3,
             Input::ResetPin(_) => 4,
-            Input::NmiPin(_) => 15,
+            Input::NmiPin(_) => 31,
             Input::AnalogPin { pin, .. } => 5 + pin.index() as u8,
             Input::DigitalPin { pin, .. } => 12 + pin.index() as u8,
         }
@@ -488,7 +502,7 @@ impl Machine {
             return Err(TimeError::Reversed.into());
         }
         let mut prior = self.now;
-        let mut mask = 0u16;
+        let mut mask = 0u32;
         for change in inputs {
             if change.at < self.now {
                 return Err(Error::PastInput {
