@@ -99,7 +99,7 @@ were obtained. Printed page numbers differ from PDF indices. The named sections
 and diagrams are recorded in owner comments and tests.
 
 - REJ09B0152-0300 §20.1, printed pp.372–375: register physical access widths and
-  state counts. `conformance/spec/register_access.tsv` is a separate 95-row
+  state counts. `hachiware/spec/register_access.tsv` is a separate 95-row
   transcription, not generated from production routing.
 - §3.8.5: LDC/ANDC/ORC/XORC following-instruction interrupt deferral; RTE is not
   in that list. §3.8.6: EEPMOV.B versus EEPMOV.W NMI acceptance and saved next PC.
@@ -118,6 +118,7 @@ and diagrams are recorded in owner comments and tests.
   predecrement address register before capturing store data. Instruction encoding
   tables provide fixed displacement-24 selectors and 6B long/CCR restrictions.
 
-The core-independent fixture corpus remains a directory that can be published
-separately; it has no dependency on `hs-core`. It is not claimed to be a separate
-repository already, or to contain hardware-measured traces.
+The core-independent fixture corpus is maintained in
+[ hachiware ](https://github.com/lumirth/hachiware), with no dependency on
+`hs-core`. Its initial expectations are documented or reasoned, not physical
+captures. The HachiStep adapter exports observations without owning expectations.

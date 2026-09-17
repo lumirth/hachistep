@@ -24,7 +24,7 @@ VALUE = '''                let value = if ccr {
 CASES = (
     ('rtc-extra-access-state', 'crates/hs-core/src/mcu/mod.rs',
      'if matches!(a, 0xf0e0..=0xf0e4 |', 'if matches!(a, 0xf068 | 0xf0e0..=0xf0e4 |',
-     'register_access', 'complete_documented_register_width_and_timing_map'),
+     'register_access', 'actual_guest_accesses_commit_at_the_documented_exclusive_boundary'),
     ('predecrement-stale-source', 'crates/hs-core/src/cpu/mod.rs',
      ADDRESS + VALUE, VALUE + ADDRESS,
      'cpu_regressions', 'predecrement_reads_updated_aliased_source_at_every_width_and_register'),
@@ -61,7 +61,6 @@ def main() -> None:
         for name in ('Cargo.toml', 'Cargo.lock'):
             shutil.copy2(ROOT/name, tree/name)
         shutil.copytree(ROOT/'crates', tree/'crates', ignore=shutil.ignore_patterns('target', '__pycache__'))
-        shutil.copytree(ROOT/'conformance/spec', tree/'conformance/spec')
         for ident, path, before, after, test, name in CASES:
             file = tree/path
             original = file.read_text()

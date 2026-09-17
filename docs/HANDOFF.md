@@ -118,8 +118,8 @@ separately from publishable source. Do not install or trigger network CI.
 
 ## Updating expectations
 
-`conformance/spec` and documented guest fixtures are independent target
-expectations. `conformance/regressions/private-retail.json` is different: a
+`hachiware/spec` and documented guest fixtures are independent target
+expectations. `workloads/retail.json` is different: a
 reviewed software-observed baseline with input identity and an explicit basis
 revision. The verifier never updates it. A legitimate hardware change may alter
 retail instruction counts, timing, frame hashes or the synthetic motion result;

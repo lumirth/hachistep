@@ -26,14 +26,14 @@ representation/replay consistency, not agreement with silicon.
 
 | Location | Scope |
 |---|---|
-| `conformance/spec/register_access.tsv`, `tests/register_access.rs` | 95 documented register widths/state counts and actual CPU access boundaries. |
+| `hachiware/spec/register_access.tsv`, `tests/register_access.rs` | Independent register reference data in hachiware; local guest-access boundary regression. |
 | `tests/cpu_regressions.rs` | 120 aliased predecrement combinations, partial long stores, RTE/LDC admission, 192 displacement-24 cases, EEPMOV/NMI and stable issued actions. |
 | `tests/clock_obligations.rs` | CPU/SSU/ADC source-edge waits, downstream gating, source changes, ordinary GPIO pull writes. |
 | `tests/comparators.rs` | Dual-channel hysteresis/reference/arming/clear behavior, actual guest vector 36, peek and pin-routing tests. |
 | `tests/timer_w_modes.rs` | Buffers, capture, external clock, local conflicts, PWM boundary, stabilization gating and guest vector 35. |
 | `tests/aec.rs` | Counter/PWM/gate recurrence, 8/16-bit behavior, separate flags/requests, guest vectors 18/32, shared phases and replay. |
 | `tests/nmi.rs` | Dedicated edge latch, masked wake, held-input behavior, standby replay, reset straps and failed power-on nonmutation. |
-| `conformance/build.py`, `run.py` | Fifteen guest images; independent literal expectations and a fail-closed hashed manifest. |
+| Separate `hachiware` repository | Guest images, independent literal expectations, hashed manifests, and runner. HachiStep provides `tools/hachiware_adapter.py`. |
 
 Other existing tests cover arithmetic, image/CLI safety, memory and serial
 mechanisms, typed snapshots, and ordinary-run zero allocation. First-word
@@ -58,7 +58,7 @@ all possible bugs are detected, or that the expectations came from physical runs
 
 `verify_retail.py` now checks the exact firmware/EEPROM identity and scenario,
 semantic report fields and all six exported images against
-`conformance/regressions/private-retail.json`. This includes the frame bytes,
+`workloads/retail.json`. This includes the frame bytes,
 rather than merely recording a screenshot hash while asserting only completion.
 The supplied home/menu/walking frames were visually inspected to establish this
 software regression baseline. A model-correcting change may legitimately require
@@ -78,7 +78,7 @@ sensor model, not an independently measured physical pedometer expectation.
 python3 tools/compare_runs.py out/left out/right \
   --left-trace out/left-events.txt --right-trace out/right-events.txt
 python3 tools/bench.py --left /path/to/baseline --right /path/to/candidate \
-  --input conformance/scenarios/menu.csv --milliseconds 6500 \
+  --input workloads/menu.csv --milliseconds 6500 \
   --repeats 4 --out out/paired
 ```
 

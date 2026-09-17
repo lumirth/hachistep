@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline source, Rust, CLI safety and independent-fixture checks."""
+"""Offline source, Rust, CLI safety and independent hachiware checks."""
 from __future__ import annotations
 import argparse
 import sys
@@ -9,7 +9,12 @@ from _support import ROOT, binary, create_directory, run, versions, write_json, 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--out', type=Path, default=ROOT / 'out/check')
+    p.add_argument('--hachiware', type=Path, default=ROOT.parent / 'hachiware',
+                   help='separate hardware suite checkout (default: ../hachiware)')
     a = p.parse_args()
+    suite = a.hachiware.resolve()
+    if not (suite / 'build.py').is_file() or not (suite / 'run.py').is_file():
+        raise RuntimeError('hachiware checkout required: gh repo clone lumirth/hachiware ../hachiware; or pass --hachiware PATH')
     cargo, rustfmt = binary('cargo'), binary('rustfmt')
     out = create_directory(a.out)
     records = []
@@ -22,12 +27,13 @@ def main() -> None:
         ('clippy', [cargo, 'clippy', '--workspace', '--all-targets', '--all-features', '--locked', '--offline', '--', '-D', 'warnings']),
         ('release-build', [cargo, 'build', '--workspace', '--release', '--locked', '--offline']),
         ('python-tests', [sys.executable, '-m', 'unittest', 'discover', '-s', 'tools/tests', '-v']),
-        ('fixture-build', [sys.executable, 'conformance/build.py', str(out / 'fixtures')]),
+        ('suite-tests', [sys.executable, '-m', 'unittest', 'discover', '-s', str(suite / 'tests'), '-v']),
+        ('fixture-build', [sys.executable, str(suite / 'build.py'), str(out / 'fixtures')]),
     ]
     for name, command in steps:
         records.append(run(command, out, name, timeout=900))
     exe = release_executable()
-    records.append(run([sys.executable, 'conformance/run.py', '--runner', str(exe),
+    records.append(run([sys.executable, str(suite / 'run.py'), '--adapter', str(ROOT / 'tools/hachiware_adapter.py'), '--runner', str(exe),
                         '--fixtures', str(out / 'fixtures'), '--report', str(out / 'conformance.json')], out, 'conformance'))
     write_json(out / 'summary.json', {'schema': 1, 'source': source_identity(), 'toolchain': versions(), 'steps': records,
                                     'hardware_captures': False, 'private_retail_test': 'not run by this command'})

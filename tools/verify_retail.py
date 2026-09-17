@@ -15,7 +15,7 @@ def main() -> None:
     p.add_argument('--out', type=Path, default=ROOT / 'out/retail-check')
     p.add_argument('--quick', action='store_true', help='omit walking and long-idle workloads')
     p.add_argument('--menu-trace', action='store_true', help='retain a complete product trace for audio rendering')
-    p.add_argument('--expected', type=Path, default=ROOT / 'conformance/regressions/private-retail.json')
+    p.add_argument('--expected', type=Path, default=ROOT / 'workloads/retail.json')
     p.add_argument('--smoke-only', action='store_true', help='check execution only; do not claim a behavioral regression match')
     a = p.parse_args()
     firmware, eeprom = a.firmware.resolve(), a.eeprom.resolve()
@@ -29,9 +29,9 @@ def main() -> None:
     records.append(run([cargo, 'test', '-p', 'hs-core', '--release', '--test', 'retail', '--locked', '--offline', '--', '--ignored', '--nocapture'], out, 'partition-and-snapshot', env))
     records.append(run([cargo, 'build', '-p', 'hs-cli', '--release', '--locked', '--offline'], out, 'build'))
     exe = release_executable()
-    cases = [('home', 10_000, None), ('menu', 6_500, ROOT / 'conformance/scenarios/menu.csv')]
+    cases = [('home', 10_000, None), ('menu', 6_500, ROOT / 'workloads/menu.csv')]
     if not a.quick:
-        cases += [('walking', 61_000, ROOT / 'conformance/scenarios/walking.csv'), ('idle', 120_000, None)]
+        cases += [('walking', 61_000, ROOT / 'workloads/walking.csv'), ('idle', 120_000, None)]
     summaries = []
     mismatches = []
     for name, ms, timeline in cases:

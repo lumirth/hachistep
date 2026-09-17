@@ -1,32 +1,5 @@
 //! Expectations are transcribed separately from the production decoder.
-use hs_core::{cpu::Width, mcu::Mcu, Conditions, Images, Machine, Time};
-
-#[test]
-fn complete_documented_register_width_and_timing_map() {
-    let mut count = 0;
-    for line in include_str!("../../../conformance/spec/register_access.tsv").lines() {
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
-        let row: Vec<_> = line.split_whitespace().collect();
-        assert_eq!(row.len(), 5, "invalid expectation row: {line}");
-        let address = u16::from_str_radix(row[0], 16).unwrap();
-        let bits: u8 = row[2].parse().unwrap();
-        let states: u64 = row[3].parse().unwrap();
-        let width = if bits == 16 { Width::Word } else { Width::Byte };
-        assert_eq!(
-            Mcu::access_states(address, width),
-            states,
-            "{} @{} p.{}",
-            row[1],
-            row[0],
-            row[4]
-        );
-        assert_eq!(Mcu::native_word(address), bits == 16, "{} width", row[1]);
-        count += 1;
-    }
-    assert_eq!(count, 95, "a register expectation was accidentally lost");
-}
+use hs_core::{Conditions, Images, Machine, Time};
 
 #[test]
 fn actual_guest_accesses_commit_at_the_documented_exclusive_boundary() {

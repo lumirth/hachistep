@@ -11,7 +11,7 @@ from compare_runs import REPORT_KEYS, EXPORTS
 
 class RetailExpectations(unittest.TestCase):
     def test_current_baseline_is_complete_and_not_hardware_evidence(self):
-        path=ROOT/'conformance/regressions/private-retail.json'
+        path=ROOT/'workloads/retail.json'
         data=json.loads(path.read_text())
         result=load(path, data['inputs'])
         self.assertFalse(result['hardware_measured'])
@@ -43,7 +43,7 @@ class RetailExpectations(unittest.TestCase):
             result=check(case,11,timeline,root,{})
             self.assertEqual(len(result),2)
     def test_missing_semantic_fields_rejected(self):
-        data=json.loads((ROOT/'conformance/regressions/private-retail.json').read_text())
+        data=json.loads((ROOT/'workloads/retail.json').read_text())
         del data['cases']['home']['report']['er']
         with tempfile.TemporaryDirectory() as d:
             path=Path(d)/'wrong.json';path.write_text(json.dumps(data))

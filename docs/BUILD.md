@@ -44,6 +44,12 @@ also works. The archive's recorded tool versions are in `evidence/`.
 
 ## Single-command gates
 
+Clone the independent hardware suite once alongside this checkout:
+
+```sh
+gh repo clone lumirth/hachiware ../hachiware
+```
+
 ```sh
 python3 tools/check.py --out out/check-1
 python3 tools/verify_retail.py --out out/retail-1
@@ -51,7 +57,9 @@ python3 tools/verify_retail.py --out out/retail-1
 
 Each output directory must be new. `check.py` runs formatting, default and
 trace-feature tests, Clippy, a release build, host-tool unit tests, independent
-fixture generation and fixture execution. `verify_retail.py` separately requires
+fixture generation and fixture execution. Pass `--hachiware PATH` if the suite is
+elsewhere. Rust builds and local tests do not require the suite checkout.
+`verify_retail.py` separately requires
 private images and runs full event/state partition comparison, snapshot replay,
 and the real boot/menu/walking/idle workloads. `--quick` omits walking and idle.
 

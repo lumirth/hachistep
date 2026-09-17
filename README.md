@@ -49,12 +49,12 @@ python3 tools/verify_retail.py
 # Menu buttons and a separately captured final screen.
 cargo run -p hs-cli --release --offline -- run \
   --firmware local-inputs/pokewalker.bin --eeprom local-inputs/eeprom.bin \
-  --input conformance/scenarios/menu.csv --milliseconds 6500 --out out-menu
+  --input workloads/menu.csv --milliseconds 6500 --out out-menu
 
 # Physical acceleration only: the firmware itself decides whether to add steps.
 cargo run -p hs-cli --release --offline -- run \
   --firmware local-inputs/pokewalker.bin --eeprom local-inputs/eeprom.bin \
-  --input conformance/scenarios/walking.csv --milliseconds 61000 --out out-walk
+  --input workloads/walking.csv --milliseconds 61000 --out out-walk
 
 python3 tools/preview.py out-home/frame.pgm out-menu/frame.pgm out-walk/frame.pgm \
   --out captured-frames.html
@@ -134,4 +134,4 @@ incremental commits are included in the ZIP.
 | [HANDOFF](docs/HANDOFF.md) | Ordered implementation tasks, exact files and acceptance tests. |
 | [TESTING](docs/TESTING.md) | What the checks prove, what they do not, conformance organization. |
 | [SOURCES](docs/SOURCES.md) | Firmware, EEPROM, documentation and toolchain provenance. |
-| [conformance/README](conformance/README.md) | Core-independent diagnostic-image contract. |
+| [hachiware](https://github.com/lumirth/hachiware) | Core-independent diagnostic-image contract. |
