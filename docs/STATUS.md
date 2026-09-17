@@ -73,7 +73,7 @@ Default input is stationary +1 g on Z at 20 °C. The factory image uses the
 documented ±4 g/1500 Hz defaults; firmware normally selects ±2 g itself.
 Temperature, X, Y and Z publish in successive 12 kHz slots. Axis input is
 sampled at its own boundary; a Z publication requests new-data IRQ only when
-all three freshness flags are set. Cold acquisition waits 3 ms.
+all three freshness flags are set. The first complete cold-start vector is ready at 3 ms; normal wake uses 1 ms.
 
 The filter retains 64 actual samples per axis with running sums. Bandwidth
 selects 64/32/16/8/4/2/1 samples, arithmetic-shift floor rounding, and raw output
@@ -89,8 +89,15 @@ Low/high-g criteria retain per-axis hysteresis, millisecond debounce counters,
 active status and independent latches. Any-motion uses three-interval differences
 and qualifies both edges; alert shortens working durations without changing
 configuration. Data-ready remains separate. The physical board IRQ connection
-is not asserted without evidence. Autonomous wake-pause and self-test remain
-to be implemented. Four-wire reads and three-wire
+is not asserted without evidence. Autonomous wake retains its physical phase
+separately from the programmed sleep bit, with all four pause lengths, filter
+acquisition, interrupt verification, latch retention and a 330 µs minimum IRQ.
+Soft reset restores working state and includes a 10 µs serial quiet interval.
+Image reload blocks image/NV access until its 300 µs completion. Self-test 1
+feeds zero ADC codes through the normal filter; self-test 0 holds the published
+vector for one full conversion cycle and reports success for the modeled
+healthy unit. That completion boundary is inferred; no deflection amplitude
+is invented. Four-wire reads and three-wire
 turnaround share the serial parser; only reads auto-increment. Three-wire drives
 SDI and leaves SDO floating, with MCU sampling preceding the sensor's same-edge
 output change. A launched but unclocked next byte has no read side effects.

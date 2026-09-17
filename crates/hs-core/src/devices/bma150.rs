@@ -1,5 +1,6 @@
 //! BMA150 conversion, filtering, register and serial state. Physical inputs
 //! pass through calibrated ADC codes and the same filter used by interrupts.
+mod control;
 mod filter;
 mod interrupts;
 use super::nv::WriteCycle;
@@ -37,6 +38,12 @@ pub struct Bma150 {
     filtered: [i16; 3],
     sample_clock: Clock,
     wake_deadline: Option<Time>,
+    pause_deadline: Option<Time>,
+    quiet_deadline: Option<Time>,
+    irq_hold: Option<Time>,
+    asleep: bool,
+    auto_cycles: u16,
+    test_phases: Option<u8>,
     nv_operation: Option<(WriteCycle, u8, u8)>,
     image_deadline: Option<Time>,
     interrupts: interrupts::Interrupts,
@@ -75,7 +82,13 @@ impl Bma150 {
             filter: filter::Filter::new(6),
             filtered: [0; 3],
             sample_clock: Clock::new(now, 12000, 1).expect("constant sensor frequency"),
-            wake_deadline: now.checked_add(Duration::from_millis(3)),
+            wake_deadline: now.checked_add(control::acquisition_delay(Duration::from_millis(3))),
+            pause_deadline: None,
+            quiet_deadline: None,
+            irq_hold: None,
+            asleep: false,
+            auto_cycles: 0,
+            test_phases: None,
             nv_operation: None,
             image_deadline: None,
             interrupts,
@@ -153,10 +166,11 @@ impl Bma150 {
         self.temperature_millicelsius = millicelsius;
     }
     pub fn sleeping(&self) -> bool {
-        self.registers[0x0a] & 1 != 0
+        self.asleep
     }
     pub fn interrupt(&self) -> bool {
-        (self.data_ready && self.registers[0x15] & 0x20 != 0)
+        self.irq_hold.is_some()
+            || (self.data_ready && self.registers[0x15] & 0x20 != 0)
             || self.interrupts.output(&self.registers)
     }
     pub fn nonvolatile(&self, now: Time) -> [u8; 0x13] {
@@ -178,6 +192,9 @@ impl Bma150 {
         [
             self.next_sample(),
             self.wake_deadline,
+            self.pause_deadline,
+            self.quiet_deadline,
+            self.irq_hold,
             self.nv_operation.map(|v| v.0.deadline),
             self.image_deadline,
         ]
@@ -186,6 +203,17 @@ impl Bma150 {
         .min()
     }
     pub fn at_deadline(&mut self, now: Time, output: &mut dyn Output) -> Result<(), Error> {
+        let was_irq = self.interrupt();
+        let hold_ended = self.irq_hold == Some(now);
+        if hold_ended {
+            self.irq_hold = None;
+        }
+        if self.quiet_deadline == Some(now) {
+            self.quiet_deadline = None;
+        }
+        if self.pause_deadline == Some(now) {
+            self.start_acquisition(now, Duration::from_millis(1))?;
+        }
         if let Some((cycle, address, value)) = self.nv_operation {
             if cycle.deadline == now {
                 self.nonvolatile[usize::from(address - 0x2b)] = value;
@@ -214,14 +242,18 @@ impl Bma150 {
             self.wake_deadline = None;
             self.sample_clock = Clock::new(now, 12000, 1)?;
         }
+        let mut cycle_ended = false;
         if self.next_sample() == Some(now) {
             self.sample_clock.advance(1)?;
             self.sample_phase();
-            if self.sample_clock.ordinal() % 12 == 0 {
+            cycle_ended = self.sample_clock.ordinal() % 4 == 0;
+            if self.sample_clock.ordinal() % 12 == 0
+                && (!self.automatic() || usize::from(self.auto_cycles) >= 2 * self.window())
+            {
                 self.interrupts.millisecond(&self.registers);
             }
         }
-        Ok(())
+        self.automatic_control(now, was_irq, cycle_ended || hold_ended)
     }
     fn copy_image(&mut self) {
         self.registers[0x0b..=0x1d].copy_from_slice(&self.nonvolatile);
@@ -241,9 +273,20 @@ impl Bma150 {
     }
     fn sample_phase(&mut self) {
         let phase = (self.sample_clock.ordinal() - 1) & 3;
+        if let Some(left) = &mut self.test_phases {
+            *left = left.saturating_sub(1);
+        }
         if phase == 0 {
             self.registers[8] =
                 ((i64::from(self.temperature_millicelsius) + 30_000) / 500).clamp(0, 255) as u8;
+            return;
+        }
+        if let Some(left) = self.test_phases {
+            if phase == 3 && left == 0 {
+                self.test_phases = None;
+                self.registers[0x0a] &= !4;
+                self.registers[9] |= 0x80;
+            }
             return;
         }
         let axis = phase as usize - 1;
@@ -252,7 +295,11 @@ impl Bma150 {
         let offset = (u16::from(self.registers[0x1a + axis]) << 2)
             | u16::from(self.registers[0x16 + axis] >> 6);
         let acceleration = i64::from(input[axis]) + (i64::from(offset) - 512) * 31_250;
-        let code = ((acceleration * 512) / (range * 1_000_000)).clamp(-512, 511) as i16;
+        let code = if self.registers[0x0a] & 8 != 0 {
+            0
+        } else {
+            ((acceleration * 512) / (range * 1_000_000)).clamp(-512, 511) as i16
+        };
         self.filtered[axis] = self.filter.push(axis, code);
         let raw = self.filtered[axis] as u16 & 0x3ff;
         self.registers[2 + axis * 2] = ((raw & 3) as u8) << 6 | 1;
@@ -267,13 +314,27 @@ impl Bma150 {
         {
             self.data_ready = true;
         }
-        self.interrupts
-            .cycle(self.filtered, self.window(), &self.registers);
+        self.auto_cycles = self.auto_cycles.saturating_add(1);
+        let acquired = 2 * self.window();
+        if !self.automatic() || usize::from(self.auto_cycles) >= acquired {
+            let interval = if self.automatic() && usize::from(self.auto_cycles) == acquired {
+                1
+            } else {
+                self.window()
+            };
+            self.interrupts
+                .cycle(self.filtered, interval, &self.registers);
+        }
     }
     /// Fixture inspection does not release shadow latches or data-ready state.
     pub fn peek(&self, address: u8) -> Option<u8> {
         let i = usize::from(address);
-        if i >= COUNT || self.sleeping() {
+        if i >= COUNT
+            || self.sleeping()
+            || self.quiet_deadline.is_some()
+            || (self.image_deadline.is_some()
+                && ((0x0b..=0x1d).contains(&address) || address >= 0x2b))
+        {
             return None;
         }
         if address >= 0x16 && self.registers[0x0a] & 0x10 == 0 {
@@ -313,7 +374,7 @@ impl Bma150 {
         Some(v)
     }
     fn acknowledge_read(&mut self, address: u8) {
-        if self.tx.is_none() {
+        if self.tx.is_none() || self.sleeping() || self.quiet_deadline.is_some() {
             return;
         }
         if (2..=7).contains(&address) {
@@ -332,97 +393,6 @@ impl Bma150 {
             self.data_ready = false;
         }
     }
-    fn write_register(&mut self, address: u8, value: u8, now: Time) -> Result<(), Error> {
-        let i = usize::from(address);
-        if i >= COUNT || address <= 9 {
-            return Ok(());
-        }
-        if self.sleeping() && address != 0x0a {
-            return Ok(());
-        }
-        if address >= 0x16 && self.registers[0x0a] & 0x10 == 0 {
-            return Ok(());
-        }
-        if address >= 0x2b {
-            if self.nv_operation.is_some() {
-                return Ok(()); // The programming engine is occupied.
-            }
-            self.nv_operation = Some((
-                WriteCycle::start(now, Duration::from_millis(28))?,
-                address,
-                value,
-            ));
-            return Ok(());
-        }
-        match address {
-            0x0a => {
-                if value & 0x0c != 0 {
-                    return Err(Error::Unsupported {
-                        component: "BMA150",
-                        detail: "electrostatic/interrupt self-test has not been characterized",
-                        address: 0x0a,
-                    });
-                }
-                if value & 2 != 0 {
-                    self.copy_image();
-                    self.registers[0x0a] = 0;
-                    self.filter = filter::Filter::new(self.registers[0x14] & 7);
-                    self.shadows = [None; 3];
-                    self.interrupts = interrupts::Interrupts::default();
-                    self.interrupts.configure(&self.registers);
-                    self.wake_deadline = Some(
-                        now.checked_add(Duration::from_millis(1))
-                            .ok_or(crate::time::TimeError::Overflow)?,
-                    );
-                } else {
-                    let was_asleep = self.sleeping();
-                    self.registers[i] = value & 0x31;
-                    if value & 0x40 != 0 {
-                        self.data_ready = false;
-                        self.interrupts.reset(&self.registers);
-                    }
-                    if was_asleep && value & 1 == 0 {
-                        self.filter = filter::Filter::new(self.registers[0x14] & 7);
-                        self.interrupts.restart_acquisition();
-                        self.shadows = [None; 3];
-                        self.wake_deadline = Some(
-                            now.checked_add(Duration::from_millis(1))
-                                .ok_or(crate::time::TimeError::Overflow)?,
-                        );
-                    }
-                    if value & 0x20 != 0 {
-                        self.image_deadline = Some(
-                            now.checked_add(Duration::from_micros(300))
-                                .ok_or(crate::time::TimeError::Overflow)?,
-                        );
-                    }
-                }
-            }
-            0x14 => {
-                self.registers[i] = value;
-                self.filter.select(value & 7);
-            }
-            0x15 => {
-                if value & 1 != 0 {
-                    return Err(Error::Unsupported {
-                        component: "BMA150",
-                        detail: "autonomous wake-pause algorithm is not implemented",
-                        address: 0x15,
-                    });
-                }
-                self.registers[i] = value;
-                if value & 8 != 0 {
-                    self.shadows = [None; 3];
-                }
-            }
-            0x0d | 0x0f => {
-                self.registers[i] = value;
-                self.interrupts.configure(&self.registers);
-            }
-            _ => self.registers[i] = value,
-        }
-        Ok(())
-    }
     pub fn set_selected(&mut self, selected: bool) {
         if self.selected != selected {
             self.selected = selected;
@@ -438,14 +408,14 @@ impl Bma150 {
         }
     }
     pub fn output(&self) -> Drive {
-        if self.selected && self.four_wire() {
+        if self.selected && self.four_wire() && !self.sleeping() && self.quiet_deadline.is_none() {
             self.driven
         } else {
             Drive::Floating
         }
     }
     pub fn data_output(&self) -> Drive {
-        if self.selected && !self.four_wire() {
+        if self.selected && !self.four_wire() && !self.sleeping() && self.quiet_deadline.is_none() {
             self.driven
         } else {
             Drive::Floating
@@ -483,7 +453,7 @@ impl Bma150 {
         self.tx_bit = self.tx_bit.saturating_add(1).min(8);
     }
     pub fn rising(&mut self, mosi: bool, now: Time) -> Result<(), Error> {
-        if !self.selected {
+        if !self.selected || self.quiet_deadline.is_some() {
             return Ok(());
         }
         if self.turnaround {
@@ -652,7 +622,7 @@ mod tests {
     fn axes_publish_sequentially_and_new_data_waits_for_every_axis() {
         let mut b = Bma150::new(Time::ZERO);
         write(&mut b, 0x15, 0xa0);
-        b.at_deadline(Time::from_micros(3000), &mut ()).unwrap();
+        b.at_deadline(b.wake_deadline.unwrap(), &mut ()).unwrap();
         b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // T
         assert_eq!(b.peek(8), Some(100));
         assert_eq!(b.peek(2), Some(0));

@@ -188,6 +188,18 @@ impl Interrupts {
                 self.motion_level
             })
     }
+    /// An autonomous wake must finish qualification, not sleep between the
+    /// first qualifying sample and its required duration/history.
+    pub(super) fn verifying(&self, registers: &[u8]) -> bool {
+        self.thresholds
+            .iter()
+            .enumerate()
+            .any(|(i, t)| registers[0x0b] & (1 << i) != 0 && t.active(i != 0))
+            || (registers[0x15] & 0x40 != 0
+                && registers[0x0b] & 0xc0 != 0
+                && (self.observations < 4 || self.motion_active))
+            || self.alert
+    }
 }
 #[cfg(test)]
 mod tests {

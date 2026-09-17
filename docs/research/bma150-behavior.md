@@ -216,7 +216,7 @@ Bosch's approximate wake-current expression contains a **2N** acquisition
 allowance followed by **3N** extra periods for any-motion. It also has a special
 1500 Hz formula inconsistent with its own current table. Preserve the N-sample
 filter above. For autonomous wake verification, choose the table-consistent
-gate of 2N completed raw cycles after stabilization, then take the first
+gate of 2N completed raw cycles after acquisition begins, then take the first
 criterion observation; any-motion needs three further N-cycle intervals.
 Ordinary register publication continues during that gate. This treats the
 formula as a conservative acquisition/settling allowance, not a second filter
@@ -289,7 +289,10 @@ Clearing `wake_up` while awake restores continuous acquisition. A latched IRQ
 prevents automatic sleep until reset; `reset_INT` restarts verification.
 ([Bosch mode setter][bosch-mode]; [ASF mode setter][asf-mode]; [§3.1.4][p12])
 
-Use the nominal 1 ms wake stabilization and 3 ms cold startup. Reset while awake
+Place the first complete vector at the nominal 1 ms wake and 3 ms cold
+readiness times: the final T/X/Y/Z scan occupies the last third of a millisecond
+of that interval. This scan placement is the selected nominal phase, not an
+extra delay added after readiness. Reset while awake
 uses the documented roughly 1.3 ms to available data; reset during sleep uses
 the documented 30 ms bound as the chosen delay. Honor the 10 µs serial reset
 quiet interval with undriven reads/ignored writes. Ordinary sleeping reads are
