@@ -137,6 +137,13 @@ impl Mcu {
         Ok(())
     }
     pub fn apply_gates(&mut self, now: Time, _out: &mut dyn Output) -> Result<(), Error> {
+        self.clocks.set_prescalers(
+            now,
+            !self.reset_held && self.control.main_running(),
+            !self.reset_held
+                && self.control.mode != Mode::Standby
+                && self.control.stabilizing_from != Some(Mode::Standby),
+        )?;
         self.comparators
             .set_gate(self.control.gate2 & 2 != 0, now)?;
         self.aec_power(now)?;
@@ -175,7 +182,7 @@ impl Mcu {
             &self.clocks,
         );
         self.ssu.set_gate(
-            (main || sub) && self.control.gate2 & 0x10 != 0,
+            (main || (sub && self.ssu.uses_subclock())) && self.control.gate2 & 0x10 != 0,
             now,
             &self.clocks,
         )?;
@@ -210,6 +217,7 @@ impl Mcu {
         if !self.reset_held && !self.watchdog.rosc_required() && self.control.osc & 0x22 == 0 {
             self.clocks.restart_on_chip(now)?;
         }
+        self.clocks.reset_prescalers(now)?;
         self.control.reset();
         self.control.synchronize_clock(now, &mut self.clocks)?;
         self.gpio.reset();
@@ -415,7 +423,12 @@ impl Mcu {
             0xf0d0 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0d1 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => {
-                self.ssu.write(a, v, origin.is_mov(), now, &self.clocks)
+                self.ssu.write(a, v, origin.is_mov(), now, &self.clocks)?;
+                if a == 0xf0e2 {
+                    self.apply_gates(now, out)
+                } else {
+                    Ok(())
+                }
             }
             0xf0f0..=0xf0f5 => self.timer_w.write(a, v, now, &self.clocks),
             0xffb0..=0xffb3 => {

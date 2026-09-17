@@ -150,8 +150,7 @@ impl Aec {
         if self.source(i) == 0 {
             self.pins[i]
         } else if self.system_running {
-            let half = 1u32 << (self.source(i) - 1);
-            Some(c.ticks(now, Tap::system(half)) & 1 == 0)
+            Some(c.high(now, self.tap(i)))
         } else {
             None
         }

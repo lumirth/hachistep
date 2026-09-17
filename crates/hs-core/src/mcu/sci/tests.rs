@@ -1,4 +1,4 @@
-use super::super::clocks::{Frequencies, Source};
+use super::super::clocks::Frequencies;
 use super::*;
 
 fn clocks(hz: u64) -> Clocks {
@@ -257,7 +257,8 @@ fn baud_writes_and_live_clock_changes_preserve_the_right_countdown() {
     let pause = Time::from_micros(500);
     run(&mut s, &c, pause);
     s.set_power(true, false, true, false, pause, &c).unwrap();
-    c.select_system(pause, Source::Watch, 1).unwrap();
+    c.select_subclock(pause, 1).unwrap();
+    c.select_cpu(pause, true).unwrap();
     assert_eq!(s.deadline(&c).unwrap(), Some(Time::from_micros(61_000)));
     // CKS00 is main phi, even while the CPU's reference has become phiW.
     s.write(0xff98, 0, pause, &c).unwrap();

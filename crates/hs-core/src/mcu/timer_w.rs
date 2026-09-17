@@ -198,13 +198,13 @@ impl TimerW {
                     if transition && valid {
                         self.capture_before[i] = old_regs[i];
                         self.capture_visible[i] =
-                            Some(ClockWait::after(due, 1, Tap::system(1), clocks)?);
+                            Some(ClockWait::after(due, 1, Tap::cpu(), clocks)?);
                         self.general[i] = captured_count;
                         self.status |= 1 << i;
                         if i < 2 && self.mode & (0x10 << i) != 0 {
                             self.capture_before[i + 2] = old_regs[i + 2];
                             self.capture_visible[i + 2] =
-                                Some(ClockWait::after(due, 1, Tap::system(1), clocks)?);
+                                Some(ClockWait::after(due, 1, Tap::cpu(), clocks)?);
                             self.general[i + 2] = old_regs[i];
                         }
                     }
@@ -231,7 +231,7 @@ impl TimerW {
     }
     fn schedule_input(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.gate && self.input_next.is_none() && self.pipeline.iter().any(|s| *s != self.pins) {
-            self.input_next = Some(ClockWait::after(now, 1, Tap::system(1), clocks)?);
+            self.input_next = Some(ClockWait::after(now, 1, Tap::cpu(), clocks)?);
         }
         Ok(())
     }
@@ -354,6 +354,9 @@ impl TimerW {
         clocks: &Clocks,
     ) -> Result<(), Error> {
         self.sync(now, clocks)?;
+        let old_clock = self.running() && !self.uses_external() && clocks.high(now, self.tap());
+        let old_internal = !self.uses_external();
+        let old_selection = self.control & 0x70;
         match address {
             0xf0f0 => self.mode = value | 0x48,
             0xf0f1 => {
@@ -376,6 +379,19 @@ impl TimerW {
                     address,
                 })
             }
+        }
+        // §10.7: switching internal inputs from low to high is itself an
+        // increment pulse. Reset/gating and external synchronization are
+        // separate circuits; they do not pass through this selector write.
+        if address == 0xf0f1
+            && old_selection != self.control & 0x70
+            && old_internal
+            && !self.uses_external()
+            && self.running()
+            && !old_clock
+            && clocks.high(now, self.tap())
+        {
+            self.counter_step(1, now);
         }
         self.last = clocks.ticks(now, self.tap());
         Ok(())

@@ -291,3 +291,18 @@ fn expired_capture_visibility_does_not_survive_a_clock_epoch_change() {
     w.sync(now, &c).unwrap();
     assert_eq!(w.read_word(0xf0f8, &c).unwrap(), 5);
 }
+
+#[test]
+fn switching_a_low_internal_clock_to_a_high_one_increments_tcnt() {
+    let c = clocks();
+    let mut w = timer(&c);
+    w.write(0xf0f1, 0x20, Time::ZERO, &c).unwrap(); // phi/4
+    w.write(0xf0f0, 0x80, Time::ZERO, &c).unwrap();
+    let now = edge(&c, 2);
+    w.sync(now, &c).unwrap();
+    assert_eq!(w.read_word(0xf0f6, &c).unwrap(), 0);
+    w.write(0xf0f1, 0x10, now, &c).unwrap(); // phi/4 low -> phi/2 high
+    assert_eq!(w.read_word(0xf0f6, &c).unwrap(), 1);
+    w.sync(edge(&c, 4), &c).unwrap();
+    assert_eq!(w.read_word(0xf0f6, &c).unwrap(), 2);
+}

@@ -167,6 +167,9 @@ impl Ssu {
         }
         pins
     }
+    pub fn uses_subclock(&self) -> bool {
+        self.mode & 7 == 7
+    }
     fn half_period(&self) -> Tap {
         match self.mode & 7 {
             0 => Tap::system(128),
@@ -209,7 +212,7 @@ impl Ssu {
             && self.gate
         {
             self.phase = Phase::Load;
-            self.next = Some(ClockWait::after(now, 1, Tap::system(1), clocks)?);
+            self.next = Some(ClockWait::after(now, 1, Tap::cpu(), clocks)?);
         }
         Ok(())
     }

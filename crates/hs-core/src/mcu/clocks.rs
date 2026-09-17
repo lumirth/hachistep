@@ -1,13 +1,16 @@
 //! Shared clock phases. A peripheral records a consumed divider-edge ordinal;
 //! stopping a downstream gate does not restart the oscillator or its divider.
+mod prescaler;
 use crate::{
     error::Error,
     time::{Clock, Time, TimeError},
 };
+use prescaler::Prescaler;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
     System,
+    Cpu,
     Watch,
     OnChip,
     Oscillator,
@@ -19,6 +22,12 @@ pub struct Tap {
     pub divide: u32,
 }
 impl Tap {
+    pub const fn cpu() -> Self {
+        Self {
+            source: Source::Cpu,
+            divide: 1,
+        }
+    }
     pub const fn system(divide: u32) -> Self {
         Self {
             source: Source::System,
@@ -69,6 +78,10 @@ impl Default for Frequencies {
 pub struct Clocks {
     pub frequencies: Frequencies,
     system: Clock,
+    cpu: Clock,
+    cpu_uses_subclock: bool,
+    prescaler_s: Prescaler<13>,
+    prescaler_w: Prescaler<8>,
     watch: Clock,
     on_chip: Clock,
     oscillator: Clock,
@@ -82,6 +95,10 @@ impl Clocks {
         Ok(Self {
             frequencies,
             system: Clock::new(now, frequencies.main_hz, 1)?,
+            cpu: Clock::new(now, frequencies.main_hz, 1)?,
+            cpu_uses_subclock: false,
+            prescaler_s: Prescaler::new(),
+            prescaler_w: Prescaler::new(),
             watch: Clock::new(now, frequencies.watch_hz, 1)?,
             on_chip: Clock::new(now, frequencies.on_chip_hz, 1)?,
             oscillator: Clock::new(now, frequencies.main_hz, 1)?,
@@ -94,6 +111,7 @@ impl Clocks {
     fn source(&self, source: Source) -> &Clock {
         match source {
             Source::System => &self.system,
+            Source::Cpu => &self.cpu,
             Source::Watch => &self.watch,
             Source::OnChip => &self.on_chip,
             Source::Oscillator => &self.oscillator,
@@ -103,18 +121,88 @@ impl Clocks {
     /// Edges at `now` have occurred. Owners settle same-time conflicts before
     /// issuing a CPU access; external run horizons remain exclusive.
     pub fn ticks(&self, now: Time, tap: Tap) -> u64 {
-        let c = self.source(tap.source);
+        let raw = self.raw_ticks(now, tap.source);
+        if tap.divide.is_power_of_two() {
+            match (tap.source, tap.divide) {
+                (Source::System, 2..=8192) => {
+                    return self.prescaler_s.ticks(raw, tap.divide.trailing_zeros())
+                }
+                (Source::Watch, 8..=1024) => {
+                    return self
+                        .prescaler_w
+                        .ticks(raw / 4, tap.divide.trailing_zeros() - 2)
+                }
+                _ => {}
+            }
+        }
+        raw / u64::from(tap.divide)
+    }
+    fn raw_ticks(&self, now: Time, source: Source) -> u64 {
+        let c = self.source(source);
         let inclusive = Time::from_raw(now.raw().saturating_add(1));
-        let elapsed = c.edges_before(inclusive);
-        (c.ordinal().saturating_add(elapsed)) / u64::from(tap.divide)
+        c.ordinal().saturating_add(c.edges_before(inclusive))
     }
     pub fn edge(&self, tick: u64, tap: Tap) -> Result<Time, Error> {
-        let target = tick
-            .checked_mul(u64::from(tap.divide))
-            .ok_or(TimeError::Overflow)?;
+        let target = match (tap.source, tap.divide) {
+            (Source::System, 2..=8192) if tap.divide.is_power_of_two() => self
+                .prescaler_s
+                .parent_edge(tick, tap.divide.trailing_zeros())?,
+            (Source::Watch, 8..=1024) if tap.divide.is_power_of_two() => self
+                .prescaler_w
+                .parent_edge(tick, tap.divide.trailing_zeros() - 2)?
+                .checked_mul(4)
+                .ok_or(TimeError::Overflow)?,
+            _ => tick
+                .checked_mul(u64::from(tap.divide))
+                .ok_or(TimeError::Overflow)?,
+        };
         let c = self.source(tap.source);
         let delta = target.checked_sub(c.ordinal()).ok_or(TimeError::Reversed)?;
         Ok(c.after(delta)?)
+    }
+    /// Divider outputs use a high first half-cycle; source muxes and downstream
+    /// gates observe this physical phase, not parity of lifetime edge counts.
+    pub fn high(&self, now: Time, tap: Tap) -> bool {
+        let raw = self.raw_ticks(now, tap.source);
+        match (tap.source, tap.divide) {
+            (Source::System, 2..=8192) if tap.divide.is_power_of_two() => {
+                self.prescaler_s.high(raw, tap.divide.trailing_zeros())
+            }
+            (Source::Watch, 8..=1024) if tap.divide.is_power_of_two() => self
+                .prescaler_w
+                .high(raw / 4, tap.divide.trailing_zeros() - 2),
+            (_, 2..) => raw % u64::from(tap.divide) < u64::from(tap.divide / 2),
+            // At a reference-clock rising edge its level is high. Between
+            // edges the rational period places the falling edge halfway.
+            _ => {
+                let c = self.source(tap.source);
+                let edge = c.after(raw - c.ordinal()).unwrap_or(now);
+                let next = c.after(raw - c.ordinal() + 1).unwrap_or(Time::MAX);
+                now.raw() - edge.raw() < (next.raw() - edge.raw()) / 2
+            }
+        }
+    }
+    pub(crate) fn set_prescalers(
+        &mut self,
+        now: Time,
+        system: bool,
+        watch: bool,
+    ) -> Result<(), Error> {
+        let s = self.raw_ticks(now, Source::System);
+        let w = self.raw_ticks(now, Source::Watch) / 4;
+        let changed_s = self.prescaler_s.set_running(system, s, true);
+        let changed_w = self.prescaler_w.set_running(watch, w, false);
+        if changed_s || changed_w {
+            self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn reset_prescalers(&mut self, now: Time) -> Result<(), Error> {
+        self.prescaler_s.reset(self.raw_ticks(now, Source::System));
+        self.prescaler_w
+            .reset(self.raw_ticks(now, Source::Watch) / 4);
+        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        Ok(())
     }
     pub fn after(&self, now: Time, edges: u64, tap: Tap) -> Result<Time, Error> {
         let target = self
@@ -139,10 +227,31 @@ impl Clocks {
         self.revision = revision;
         self.system_numerator = numerator;
         self.system_denominator = divide;
+        if !self.cpu_uses_subclock {
+            self.select_cpu(now, false)?;
+        }
         Ok(())
     }
     pub fn select_subclock(&mut self, now: Time, divide: u64) -> Result<(), Error> {
         self.subclock = Self::divided(&self.watch, now, divide, self.ticks(now, Tap::subclock()))?;
+        if self.cpu_uses_subclock {
+            self.select_cpu(now, true)?;
+        }
+        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        Ok(())
+    }
+    pub fn select_cpu(&mut self, now: Time, subclock: bool) -> Result<(), Error> {
+        self.cpu = Self::divided(
+            if subclock {
+                &self.subclock
+            } else {
+                &self.system
+            },
+            now,
+            1,
+            self.ticks(now, Tap::cpu()),
+        )?;
+        self.cpu_uses_subclock = subclock;
         self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
         Ok(())
     }
@@ -284,6 +393,59 @@ impl ClockWait {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_dividers_reset_and_hold_without_rephasing_watch_input() {
+        let mut c = Clocks::new(
+            Time::ZERO,
+            Frequencies {
+                main_hz: 1_000_000,
+                watch_hz: 1_000_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let t = Time::from_micros;
+        assert_eq!(c.ticks(t(6), Tap::system(4)), 1);
+        c.reset_prescalers(t(6)).unwrap();
+        c.set_prescalers(t(6), false, false).unwrap();
+        assert_eq!(c.ticks(t(11), Tap::system(4)), 1);
+        assert_eq!(c.ticks(t(11), Tap::watch(4)), 2);
+        assert_eq!(c.ticks(t(11), Tap::watch(16)), 0);
+        c.set_prescalers(t(11), true, true).unwrap();
+        assert_eq!(c.edge(2, Tap::system(4)).unwrap(), t(15));
+        // W starts with the next upstream phiW/4 edge at 12, then 16,20,24.
+        assert_eq!(c.edge(1, Tap::watch(16)).unwrap(), t(24));
+        assert!(c.high(t(12), Tap::system(4)));
+        assert!(!c.high(t(13), Tap::system(4)));
+        assert!(c.high(t(15), Tap::system(4)));
+        c.set_prescalers(t(29), false, false).unwrap();
+        assert_eq!(c.ticks(t(43), Tap::watch(16)), 1);
+        c.set_prescalers(t(43), true, true).unwrap();
+        // S restarts from zero; W resumes its retained five-input-edge phase.
+        assert_eq!(c.after(t(43), 1, Tap::system(4)).unwrap(), t(47));
+        assert_eq!(c.after(t(43), 1, Tap::watch(16)).unwrap(), t(52));
+    }
+    #[test]
+    fn cpu_subclock_selection_does_not_replace_system_phi() {
+        let mut c = Clocks::new(
+            Time::ZERO,
+            Frequencies {
+                main_hz: 1_000_000,
+                watch_hz: 100_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        c.select_subclock(Time::ZERO, 2).unwrap();
+        let now = Time::from_micros(37);
+        c.select_cpu(now, true).unwrap();
+        assert_eq!(c.after(now, 1, Tap::cpu()).unwrap(), Time::from_micros(40));
+        assert_eq!(
+            c.after(now, 1, Tap::system(1)).unwrap(),
+            Time::from_micros(38)
+        );
+        assert_eq!(c.system_rate(), (1_000_000, 1));
+    }
     #[test]
     fn divided_clocks_share_their_source_phase() {
         let c = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();

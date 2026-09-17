@@ -369,3 +369,24 @@ Shared S/W prescaler reset/hold work remains separate from SCI's private BRC.
 [pw-ir-pins]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/ir.c#L65-L70
 [pw-ir-start]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/ir.c#L158-L180
 [pw-ir-finish]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/ir.c#L1150-L1160
+
+## Shared divider implementation, 2026-09-17
+
+Prescaler S now has the §4.4.1 reset/stop domain, and W retains its §4.4.2
+standby phase independently of the upstream phiW/4 divider. Each output keeps
+its emitted-edge ordinal across reset; phase reset cannot rewind a peripheral's
+consumed work. CPU reference selection is separate from main phi. Timer W's
+input synchronizer and SSU holding-register load use that CPU reference;
+main-clock peripherals do not inherit the subactive CPU's watch frequency.
+
+For undocumented reset polarity, the selected circuit uses high-first divider
+outputs, consistent with the Timer W timing drawing. This is separate from the
+documented zeroed up-counter state: the drawing does not identify Q versus /Q.
+AEC gate transitions use the physical divider phase. A Timer W internal source
+switch from low to high produces the extra count described in §10.7(3),
+pp.181–183. No reset transition is counted through a held consumer.
+
+Validation: `out/prescaler-check` passes all source, debug/release/trace, lint,
+CLI and 71 independent guest checks. `out/prescaler-retail` passes the two quick
+retail baselines and partition/snapshot replay; firmware observations retain
+the previous baseline while device appointments reflect the corrected phases.

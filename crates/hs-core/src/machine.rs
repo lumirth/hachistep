@@ -804,7 +804,7 @@ impl Machine {
                         self.resume_after = Some(Resume::Sleep(ClockWait::after(
                             self.now,
                             1,
-                            Tap::system(1),
+                            Tap::cpu(),
                             &self.mcu.clocks,
                         )?));
                     } else {
@@ -818,7 +818,7 @@ impl Machine {
                         wait: ClockWait::after(
                             self.now,
                             u64::from(states),
-                            Tap::system(1),
+                            Tap::cpu(),
                             &self.mcu.clocks,
                         )?,
                         split: false,
@@ -840,7 +840,7 @@ impl Machine {
                         wait: ClockWait::after(
                             self.now,
                             Mcu::access_states(address, physical_width),
-                            Tap::system(1),
+                            Tap::cpu(),
                             &self.mcu.clocks,
                         )?,
                         split,
@@ -925,7 +925,7 @@ impl Machine {
             pending.wait = ClockWait::after(
                 self.now,
                 Mcu::access_states(a.wrapping_add(1), Width::Byte),
-                Tap::system(1),
+                Tap::cpu(),
                 &self.mcu.clocks,
             )?;
             self.pending = Some(pending);

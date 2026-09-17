@@ -146,15 +146,15 @@ impl Control {
     fn select_clock(&self, now: Time, c: &mut Clocks) -> Result<(), Error> {
         if self.stabilizing_from.is_none() && matches!(self.mode, Mode::Subactive | Mode::Subsleep)
         {
-            let divide = [8, 4, 2, 1][usize::from(self.sys2 & 3)];
-            c.select_system(now, Source::Watch, divide)
+            c.select_cpu(now, true)
         } else {
             let divide = if self.sys2 & 4 != 0 {
                 [8, 16, 32, 64][usize::from(self.sys1 & 3)]
             } else {
                 1
             };
-            c.select_system(now, Source::Oscillator, divide)
+            c.select_system(now, Source::Oscillator, divide)?;
+            c.select_cpu(now, false)
         }
     }
     /// Enter the intermediate halt mode. A direct transition subsequently
