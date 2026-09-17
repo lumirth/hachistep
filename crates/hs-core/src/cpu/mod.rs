@@ -36,6 +36,19 @@ pub enum Action {
     Idle(u32),
     Sleep,
 }
+/// Only the instruction provenance used by register hardware. Word-store
+/// lanes and bit-operation writebacks are not MOV.B accesses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteOrigin {
+    Other,
+    MovByte,
+    MovByteAbs8 { pc_bit1: bool },
+}
+impl WriteOrigin {
+    pub fn is_mov(self) -> bool {
+        self != Self::Other
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Registers {
     pub er: [u32; 8],
@@ -98,6 +111,7 @@ struct Transfer {
     register: u8,
     store: bool,
     ccr: bool,
+    absolute8: bool,
     value: u32,
     done: u8,
     post: Option<(u8, u32)>,
@@ -241,6 +255,23 @@ impl Cpu {
     }
     pub fn instruction_pc(&self) -> u16 {
         self.instruction_pc
+    }
+    pub(crate) fn write_origin(&self, mov_byte: bool) -> WriteOrigin {
+        if !mov_byte {
+            WriteOrigin::Other
+        } else if matches!(
+            self.phase,
+            Phase::Memory(Transfer {
+                absolute8: true,
+                ..
+            })
+        ) {
+            WriteOrigin::MovByteAbs8 {
+                pc_bit1: self.instruction_pc & 2 != 0,
+            }
+        } else {
+            WriteOrigin::MovByte
+        }
     }
     pub fn phase_name(&self) -> &'static str {
         match self.phase {
@@ -937,6 +968,7 @@ impl Cpu {
                     address,
                     Address::PreDecrement(_) | Address::PostIncrement(_)
                 );
+                let absolute8 = matches!(address, Address::Absolute(_)) && self.word_count == 1;
                 let (mut address, post) = self.target_address(address, size);
                 let value = if ccr {
                     u32::from(self.registers.ccr) << 8
@@ -952,6 +984,7 @@ impl Cpu {
                     register: reg,
                     store,
                     ccr,
+                    absolute8,
                     value: if store { value } else { 0 },
                     done: 0,
                     post,

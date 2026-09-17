@@ -11,7 +11,12 @@ pub mod timer_b1;
 pub mod timer_w;
 pub mod watchdog;
 
-use crate::{cpu::Width, error::Error, signals::Output, time::Time};
+use crate::{
+    cpu::{Width, WriteOrigin},
+    error::Error,
+    signals::Output,
+    time::Time,
+};
 use adc::Adc;
 use aec::Aec;
 use clocks::{Clocks, Frequencies, Tap};
@@ -44,6 +49,7 @@ pub struct Mcu {
     pub adc: Adc,
     pub aec: Aec,
     pub comparators: Comparators,
+    reset_held: bool,
 }
 impl Mcu {
     pub fn new(firmware: &[u8], frequencies: Frequencies) -> Result<Self, Error> {
@@ -74,6 +80,7 @@ impl Mcu {
             adc: Adc::default(),
             aec: Aec::default(),
             comparators: Comparators::default(),
+            reset_held: false,
         };
         m.apply_gates(Time::ZERO, &mut ())?;
         Ok(m)
@@ -134,8 +141,8 @@ impl Mcu {
             .set_gate(self.control.gate2 & 2 != 0, now)?;
         self.aec_power(now)?;
         let standby = self.control.mode == Mode::Standby;
-        let main = self.control.main_running();
-        let sub = self.control.sub_running();
+        let main = !self.reset_held && self.control.main_running();
+        let sub = !self.reset_held && self.control.sub_running();
         self.rtc.set_gate(
             !standby && self.control.gate1 & 1 != 0 && (main || self.rtc.uses_watch()),
             now,
@@ -153,8 +160,20 @@ impl Mcu {
             now,
             &self.clocks,
         )?;
-        self.watchdog
-            .set_gate(self.control.gate2 & 4 != 0, now, &self.clocks);
+        let watchdog_source = match self.watchdog.source() {
+            clocks::Source::System => main,
+            clocks::Source::Watch => {
+                !standby && self.control.stabilizing_from != Some(Mode::Standby)
+            }
+            _ => true,
+        };
+        self.watchdog.set_power(
+            self.control.gate2 & 4 != 0,
+            watchdog_source,
+            self.reset_held,
+            now,
+            &self.clocks,
+        );
         self.ssu.set_gate(
             (main || sub) && self.control.gate2 & 0x10 != 0,
             now,
@@ -185,6 +204,12 @@ impl Mcu {
     pub fn reset(&mut self, now: Time, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         // RAM, flash, watch-source phase, RTC, and external chips survive an MCU
         // reset. Undefined MCU RAM is initialized only by cold construction.
+        if !self.control.main_running() {
+            self.clocks.restart_oscillator(now)?;
+        }
+        if !self.reset_held && !self.watchdog.rosc_required() && self.control.osc & 0x22 == 0 {
+            self.clocks.restart_on_chip(now)?;
+        }
         self.control.reset();
         self.control.synchronize_clock(now, &mut self.clocks)?;
         self.gpio.reset();
@@ -192,10 +217,15 @@ impl Mcu {
         self.sci = Sci::default();
         self.timer_b1 = TimerB1::default();
         self.timer_w = TimerW::default();
-        self.adc = Adc::default();
+        self.adc.reset();
+        self.rtc.reset(now, &self.clocks);
         self.aec = Aec::default();
         self.comparators.reset(now);
         self.watchdog.reset(watchdog, now, &self.clocks);
+        self.apply_gates(now, out)
+    }
+    pub fn hold_reset(&mut self, held: bool, now: Time, out: &mut dyn Output) -> Result<(), Error> {
+        self.reset_held = held;
         self.apply_gates(now, out)
     }
     pub fn deadline(&self) -> Result<Option<Time>, Error> {
@@ -350,7 +380,7 @@ impl Mcu {
         &mut self,
         a: u16,
         v: u8,
-        mov: bool,
+        origin: WriteOrigin,
         now: Time,
         out: &mut dyn Output,
     ) -> Result<(), Error> {
@@ -384,9 +414,14 @@ impl Mcu {
             0xf0dc..=0xf0de => self.comparators.write(a, v, now),
             0xf0d0 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0d1 => self.timer_b1.write(a, v, now, &self.clocks),
-            0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => self.ssu.write(a, v, mov, now, &self.clocks),
+            0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => {
+                self.ssu.write(a, v, origin.is_mov(), now, &self.clocks)
+            }
             0xf0f0..=0xf0f5 => self.timer_w.write(a, v, now, &self.clocks),
-            0xffb0..=0xffb3 => self.watchdog.write(a, v, mov, now, &self.clocks),
+            0xffb0..=0xffb3 => {
+                self.watchdog.write(a, v, origin, now, &self.clocks)?;
+                self.apply_gates(now, out)
+            }
             0xffbe | 0xffbf => self.adc.write(a, v, now, &self.clocks),
             0xf020..=0xf023 | 0xf02b if v == 0 => Ok(()),
             _ => Err(self.unimplemented(a, true, 1)),

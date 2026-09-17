@@ -98,6 +98,7 @@ pub struct Machine {
     incident_light: bool,
     emitting: bool,
     reset_asserted: bool,
+    watchdog_reset: Option<ClockWait>,
     powered: bool,
     fault: Option<Error>,
     stats: Statistics,
@@ -143,6 +144,7 @@ impl Machine {
             incident_light: false,
             emitting: false,
             reset_asserted: false,
+            watchdog_reset: None,
             powered: conditions.supply_millivolts != 0,
             fault: None,
             stats: Statistics::default(),
@@ -288,6 +290,7 @@ impl Machine {
             });
         }
         self.powered = false;
+        self.watchdog_reset = None;
         self.pending = None;
         self.resume_after = None;
         self.next_devices = None;
@@ -306,6 +309,7 @@ impl Machine {
         }
         self.last_effect = self.now;
         self.mcu.power_on(self.now, out)?;
+        self.mcu.hold_reset(self.reset_asserted, self.now, out)?;
         self.sensor.power_on(self.now);
         self.lcd = Nt7508::new();
         self.cpu = Cpu::reset();
@@ -330,6 +334,9 @@ impl Machine {
             self.mcu.deadline()?,
             self.eeprom.deadline(),
             self.sensor.deadline(),
+            self.watchdog_reset
+                .as_ref()
+                .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?,
         ]
         .into_iter()
         .flatten()
@@ -446,6 +453,19 @@ impl Machine {
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         self.mcu.reset(self.now, watchdog, out)?;
+        if watchdog {
+            self.watchdog_reset = Some(ClockWait::after(
+                self.now,
+                512,
+                Tap::on_chip(1),
+                &self.mcu.clocks,
+            )?);
+        }
+        self.mcu.hold_reset(
+            self.reset_asserted || self.watchdog_reset.is_some(),
+            self.now,
+            out,
+        )?;
         self.cpu = Cpu::reset();
         self.pending = None;
         self.resume_after = None;
@@ -509,6 +529,15 @@ impl Machine {
         let reset = self.mcu.sync(self.now)?;
         if reset {
             self.reset_mcu(true, out)?;
+        }
+        if self
+            .watchdog_reset
+            .as_ref()
+            .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?
+            == Some(self.now)
+        {
+            self.watchdog_reset = None;
+            self.mcu.hold_reset(self.reset_asserted, self.now, out)?;
         }
         if self.mcu.adc.deadline(&self.mcu.clocks)? == Some(self.now)
             && self
@@ -638,7 +667,11 @@ impl Machine {
             // as a user-mode interrupt. Pins in that aperture are reset straps.
             self.mcu.control.nmi_input(
                 high,
-                self.powered && power != Some(false) && !was_reset && !will_reset,
+                self.powered
+                    && power != Some(false)
+                    && !was_reset
+                    && !will_reset
+                    && self.watchdog_reset.is_none(),
             );
         }
         if power == Some(false) {
@@ -648,10 +681,13 @@ impl Machine {
             if self.powered && !asserted && was_reset && !self.mcu.control.nmi_level() {
                 return Err(Self::boot_strap_error());
             }
-            if self.powered && asserted && !self.reset_asserted {
-                self.reset_mcu(false, out)?;
-            }
             self.reset_asserted = asserted;
+            if self.powered && asserted && !was_reset {
+                self.reset_mcu(false, out)?;
+            } else if self.powered && !asserted && was_reset {
+                self.mcu
+                    .hold_reset(self.watchdog_reset.is_some(), self.now, out)?;
+            }
         }
         if power == Some(true) {
             self.power_on(out)?;
@@ -699,7 +735,11 @@ impl Machine {
         self.refresh_deadline()
     }
     fn queue_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if self.pending.is_some() || self.reset_asserted || !self.powered {
+        if self.pending.is_some()
+            || self.reset_asserted
+            || self.watchdog_reset.is_some()
+            || !self.powered
+        {
             return Ok(());
         }
         if let Some(resume) = self.resume_after {
@@ -849,7 +889,10 @@ impl Machine {
                 value
             };
             match w {
-                Width::Byte => self.mcu.write8(a, v as u8, mov_byte, self.now, out)?,
+                Width::Byte => {
+                    self.mcu
+                        .write8(a, v as u8, self.cpu.write_origin(mov_byte), self.now, out)?
+                }
                 Width::Word => self.mcu.write16(a, v, self.now)?,
             };
             self.stats.bus_writes = self.stats.bus_writes.wrapping_add(1);

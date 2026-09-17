@@ -2,6 +2,7 @@
 //! Tests establish documented digital rules and the explicitly chosen
 //! reference-edge interpretation, not new physical measurements.
 use hs_core::{
+    cpu::WriteOrigin,
     mcu::{
         aec::Aec,
         clocks::{Clocks, Frequencies, Tap},
@@ -210,11 +211,14 @@ fn pwm_gating_retains_phase_and_shared_divider() {
 #[test]
 fn watch_pwm_and_external_inputs_have_different_power_domains() {
     let mut m = Mcu::new(&vec![0; 49152], Default::default()).unwrap();
-    m.write8(0xfffb, 12, true, Time::ZERO, &mut ()).unwrap();
-    m.write8(0xff94, 12, true, Time::ZERO, &mut ()).unwrap();
+    m.write8(0xfffb, 12, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
+    m.write8(0xff94, 12, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
     m.write16(0xff8c, 3, Time::ZERO).unwrap();
     m.write16(0xff8e, 1, Time::ZERO).unwrap();
-    m.write8(0xff92, 2, true, Time::ZERO, &mut ()).unwrap();
+    m.write8(0xff92, 2, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
     for (mode, stabilizing, clock, pad) in [
         (Mode::Active, None, true, true),
         (Mode::Watch, None, true, true),
@@ -234,17 +238,21 @@ fn watch_pwm_and_external_inputs_have_different_power_domains() {
 fn controller_request_is_separate_from_counter_status() {
     let mut m = Mcu::new(&vec![0; 49152], Default::default()).unwrap();
     let c = m.clocks.clone();
-    m.write8(0xfffb, 12, true, Time::ZERO, &mut ()).unwrap();
+    m.write8(0xfffb, 12, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
     m.aec
         .input_pins([None, None, Some(true)], Time::ZERO, &c)
         .unwrap();
-    m.write8(0xff94, 0x10, true, Time::ZERO, &mut ()).unwrap();
-    m.write8(0xff95, 0x17, true, Time::ZERO, &mut ()).unwrap();
+    m.write8(0xff94, 0x10, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
+    m.write8(0xff95, 0x17, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
     m.control.ien2 = 1;
     let at = c.edge(512, Tap::system(1)).unwrap();
     m.sync(at).unwrap();
     assert_eq!(m.interrupt(), Some(32));
-    m.write8(0xfff7, 0, true, at, &mut ()).unwrap();
+    m.write8(0xfff7, 0, WriteOrigin::MovByte, at, &mut ())
+        .unwrap();
     assert_eq!(m.interrupt(), None);
     assert_ne!(m.aec.peek(0xff95) & 0x40, 0);
     m.sync(c.edge(1024, Tap::system(1)).unwrap()).unwrap();

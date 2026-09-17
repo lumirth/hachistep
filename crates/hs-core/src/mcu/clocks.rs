@@ -175,6 +175,13 @@ impl Clocks {
         self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
         Ok(())
     }
+    pub fn restart_on_chip(&mut self, now: Time) -> Result<(), Error> {
+        let ordinal = self.ticks(now, Tap::on_chip(1));
+        self.on_chip = Clock::new(now, self.frequencies.on_chip_hz, 1)?;
+        self.on_chip.ordinal = ordinal;
+        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        Ok(())
+    }
 }
 
 /// An obligation to consume source/divider edges, not a fixed wall-time delay.

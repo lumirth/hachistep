@@ -33,6 +33,11 @@ impl Default for Adc {
     }
 }
 impl Adc {
+    pub fn reset(&mut self) {
+        let result = self.result;
+        *self = Self::default();
+        self.result = result;
+    }
     pub fn peek(&self, a: u16) -> u8 {
         if a == 0xffbe {
             self.mode
@@ -162,5 +167,8 @@ mod tests {
             .advance(a.deadline(&c).unwrap().unwrap(), 900, &c)
             .unwrap());
         assert_eq!(a.result(), 500 << 6);
+        a.reset();
+        assert_eq!(a.result(), 500 << 6);
+        assert_eq!((a.peek(0xffbe), a.peek(0xffbf)), (0, 0x3f));
     }
 }

@@ -33,6 +33,12 @@ impl Default for Rtc {
     }
 }
 impl Rtc {
+    pub fn reset(&mut self, now: Time, clocks: &Clocks) {
+        // RES/WDT reset RTCCSR alone. Time, controls, flags, and RTC divider
+        // state survive; software RST has its own different reset domain.
+        self.source = 8;
+        self.last = clocks.ticks(now, self.tap());
+    }
     pub fn uses_watch(&self) -> bool {
         self.tap().source == super::clocks::Source::Watch
     }

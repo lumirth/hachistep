@@ -1,5 +1,6 @@
 //! Independent cases for the Timer W buffer and contention rules in §10.7.
 use hs_core::{
+    cpu::WriteOrigin,
     mcu::{
         clocks::{Clocks, Frequencies, Tap},
         control::Mode,
@@ -197,8 +198,10 @@ fn external_clock_passes_through_synchronizer_and_same_counter_rules() {
 #[test]
 fn timer_w_watch_clock_runs_in_subsleep_but_not_watch_or_stabilization() {
     let mut m = Mcu::new(&vec![0; 49152], Default::default()).unwrap();
-    m.write8(0xf0f1, 0x40, true, Time::ZERO, &mut ()).unwrap();
-    m.write8(0xf0f0, 0x80, true, Time::ZERO, &mut ()).unwrap();
+    m.write8(0xf0f1, 0x40, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
+    m.write8(0xf0f0, 0x80, WriteOrigin::MovByte, Time::ZERO, &mut ())
+        .unwrap();
     m.control.gate2 |= 0x40;
     for (mode, stabilizing, runs) in [
         (Mode::Active, None, true),

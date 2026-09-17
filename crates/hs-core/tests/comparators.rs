@@ -1,6 +1,7 @@
 //! Register/latch expectations from REJ09B0152-0300 §18. Response times below
 //! are explicit simulation parameters, not new physical captures.
 use hs_core::{
+    cpu::WriteOrigin,
     mcu::{comparators::Comparators, Mcu},
     signals::AnalogPin,
     Images, Input, Machine, Time, TimedInput,
@@ -91,8 +92,10 @@ fn independent_channels_external_reference_and_interrupt_vector() {
     m.comparators
         .set_inputs(at(0), 3000, 1500, [0, 1600])
         .unwrap();
-    m.write8(0xfffb, 6, true, at(0), &mut ()).unwrap();
-    m.write8(0xf0dd, 0xe0, true, at(0), &mut ()).unwrap();
+    m.write8(0xfffb, 6, WriteOrigin::MovByte, at(0), &mut ())
+        .unwrap();
+    m.write8(0xf0dd, 0xe0, WriteOrigin::MovByte, at(0), &mut ())
+        .unwrap();
     m.sync(at(20)).unwrap();
     assert_eq!(m.read8(0xf0de, at(20)).unwrap() & 3, 2);
     m.comparators
@@ -101,9 +104,12 @@ fn independent_channels_external_reference_and_interrupt_vector() {
     m.sync(at(40)).unwrap();
     assert_eq!(m.interrupt(), Some(36));
     assert_eq!(m.read8(0xf0de, at(40)).unwrap() & 0x30, 0x20);
-    m.write8(0xf0de, 0x10, true, at(40), &mut ()).unwrap();
+    m.write8(0xf0de, 0x10, WriteOrigin::MovByte, at(40), &mut ())
+        .unwrap();
     assert_eq!(m.interrupt(), None);
-    assert!(m.write8(0xf0dc, 0xb0, true, at(40), &mut ()).is_err());
+    assert!(m
+        .write8(0xf0dc, 0xb0, WriteOrigin::MovByte, at(40), &mut ())
+        .is_err());
 }
 #[test]
 fn module_stop_is_distinct_from_standby_and_reset() {
