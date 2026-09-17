@@ -85,9 +85,12 @@ codes retain their register bits and use the widest/unfiltered realization.
 The research note identifies the timing and rounding choices alongside their
 Bosch evidence. Temperature follows code/2−30 °C and is an explicit input.
 
-Basic data-ready and any-motion state are present, but their physical board IRQ
-connection is not asserted without evidence. Low-g/high-g/alert, autonomous
-wake-pause and self-test still stop explicitly. Four-wire reads and three-wire
+Low/high-g criteria retain per-axis hysteresis, millisecond debounce counters,
+active status and independent latches. Any-motion uses three-interval differences
+and qualifies both edges; alert shortens working durations without changing
+configuration. Data-ready remains separate. The physical board IRQ connection
+is not asserted without evidence. Autonomous wake-pause and self-test remain
+to be implemented. Four-wire reads and three-wire
 turnaround share the serial parser; only reads auto-increment. Three-wire drives
 SDI and leaves SDO floating, with MCU sampling preceding the sensor's same-edge
 output change. A launched but unclocked next byte has no read side effects.
@@ -136,7 +139,7 @@ minimum rated operating voltage is not treated as a clean reset threshold.
 
 The default engine has no ordinary-run allocations and no second executor.
 Inactive AEC clock/pin work is now elided without replaying gated time; see the scoped paired measurement in REVISION-0.2. It still decodes on execution, schedules individual serial/buzzer edges,
-and samples the BMA filter at 3 kHz. It does not yet implement all analytical
+and schedules BMA conversion phases at 12 kHz (3 kHz per axis). It does not yet implement all analytical
 edge-run and signal-law optimizations in the design. No fastest-emulator or
 mobile energy-efficiency claim is made. See actual samples in `evidence/`.
 

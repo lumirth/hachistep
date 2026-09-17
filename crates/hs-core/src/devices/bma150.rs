@@ -1,6 +1,7 @@
 //! BMA150 conversion, filtering, register and serial state. Physical inputs
 //! pass through calibrated ADC codes and the same filter used by interrupts.
 mod filter;
+mod interrupts;
 use super::nv::WriteCycle;
 use crate::{
     error::Error,
@@ -38,14 +39,8 @@ pub struct Bma150 {
     wake_deadline: Option<Time>,
     nv_operation: Option<(WriteCycle, u8, u8)>,
     image_deadline: Option<Time>,
-    motion_history: [[i16; 3]; 3],
-    motion_at: u8,
-    motion_divider: u8,
-    motion_set: u8,
-    motion_clear: u8,
-    motion_fill: u8,
+    interrupts: interrupts::Interrupts,
     data_ready: bool,
-    motion_irq: bool,
 }
 impl Bma150 {
     pub fn new(now: Time) -> Self {
@@ -58,6 +53,8 @@ impl Bma150 {
             3, 20, 150, 160, 150, 0, 0, 162, 13, 0x0e, 0x80, 0, 0, 0, 0, 128, 128, 128, 0,
         ];
         registers[0x0b..=0x1d].copy_from_slice(&nonvolatile);
+        let mut interrupts = interrupts::Interrupts::default();
+        interrupts.configure(&registers);
         Self {
             registers,
             nonvolatile,
@@ -81,14 +78,8 @@ impl Bma150 {
             wake_deadline: now.checked_add(Duration::from_millis(3)),
             nv_operation: None,
             image_deadline: None,
-            motion_history: [[0; 3]; 3],
-            motion_at: 0,
-            motion_divider: 0,
-            motion_set: 0,
-            motion_clear: 0,
-            motion_fill: 0,
+            interrupts,
             data_ready: false,
-            motion_irq: false,
         }
     }
     /// Restore the sensor's own 0x2b..=0x3d nonvolatile image before execution.
@@ -165,7 +156,8 @@ impl Bma150 {
         self.registers[0x0a] & 1 != 0
     }
     pub fn interrupt(&self) -> bool {
-        self.data_ready || self.motion_irq
+        (self.data_ready && self.registers[0x15] & 0x20 != 0)
+            || self.interrupts.output(&self.registers)
     }
     pub fn nonvolatile(&self, now: Time) -> [u8; 0x13] {
         let mut image = self.nonvolatile;
@@ -225,6 +217,9 @@ impl Bma150 {
         if self.next_sample() == Some(now) {
             self.sample_clock.advance(1)?;
             self.sample_phase();
+            if self.sample_clock.ordinal() % 12 == 0 {
+                self.interrupts.millisecond(&self.registers);
+            }
         }
         Ok(())
     }
@@ -232,6 +227,7 @@ impl Bma150 {
         self.registers[0x0b..=0x1d].copy_from_slice(&self.nonvolatile);
         self.shadows = [None; 3];
         self.filter.select(self.registers[0x14] & 7);
+        self.interrupts.configure(&self.registers);
     }
     fn range_g(&self) -> i64 {
         match (self.registers[0x14] >> 3) & 3 {
@@ -261,6 +257,8 @@ impl Bma150 {
         let raw = self.filtered[axis] as u16 & 0x3ff;
         self.registers[2 + axis * 2] = ((raw & 3) as u8) << 6 | 1;
         self.registers[3 + axis * 2] = (raw >> 2) as u8;
+        self.interrupts
+            .axis(axis, self.filtered[axis], &self.registers);
         if axis != 2 {
             return;
         }
@@ -269,38 +267,8 @@ impl Bma150 {
         {
             self.data_ready = true;
         }
-        let window = self.window();
-        self.motion_divider = self.motion_divider.wrapping_add(1);
-        if usize::from(self.motion_divider) >= window {
-            self.motion_divider = 0;
-            let previous = self.motion_history[usize::from(self.motion_at)];
-            self.motion_history[usize::from(self.motion_at)] = self.filtered;
-            self.motion_at = (self.motion_at + 1) % 3;
-            if self.motion_fill < 3 {
-                self.motion_fill += 1;
-                return;
-            }
-            let threshold = i32::from(self.registers[0x10]) * 4;
-            let active = (0..3).any(|axis| {
-                (i32::from(self.filtered[axis]) - i32::from(previous[axis])).abs() >= threshold
-            });
-            let need = [1, 3, 5, 7][usize::from(self.registers[0x11] >> 6)];
-            if self.registers[0x15] & 0x40 != 0 && self.registers[0x0b] & 0x40 != 0 {
-                if active {
-                    self.motion_set = self.motion_set.saturating_add(1);
-                    self.motion_clear = 0;
-                } else {
-                    self.motion_set = 0;
-                    self.motion_clear = self.motion_clear.saturating_add(1);
-                }
-                if self.motion_set >= need {
-                    self.motion_irq = true;
-                }
-                if self.motion_clear >= need && self.registers[0x15] & 0x10 == 0 {
-                    self.motion_irq = false;
-                }
-            }
-        }
+        self.interrupts
+            .cycle(self.filtered, self.window(), &self.registers);
     }
     /// Fixture inspection does not release shadow latches or data-ready state.
     pub fn peek(&self, address: u8) -> Option<u8> {
@@ -317,7 +285,11 @@ impl Bma150 {
         if address >= 0x2b {
             return None; // EEPROM is write-only; read its downloaded image.
         }
-        Some(self.registers[i])
+        Some(if address == 9 {
+            self.registers[9] | self.interrupts.status()
+        } else {
+            self.registers[i]
+        })
     }
     fn prepare_read(&mut self, address: u8) -> Option<u8> {
         self.tx_pair = None;
@@ -396,6 +368,8 @@ impl Bma150 {
                     self.registers[0x0a] = 0;
                     self.filter = filter::Filter::new(self.registers[0x14] & 7);
                     self.shadows = [None; 3];
+                    self.interrupts = interrupts::Interrupts::default();
+                    self.interrupts.configure(&self.registers);
                     self.wake_deadline = Some(
                         now.checked_add(Duration::from_millis(1))
                             .ok_or(crate::time::TimeError::Overflow)?,
@@ -405,14 +379,11 @@ impl Bma150 {
                     self.registers[i] = value & 0x31;
                     if value & 0x40 != 0 {
                         self.data_ready = false;
-                        self.motion_irq = false;
-                        self.motion_set = 0;
-                        self.motion_clear = 0;
+                        self.interrupts.reset(&self.registers);
                     }
                     if was_asleep && value & 1 == 0 {
                         self.filter = filter::Filter::new(self.registers[0x14] & 7);
-                        self.motion_fill = 0;
-                        self.motion_divider = 0;
+                        self.interrupts.restart_acquisition();
                         self.shadows = [None; 3];
                         self.wake_deadline = Some(
                             now.checked_add(Duration::from_millis(1))
@@ -444,15 +415,9 @@ impl Bma150 {
                     self.shadows = [None; 3];
                 }
             }
-            0x0b => {
-                if value & 0x83 != 0 {
-                    return Err(Error::Unsupported {
-                        component: "BMA150",
-                        detail: "low-g/high-g/alert qualifier is not implemented",
-                        address: 0x0b,
-                    });
-                }
+            0x0d | 0x0f => {
                 self.registers[i] = value;
+                self.interrupts.configure(&self.registers);
             }
             _ => self.registers[i] = value,
         }
