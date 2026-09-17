@@ -90,6 +90,7 @@ impl Mcu {
     /// Synchronize clocked counters at an actual effect boundary. The return
     /// flag requests an MCU reset; attached device owners are not reconstructed.
     pub fn sync(&mut self, now: Time) -> Result<bool, Error> {
+        self.sci.sync(now, &self.clocks)?;
         self.comparators.sync(now)?;
         self.aec.sync(now, &self.clocks)?;
         self.collect_aec_requests();
@@ -128,7 +129,7 @@ impl Mcu {
         self.collect_aec_requests();
         Ok(())
     }
-    pub fn apply_gates(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
+    pub fn apply_gates(&mut self, now: Time, _out: &mut dyn Output) -> Result<(), Error> {
         self.comparators
             .set_gate(self.control.gate2 & 2 != 0, now)?;
         self.aec_power(now)?;
@@ -159,8 +160,15 @@ impl Mcu {
             now,
             &self.clocks,
         )?;
-        self.sci
-            .set_gate((main || sub) && self.control.gate1 & 0x40 != 0, now, out);
+        self.sci.set_power(
+            self.control.gate1 & 0x40 != 0,
+            main,
+            sub,
+            matches!(self.control.mode, Mode::Watch | Mode::Standby)
+                || self.control.stabilizing_from.is_some(),
+            now,
+            &self.clocks,
+        )?;
         self.adc.set_gate(
             self.control.gate1 & 0x10 != 0 && (main || (sub && self.adc.uses_watch())),
             now,
@@ -181,7 +189,7 @@ impl Mcu {
         self.control.synchronize_clock(now, &mut self.clocks)?;
         self.gpio.reset();
         self.ssu = Ssu::default();
-        self.sci.set_gate(false, now, out);
+        self.sci = Sci::default();
         self.timer_b1 = TimerB1::default();
         self.timer_w = TimerW::default();
         self.adc = Adc::default();
@@ -197,7 +205,7 @@ impl Mcu {
             self.timer_w.deadline(&self.clocks)?,
             self.watchdog.deadline(&self.clocks)?,
             self.ssu.deadline(&self.clocks)?,
-            self.sci.deadline(),
+            self.sci.deadline(&self.clocks)?,
             self.adc.deadline(&self.clocks)?,
             self.comparators.deadline(),
             self.aec.deadline(&self.clocks)?,
@@ -365,7 +373,7 @@ impl Mcu {
             return self.apply_gates(now, out);
         }
         if Sci::handles(a) {
-            return self.sci.write(a, v, now, &self.clocks, out);
+            return self.sci.write(a, v, now, &self.clocks);
         }
         if Aec::handles(a) {
             self.aec.write(a, v, now, &self.clocks)?;

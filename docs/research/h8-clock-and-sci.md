@@ -333,6 +333,15 @@ Rendered `sci-sampling-detail.png` and `sci-irda-272.png` preserve the figures
 used for edge/pulse interpretation. These caches are ignored; the links below
 remain the source references.
 
+The SCI owner now implements this plan, including the idle-BRR correction,
+physical P3 routing, source holds, and separately retained stop/D7 output.
+Local regression cases exercise exact sampling/pulse/clock boundaries and
+snapshot replay. The independent `hachiware` guests exercise five-bit formats,
+error-byte transfer, overrun retention, external synchronous clocking, and the
+GPIO/SCI optical mux. The 68-case corpus and all four retail regression workloads
+pass at this checkpoint; that does not substitute for an HGSS optical peer test.
+Shared S/W prescaler reset/hold work remains separate from SCI's private BRC.
+
 [manual]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group#page=2
 [clock-update]: https://www.renesas.com/en/document/tcu/h838602-group-specification-changes#page=2

@@ -20,6 +20,8 @@ pub struct Gpio {
     digital_levels: [Option<bool>; 10],
     aec_pwm: Option<bool>,
     aec_pwm_enabled: bool,
+    sci: super::sci::Pins,
+    incident_light: bool,
     pub levels: [u8; 5],
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +55,17 @@ impl Gpio {
     pub fn set_aec_output(&mut self, enabled: bool, level: Option<bool>) {
         self.aec_pwm_enabled = enabled;
         self.aec_pwm = level;
+    }
+    pub fn set_sci_pins(&mut self, pins: super::sci::Pins, incident_light: bool) {
+        self.sci = pins;
+        self.incident_light = incident_light;
+    }
+    pub fn sci_inputs(&self) -> (Option<bool>, bool) {
+        let clock = (self.pfcr & 3 != 2 && self.pmr[1] & 1 == 0).then_some(self.levels[1] & 1 != 0);
+        (clock, self.levels[1] & 2 != 0)
+    }
+    pub fn emitting(&self) -> bool {
+        self.levels[1] & 5 == 4
     }
     pub fn aec_inputs(&self) -> [Option<bool>; 3] {
         [
@@ -227,11 +240,45 @@ impl Gpio {
                 self.levels[0] = (self.levels[0] & !(1 << i)) | (u8::from(high) << i);
             }
         }
-        for bit in 0..3 {
-            if self.direction[1] & (1 << bit) == 0 {
-                if let Some(high) = self.digital_levels[3 + bit] {
-                    self.levels[1] = (self.levels[1] & !(1 << bit)) | u8::from(high) << bit;
-                }
+        // P30: IRQ0, then VCref, then SCI clock, then GPIO. P31's SCI
+        // input selection overrides PCR31. P32's SPC3 selects the peripheral
+        // output independently of TE/PCR32. PCR output readback still uses
+        // the original port latch (port_read), not these resolved voltages.
+        let irq0 = self.pfcr & 3 == 2;
+        let reference = !irq0 && self.pmr[1] & 1 != 0;
+        let clock = if irq0 || reference {
+            Some(Drive::Floating)
+        } else {
+            self.sci.clock
+        };
+        let clock = clock.unwrap_or(if self.direction[1] & 1 == 0 {
+            Drive::Floating
+        } else if self.latch[1] & 1 != 0 {
+            Drive::High
+        } else {
+            Drive::Low
+        });
+        let high = match clock {
+            Drive::Low => false,
+            Drive::High => true,
+            Drive::Floating => self.digital_levels[3]
+                .or(if reference {
+                    self.analog_levels[6]
+                } else {
+                    None
+                })
+                .unwrap_or(self.pull[1] & 1 != 0),
+        };
+        self.levels[1] = (self.levels[1] & !1) | u8::from(high);
+        if self.sci.receive || self.direction[1] & 2 == 0 {
+            let receive = self.digital_levels[4].unwrap_or(high || !self.incident_light);
+            self.levels[1] = (self.levels[1] & !2) | (u8::from(receive) << 1);
+        }
+        if let Some(tx) = self.sci.transmit {
+            self.levels[1] = (self.levels[1] & !4) | (u8::from(tx) << 2);
+        } else if self.direction[1] & 4 == 0 {
+            if let Some(tx) = self.digital_levels[5] {
+                self.levels[1] = (self.levels[1] & !4) | (u8::from(tx) << 2);
             }
         }
         for bit in 0..4 {

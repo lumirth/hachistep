@@ -95,6 +95,8 @@ pub struct Machine {
     next_devices: Option<Time>,
     serial: SerialLevels,
     piezo: Piezo,
+    incident_light: bool,
+    emitting: bool,
     reset_asserted: bool,
     powered: bool,
     fault: Option<Error>,
@@ -138,6 +140,8 @@ impl Machine {
             next_devices: None,
             serial: SerialLevels::default(),
             piezo: Piezo::Neutral,
+            incident_light: false,
+            emitting: false,
             reset_asserted: false,
             powered: conditions.supply_millivolts != 0,
             fault: None,
@@ -266,7 +270,16 @@ impl Machine {
         self.eeprom.power_off(self.now, out);
         self.sensor.power_off(self.now, out);
         self.last_effect = self.now;
-        self.mcu.sci.set_gate(false, self.now, out);
+        self.mcu
+            .sci
+            .set_power(false, false, false, false, self.now, &self.mcu.clocks)?;
+        if self.emitting {
+            self.emitting = false;
+            out.event(Event::Infrared {
+                at: self.now,
+                emitting: false,
+            });
+        }
         if self.piezo != Piezo::Neutral {
             self.piezo = Piezo::Neutral;
             out.event(Event::Buzzer {
@@ -347,6 +360,8 @@ impl Machine {
         Ok([mosi, miso])
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<[bool; 4], Error> {
+        let sci_pins = self.mcu.sci.pins();
+        self.mcu.gpio.set_sci_pins(sci_pins, self.incident_light);
         self.mcu
             .gpio
             .set_aec_output(self.mcu.aec.pwm_enabled(), self.mcu.aec.pwm_output());
@@ -382,8 +397,20 @@ impl Machine {
         }
         // Selection and an external clock edge can change the SSU's output
         // drivers. Resolve that electrical consequence at this same instant.
-        if self.mcu.ssu.pins() != pins {
+        let (sck, rxd) = self.mcu.gpio.sci_inputs();
+        self.mcu
+            .sci
+            .input_pins(sck, rxd, self.now, &self.mcu.clocks)?;
+        if self.mcu.ssu.pins() != pins || self.mcu.sci.pins() != sci_pins {
             self.resolve_board(out)?;
+        }
+        let emitting = self.mcu.gpio.emitting();
+        if emitting != self.emitting {
+            self.emitting = emitting;
+            out.event(Event::Infrared {
+                at: self.now,
+                emitting,
+            });
         }
         self.mcu.control.pins(self.mcu.gpio.irq_levels());
         let (b, c) = self.mcu.gpio.piezo_levels();
@@ -491,8 +518,8 @@ impl Machine {
         {
             self.mcu.control.irr2 |= 0x40;
         }
-        if self.mcu.sci.deadline() == Some(self.now) {
-            self.mcu.sci.advance(self.now, &self.mcu.clocks, out)?;
+        if self.mcu.sci.deadline(&self.mcu.clocks)? == Some(self.now) {
+            self.mcu.sci.advance(self.now, &self.mcu.clocks)?;
         }
         if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
             let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;
@@ -630,9 +657,7 @@ impl Machine {
             self.power_on(out)?;
         }
         if let Some(light) = ir {
-            self.mcu
-                .sci
-                .receive_light(light, self.now, &self.mcu.clocks)?;
+            self.incident_light = light;
         }
         if !self.powered {
             return Ok(());

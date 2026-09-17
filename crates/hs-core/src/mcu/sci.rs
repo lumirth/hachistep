@@ -1,30 +1,85 @@
-//! SCI3 asynchronous shift/holding registers and IrDA pulse output.
-//! Receive inputs are edges, never complete bytes. Synchronous/external-clock
-//! modes are explicit implementation boundaries in this starter.
-use super::clocks::{Clocks, Tap};
+//! SCI3 shift/holding registers, sampled reception, SCK, and the IrDA codec.
+//! The owner drives electrical pins. The board separately resolves transceiver
+//! shutdown and converts its actual transmit pin into optical output.
+mod baud;
+mod frame;
+#[cfg(test)]
+mod tests;
+
+use super::clocks::{ClockWait, Clocks, Tap};
 use crate::{
     error::Error,
-    signals::{Event, Output},
+    signals::Drive,
     time::{Duration, Time, TimeError},
 };
+use baud::Baud;
+use frame::Format;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Pins {
+    pub clock: Option<Drive>,
+    pub transmit: Option<bool>,
+    pub receive: bool,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Tx {
-    frame: u16,
-    bits: u8,
-    at_bit: u8,
-    next: Time,
-    period: Duration,
+struct Character {
+    format: Format,
+    word: u16,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tx {
+    Blocked {
+        character: Character,
+    },
+    Mark {
+        next: u64,
+    },
+    Start {
+        character: Character,
+        next: u64,
+    },
+    Data {
+        character: Character,
+        cell: u8,
+        next: Option<u64>,
+    },
+    /// TSR can already hold the next character while the old stop/D7 remains
+    /// on TXD. A later TDR write must not overwrite that preloaded character.
+    Tail {
+        loaded: Option<Character>,
+        next: Option<u64>,
+    },
+}
+impl Tx {
+    fn next(self) -> Option<u64> {
+        match self {
+            Self::Blocked { .. } => None,
+            Self::Mark { next } | Self::Start { next, .. } => Some(next),
+            Self::Data { next, .. } | Self::Tail { next, .. } => next,
+        }
+    }
+    fn synchronous(self) -> bool {
+        matches!(
+            self,
+            Self::Data { next: None, .. } | Self::Tail { next: None, .. }
+        )
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Rx {
+    format: Format,
     value: u8,
-    bit: i8,
+    position: i8,
     parity: bool,
     error: u8,
-    next: Time,
-    period: Duration,
-    pulse: bool,
+    next: Option<u64>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PulseEnd {
+    Basic(u64),
+    Phi(ClockWait),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sci {
     spcr: u8,
@@ -37,13 +92,25 @@ pub struct Sci {
     semr: u8,
     ircr: u8,
     seen: u8,
-    gate: bool,
+    module: bool,
+    main: bool,
+    sub: bool,
+    reset_mode: bool,
+    baud: Baud,
     holding: Option<u8>,
     tx: Option<Tx>,
     rx: Option<Rx>,
-    pulse_end: Option<Time>,
-    emitting: bool,
-    input_light: bool,
+    uart: bool,
+    infrared: bool,
+    bit_start: u64,
+    pulse_start: Option<u64>,
+    pulse_end: Option<PulseEnd>,
+    receive_pulse: Option<u64>,
+    input: bool,
+    input_clock: bool,
+    sck: bool,
+    sync_next: Option<u64>,
+    mux_glitch: Option<Time>,
     pub transmitted: u64,
     pub received: u64,
 }
@@ -60,13 +127,25 @@ impl Default for Sci {
             semr: 0,
             ircr: 0,
             seen: 0,
-            gate: false,
+            module: false,
+            main: false,
+            sub: false,
+            reset_mode: false,
+            baud: Baud::default(),
             holding: None,
             tx: None,
             rx: None,
+            uart: true,
+            infrared: false,
+            bit_start: 0,
+            pulse_start: None,
             pulse_end: None,
-            emitting: false,
-            input_light: false,
+            receive_pulse: None,
+            input: true,
+            input_clock: true,
+            sck: true,
+            sync_next: None,
+            mux_glitch: None,
             transmitted: 0,
             received: 0,
         }
@@ -76,152 +155,145 @@ impl Sci {
     pub fn handles(a: u16) -> bool {
         matches!(a, 0xff91 | 0xff98..=0xff9d | 0xffa6 | 0xffa7)
     }
-    fn bits(&self) -> u8 {
-        if self.smr & 4 != 0 {
-            5
-        } else if self.smr & 0x40 != 0 {
-            7
-        } else {
-            8
-        }
+    fn reload(&self) -> u16 {
+        u16::from(self.brr) + 1
     }
-    fn parity(&self) -> bool {
-        self.smr & 0x20 != 0
+    fn format(&self) -> Format {
+        Format::new(self.smr, self.semr)
     }
-    fn period(&self, now: Time, c: &Clocks) -> Result<Duration, Error> {
-        let n = u64::from(self.brr) + 1;
-        let scale = if self.semr & 8 != 0 { 16 } else { 32 };
-        let tap = match self.smr & 3 {
+    fn external(&self) -> bool {
+        self.scr & 2 != 0
+    }
+    fn clock_output(&self) -> bool {
+        !self.external() && (self.scr & 1 != 0 || self.smr & 0x80 != 0)
+    }
+    fn running(&self) -> bool {
+        self.module && !self.reset_mode && (self.main || (self.sub && self.smr & 3 == 1))
+    }
+    fn tap(&self) -> Tap {
+        match self.smr & 3 {
             0 => Tap::system(1),
             1 => Tap::watch(1),
             2 => Tap::system(16),
             _ => Tap::system(64),
-        };
-        let start = c.edge(c.ticks(now, tap), tap)?;
-        Ok(c.after(now, n * scale, tap)?.duration_since(start).unwrap())
-    }
-    fn validate_active(&self) -> Result<(), Error> {
-        if self.smr & 0x80 != 0 || self.scr & 2 != 0 {
-            return Err(Error::Unsupported {
-                component: "SCI3",
-                detail: "synchronous/external-clock mode is not implemented",
-                address: 0xff98,
-            });
-        }
-        if self.ircr & 0x80 != 0 && self.semr & 8 != 0 {
-            return Err(Error::Unsupported {
-                component: "SCI3",
-                detail: "IrDA requires ABCS=0",
-                address: 0xffa6,
-            });
-        }
-        Ok(())
-    }
-    fn emit(&mut self, at: Time, on: bool, out: &mut dyn Output) {
-        if self.emitting != on {
-            self.emitting = on;
-            out.event(Event::Infrared { at, emitting: on });
         }
     }
-    fn drive_bit(
+    pub fn sync(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
+        self.baud.sync(now, c, self.reload())
+    }
+    fn select_clock(&mut self, now: Time, c: &Clocks) {
+        self.baud
+            .select(now, c, self.tap(), self.running(), self.external());
+    }
+    fn reset_registers(&mut self, retain_spcr: bool) {
+        let (spcr, input, clock, tx, rx) = (
+            self.spcr,
+            self.input,
+            self.input_clock,
+            self.transmitted,
+            self.received,
+        );
+        *self = Self::default();
+        if retain_spcr {
+            self.spcr = spcr;
+        }
+        self.input = input;
+        self.input_clock = clock;
+        self.transmitted = tx;
+        self.received = rx;
+    }
+    pub fn set_power(
         &mut self,
+        module: bool,
+        main: bool,
+        sub: bool,
+        reset_mode: bool,
         now: Time,
-        one: bool,
-        period: Duration,
         c: &Clocks,
-        out: &mut dyn Output,
     ) -> Result<(), Error> {
-        self.pulse_end = None;
-        if self.spcr & 0x10 == 0 {
-            self.emit(now, false, out);
-            return Ok(());
+        self.sync(now, c)?;
+        if !module && self.module {
+            self.reset_registers(false);
+        } else if reset_mode && !self.reset_mode {
+            self.reset_registers(true);
         }
-        if self.ircr & 0x80 != 0 {
-            let active = !one;
-            self.emit(now, active ^ (self.spcr & 2 != 0), out);
-            if active {
-                let d = match self.ircr >> 4 & 7 {
-                    0 => Duration::from_raw(period.raw() / 16 * 3),
-                    n @ 1..=4 => c
-                        .after(now, 1u64 << n, Tap::system(1))?
-                        .duration_since(now)
-                        .unwrap(),
-                    _ => {
-                        return Err(Error::Unsupported {
-                            component: "SCI3",
-                            detail: "prohibited IrDA pulse divisor",
-                            address: 0xffa7,
-                        })
-                    }
-                };
-                self.pulse_end = Some(now.checked_add(d).ok_or(TimeError::Overflow)?);
+        if let Some(PulseEnd::Phi(ref mut wait)) = self.pulse_end {
+            if main {
+                wait.resume(now, c)?;
+            } else {
+                wait.pause(now, c)?;
             }
-        } else {
-            self.emit(now, (!one) ^ (self.spcr & 2 != 0), out);
         }
+        self.module = module;
+        self.main = main;
+        self.sub = sub;
+        self.reset_mode = reset_mode;
+        self.select_clock(now, c);
+        self.refresh_sync_clock();
         Ok(())
     }
-    fn start(&mut self, now: Time, c: &Clocks, out: &mut dyn Output) -> Result<(), Error> {
-        if !self.gate || self.scr & 0x20 == 0 || self.tx.is_some() {
-            return Ok(());
-        }
-        let Some(value) = self.holding.take() else {
-            return Ok(());
+    pub fn pins(&self) -> Pins {
+        let clock = if self.mux_glitch.is_some() {
+            Some(Drive::Low)
+        } else if self.external() {
+            Some(Drive::Floating)
+        } else if self.clock_output() {
+            let high = if self.smr & 0x80 != 0 {
+                self.sck
+            } else {
+                self.baud.half % self.format().half_bit >= self.format().half_bit / 2
+            };
+            Some(if high { Drive::High } else { Drive::Low })
+        } else {
+            None
         };
-        self.validate_active()?;
-        let n = self.bits();
-        let mut frame = u16::from(value & ((1u16 << n) - 1) as u8) << 1;
-        let mut length = n + 1;
-        if self.parity() {
-            let parity = (value & ((1u16 << n) - 1) as u8).count_ones() & 1 != 0;
-            frame |= u16::from(parity ^ (self.smr & 0x10 != 0)) << length;
-            length += 1;
+        Pins {
+            clock,
+            transmit: (self.spcr & 0x10 != 0).then_some(
+                (if self.ircr & 0x80 != 0 {
+                    self.infrared
+                } else {
+                    self.uart
+                }) ^ (self.spcr & 2 != 0),
+            ),
+            receive: self.scr & 0x10 != 0,
         }
-        frame |= 1 << length;
-        length += 1;
-        if self.smr & 8 != 0 {
-            frame |= 1 << length;
-            length += 1;
-        }
-        let period = self.period(now, c)?;
-        self.tx = Some(Tx {
-            frame,
-            bits: length,
-            at_bit: 0,
-            next: now.checked_add(period).ok_or(TimeError::Overflow)?,
-            period,
-        });
-        self.ssr |= 0x80;
-        self.ssr &= !4;
-        self.drive_bit(now, false, period, c, out)
     }
-    pub fn deadline(&self) -> Option<Time> {
-        if !self.gate {
-            return None;
-        }
-        [
-            self.tx.map(|s| s.next),
-            self.rx.map(|s| s.next),
-            self.pulse_end,
+    pub fn deadline(&self, c: &Clocks) -> Result<Option<Time>, Error> {
+        let async_clock = (self.clock_output() && self.smr & 0x80 == 0).then(|| {
+            let interval = self.format().half_bit / 2;
+            self.baud.half + interval - self.baud.half % interval
+        });
+        let next = [
+            self.tx.and_then(Tx::next),
+            self.rx.and_then(|r| r.next),
+            self.pulse_start,
+            self.receive_pulse,
+            self.sync_next,
+            async_clock,
+            match self.pulse_end {
+                Some(PulseEnd::Basic(n)) => Some(n),
+                _ => None,
+            },
         ]
         .into_iter()
         .flatten()
-        .min()
+        .min();
+        let basic = next
+            .map(|n| self.baud.deadline(n, c, self.reload()))
+            .transpose()?
+            .flatten();
+        let pulse = match self.pulse_end {
+            Some(PulseEnd::Phi(wait)) => wait.deadline(c)?,
+            _ => None,
+        };
+        Ok([basic, pulse, self.mux_glitch].into_iter().flatten().min())
     }
     pub fn interrupt(&self) -> bool {
-        self.gate
+        self.module
             && ((self.ssr & 0x80 != 0 && self.scr & 0x80 != 0)
                 || (self.ssr & 0x78 != 0 && self.scr & 0x40 != 0)
                 || (self.ssr & 4 != 0 && self.scr & 4 != 0))
-    }
-    pub fn set_gate(&mut self, gate: bool, now: Time, out: &mut dyn Output) {
-        if self.gate && !gate {
-            self.emit(now, false, out);
-            let light = self.input_light;
-            *self = Self::default();
-            self.input_light = light;
-        }
-        self.gate = gate;
     }
     pub fn peek(&self, a: u16) -> u8 {
         match a {
@@ -237,58 +309,59 @@ impl Sci {
         }
     }
     pub fn read(&mut self, a: u16) -> u8 {
-        let v = self.peek(a);
+        let value = self.peek(a);
         if a == 0xff9c {
-            self.seen = v;
+            self.seen = value;
         }
         if a == 0xff9d {
             self.ssr &= !0x40;
             self.seen &= !0x40;
         }
-        v
+        value
     }
-    pub fn write(
-        &mut self,
-        a: u16,
-        v: u8,
-        now: Time,
-        c: &Clocks,
-        out: &mut dyn Output,
-    ) -> Result<(), Error> {
-        if !self.gate {
+    pub fn write(&mut self, a: u16, v: u8, now: Time, c: &Clocks) -> Result<(), Error> {
+        if !self.module || self.reset_mode {
             return Ok(());
         }
+        self.sync(now, c)?;
+        let old_external = self.external();
+        let old_sync_output = self.clock_output() && self.smr & 0x80 != 0;
+        let old_ir_input = self.input ^ (self.spcr & 1 != 0);
+        let old_ir = self.ircr & 0x80 != 0;
         match a {
             0xff91 => self.spcr = (v & 0x13) | 0xc0,
-            0xff98 | 0xff99 | 0xffa6 | 0xffa7 => {
-                if self.tx.is_some() || self.rx.is_some() {
-                    return Err(Error::Unsupported {
-                        component: "SCI3",
-                        detail: "format/baud change during frame",
-                        address: a,
-                    });
-                }
-                match a {
-                    0xff98 => self.smr = v,
-                    0xff99 => self.brr = v,
-                    0xffa6 => self.semr = v & 8,
-                    _ => self.ircr = v & 0xf0,
+            0xff98 => self.smr = v,
+            0xff99 => {
+                self.brr = v;
+                // Initialization permits waiting just ONE new bit period.
+                // An idle write must not retain a previous 256-count BRC tail.
+                if self.scr & 0x30 == 0 {
+                    self.baud.reload(self.reload());
                 }
             }
+            0xffa6 => self.semr = v & 8,
+            0xffa7 => self.ircr = v & 0xf0,
             0xff9a => {
+                let old = self.scr;
                 self.scr = v & 0xf7;
                 if v & 0x20 == 0 {
                     self.tx = None;
                     self.holding = None;
+                    self.pulse_start = None;
                     self.pulse_end = None;
+                    self.uart = true;
+                    self.infrared = false;
                     self.ssr |= 0x84;
-                    self.emit(now, false, out);
+                } else if old & 0x20 == 0 && !self.format().synchronous {
+                    let f = self.format();
+                    let start = self.baud.boundary(f.half_bit, now);
+                    self.tx = Some(Tx::Mark {
+                        next: start + u64::from(f.cells()) * f.half_bit,
+                    });
                 }
                 if v & 0x10 == 0 {
                     self.rx = None;
-                }
-                if v & 0x30 != 0 {
-                    self.validate_active()?;
+                    self.receive_pulse = None;
                 }
             }
             0xff9b => {
@@ -302,12 +375,11 @@ impl Sci {
             0xff9c => {
                 self.ssr &= !(self.seen & !v & 0xf8);
                 self.seen &= v;
-                if self.ssr & 0x80 == 0 && self.scr & 0x20 != 0 && self.holding.is_none() {
-                    self.holding = Some(self.tdr);
-                    self.ssr &= !4;
-                }
                 if self.scr & 0x20 == 0 {
                     self.ssr |= 0x80;
+                } else if self.ssr & 0x80 == 0 && self.holding.is_none() {
+                    self.holding = Some(self.tdr);
+                    self.ssr &= !4;
                 }
             }
             0xff9d => {}
@@ -319,139 +391,388 @@ impl Sci {
                 })
             }
         }
-        self.start(now, c, out)
+        if old_external != self.external() && self.external() {
+            self.baud.connect(self.input_clock);
+            self.sync_next = None;
+        }
+        if old_sync_output && !self.clock_output() && !self.external() {
+            // A CPU mux write cannot be followed by another clock-control
+            // access inside this half-phi propagation interval.
+            let (n, d) = c.system_rate();
+            let delay = Duration::from_raw((u128::from(d) << 63) / u128::from(n));
+            self.mux_glitch = Some(now.checked_add(delay).ok_or(TimeError::Overflow)?);
+        }
+        self.select_clock(now, c);
+        if old_ir && self.ircr & 0x80 == 0 {
+            self.pulse_start = None;
+            self.pulse_end = None;
+            self.infrared = false;
+            self.receive_pulse = None;
+        } else if !old_ir
+            && self.ircr & 0x80 != 0
+            && !self.uart
+            && self.bit_start + 13 >= self.baud.half
+        {
+            self.pulse_start = Some(self.bit_start + 13);
+        }
+        self.receive_change(old_ir && old_ir_input);
+        if let Some(Tx::Tail { loaded: None, next }) = self.tx {
+            if self.holding.is_some() {
+                let loaded = self.preload();
+                self.tx = Some(Tx::Tail { loaded, next });
+            }
+        }
+        self.try_start(now)?;
+        self.arm_receive();
+        self.refresh_sync_clock();
+        Ok(())
     }
-    fn line(&self) -> bool {
-        !self.input_light ^ (self.spcr & 1 != 0)
+    fn character(&self, value: u8) -> Character {
+        let format = self.format();
+        Character {
+            format,
+            word: format.word(value),
+        }
     }
-    pub fn receive_light(&mut self, light: bool, now: Time, c: &Clocks) -> Result<(), Error> {
-        let old = self.line();
-        let old_light = self.input_light;
-        self.input_light = light;
-        if !self.gate || self.scr & 0x10 == 0 {
+    fn preload(&mut self) -> Option<Character> {
+        if let Some(value) = self.holding.take() {
+            self.ssr |= 0x80;
+            self.ssr &= !4;
+            Some(self.character(value))
+        } else {
+            self.ssr |= 4;
+            None
+        }
+    }
+    fn drive(&mut self, high: bool) {
+        self.uart = high;
+        self.bit_start = self.baud.half;
+        self.pulse_start = (self.ircr & 0x80 != 0 && !high).then_some(self.baud.half + 13);
+    }
+    fn begin(&mut self, character: Character) {
+        let next = if character.format.synchronous {
+            None
+        } else {
+            self.drive(character.word & 1 != 0);
+            Some(self.baud.half + character.format.half_bit)
+        };
+        self.tx = Some(Tx::Data {
+            character,
+            cell: 0,
+            next,
+        });
+    }
+    fn try_start(&mut self, now: Time) -> Result<(), Error> {
+        if let Some(Tx::Blocked { character }) = self.tx {
+            if self.ssr & 0x38 == 0 {
+                self.begin(character);
+            }
             return Ok(());
         }
-        let edge = if self.ircr & 0x80 != 0 {
-            !old_light && light
+        if self.tx.is_some()
+            || self.scr & 0x20 == 0
+            || self.holding.is_none()
+            || (self.format().synchronous && self.ssr & 0x38 != 0)
+        {
+            return Ok(());
+        }
+        let character = self
+            .preload()
+            .ok_or(Error::Internal("SCI holding register disappeared"))?;
+        if character.format.synchronous {
+            self.begin(character);
         } else {
-            old && !self.line()
-        };
-        if edge {
-            if let Some(ref mut rx) = self.rx {
-                if self.ircr & 0x80 != 0 {
-                    rx.pulse = true;
-                }
+            let next = self.baud.boundary(character.format.half_bit, now);
+            if next == self.baud.half {
+                self.begin(character);
             } else {
-                self.validate_active()?;
-                let period = self.period(now, c)?;
-                self.rx = Some(Rx {
-                    value: 0,
-                    bit: -1,
-                    parity: false,
-                    error: 0,
-                    next: now
-                        .checked_add(Duration::from_raw(period.raw() / 2))
-                        .ok_or(TimeError::Overflow)?,
-                    period,
-                    pulse: true,
+                self.tx = Some(Tx::Start { character, next });
+            }
+        }
+        Ok(())
+    }
+    fn finish_tail(&mut self, loaded: Option<Character>, now: Time) -> Result<(), Error> {
+        self.transmitted = self.transmitted.wrapping_add(1);
+        self.tx = None;
+        if let Some(character) = loaded {
+            if character.format.synchronous && self.ssr & 0x38 != 0 {
+                self.tx = Some(Tx::Blocked { character });
+            } else {
+                self.begin(character);
+            }
+        } else {
+            self.try_start(now)?;
+        }
+        Ok(())
+    }
+    fn advance_tx(&mut self, now: Time) -> Result<(), Error> {
+        let Some(tx) = self.tx else {
+            return Ok(());
+        };
+        if tx.next() != Some(self.baud.half) {
+            return Ok(());
+        }
+        match tx {
+            Tx::Blocked { .. } => {}
+            Tx::Mark { .. } => {
+                self.tx = None;
+                self.try_start(now)?;
+            }
+            Tx::Start { character, .. } => self.begin(character),
+            Tx::Data {
+                character, cell, ..
+            } => {
+                let cell = cell + 1;
+                self.drive(character.word & (1 << cell) != 0);
+                if cell == character.format.stop() {
+                    let loaded = self.preload();
+                    let next = Some(
+                        self.baud.half
+                            + u64::from(character.format.stops) * character.format.half_bit,
+                    );
+                    self.tx = Some(Tx::Tail { loaded, next });
+                } else {
+                    self.tx = Some(Tx::Data {
+                        character,
+                        cell,
+                        next: Some(self.baud.half + character.format.half_bit),
+                    });
+                }
+            }
+            Tx::Tail { loaded, .. } => self.finish_tail(loaded, now)?,
+        }
+        Ok(())
+    }
+    fn input_level(&self) -> bool {
+        let physical = self.input ^ (self.spcr & 1 != 0);
+        if self.ircr & 0x80 != 0 {
+            !(physical || self.receive_pulse.is_some())
+        } else {
+            physical
+        }
+    }
+    fn receive_change(&mut self, was_positive: bool) {
+        let positive = self.input ^ (self.spcr & 1 != 0);
+        if self.ircr & 0x80 != 0 && positive && !was_positive && self.scr & 0x10 != 0 {
+            self.receive_pulse = Some(self.baud.half + self.format().half_bit);
+        }
+    }
+    fn arm_receive(&mut self) {
+        if self.scr & 0x10 != 0
+            && self.ssr & 0x38 == 0
+            && self.rx.is_none()
+            && !self.format().synchronous
+            && !self.input_level()
+        {
+            self.rx = Some(Rx {
+                format: self.format(),
+                value: 0,
+                position: -2,
+                parity: false,
+                error: 0,
+                next: Some(self.baud.next_fall()),
+            });
+        }
+    }
+    fn complete_receive(&mut self, rx: Rx) {
+        self.rx = None;
+        if self.ssr & 0x40 != 0 {
+            self.ssr |= rx.error | 0x20;
+        } else {
+            self.rdr = rx.value;
+            self.ssr |= rx.error;
+            if rx.error == 0 {
+                self.ssr |= 0x40;
+                self.received = self.received.wrapping_add(1);
+            }
+        }
+    }
+    fn advance_rx(&mut self) {
+        let Some(mut rx) = self.rx else {
+            return;
+        };
+        if rx.next != Some(self.baud.half) {
+            return;
+        }
+        let high = self.input_level();
+        match rx.position {
+            -2 => {
+                if high || self.format().synchronous {
+                    self.rx = None;
+                    return;
+                }
+                rx.format = self.format();
+                rx.position = -1;
+                rx.next = Some(self.baud.half + rx.format.half_bit / 2 - 1);
+                self.rx = Some(rx);
+                return;
+            }
+            -1 if high => {
+                self.rx = None;
+                return;
+            }
+            -1 => {}
+            n if n < rx.format.data as i8 => {
+                if high {
+                    rx.value |= 1 << n;
+                    rx.parity = !rx.parity;
+                }
+            }
+            n if n == rx.format.data as i8 && rx.format.parity => {
+                if high != (rx.parity ^ rx.format.odd) {
+                    rx.error |= 8;
+                }
+            }
+            _ => {
+                if !high {
+                    rx.error |= 0x10;
+                }
+                self.complete_receive(rx);
+                return;
+            }
+        }
+        rx.position += 1;
+        rx.next = Some(self.baud.half + rx.format.half_bit);
+        self.rx = Some(rx);
+    }
+    fn sync_needed(&self) -> bool {
+        self.tx.is_some_and(Tx::synchronous)
+            || (self.scr & 0x10 != 0
+                && self.ssr & 0x38 == 0
+                && (self.format().synchronous || self.rx.is_some_and(|r| r.format.synchronous)))
+    }
+    fn refresh_sync_clock(&mut self) {
+        if self.external() {
+            self.sync_next = None;
+        } else if self.sync_needed() {
+            if self.sync_next.is_none() {
+                self.sync_next = Some(self.baud.half + 2);
+            }
+        } else {
+            self.sync_next = None;
+            self.sck = true;
+        }
+    }
+    fn sync_edge(&mut self, high: bool, now: Time) -> Result<(), Error> {
+        if high {
+            if self.scr & 0x10 != 0 && self.ssr & 0x38 == 0 {
+                let initial = self.format();
+                let rx = self.rx.or_else(|| {
+                    initial.synchronous.then_some(Rx {
+                        format: initial,
+                        value: 0,
+                        position: 0,
+                        parity: false,
+                        error: 0,
+                        next: None,
+                    })
+                });
+                if let Some(mut rx) = rx.filter(|r| r.format.synchronous) {
+                    if self.input_level() {
+                        rx.value |= 1 << rx.position;
+                    }
+                    rx.position += 1;
+                    if rx.position == 8 {
+                        self.complete_receive(rx);
+                    } else {
+                        self.rx = Some(rx);
+                    }
+                }
+            }
+            if let Some(Tx::Tail { loaded, next: None }) = self.tx {
+                self.finish_tail(loaded, now)?;
+            }
+        } else if let Some(Tx::Data {
+            character,
+            cell,
+            next: None,
+        }) = self.tx
+        {
+            self.drive(character.word & (1 << cell) != 0);
+            if cell == 7 {
+                let loaded = self.preload();
+                self.tx = Some(Tx::Tail { loaded, next: None });
+            } else {
+                self.tx = Some(Tx::Data {
+                    character,
+                    cell: cell + 1,
+                    next: None,
                 });
             }
         }
         Ok(())
     }
-    pub fn advance(&mut self, now: Time, c: &Clocks, out: &mut dyn Output) -> Result<(), Error> {
-        if self.pulse_end == Some(now) {
-            self.pulse_end = None;
-            self.emit(now, self.spcr & 2 != 0, out);
-        }
-        if let Some(mut tx) = self.tx {
-            if tx.next == now {
-                tx.at_bit += 1;
-                if tx.at_bit == tx.bits {
-                    self.tx = None;
-                    self.transmitted = self.transmitted.wrapping_add(1);
-                    if self.holding.is_none() {
-                        self.ssr |= 4;
-                        self.drive_bit(now, true, tx.period, c, out)?;
-                    }
-                    self.start(now, c, out)?;
-                } else {
-                    tx.next = now.checked_add(tx.period).ok_or(TimeError::Overflow)?;
-                    self.tx = Some(tx);
-                    self.drive_bit(now, tx.frame & (1 << tx.at_bit) != 0, tx.period, c, out)?;
-                }
-            }
-        }
-        if let Some(mut rx) = self.rx {
-            if rx.next == now {
-                let high = if self.ircr & 0x80 != 0 {
-                    !rx.pulse
-                } else {
-                    self.line()
-                };
-                rx.pulse = false;
-                if rx.bit < 0 && high {
-                    self.rx = None;
-                    return Ok(());
-                }
-                let n = self.bits() as i8;
-                if (0..n).contains(&rx.bit) {
-                    if high {
-                        rx.value |= 1 << rx.bit;
-                        rx.parity = !rx.parity;
-                    }
-                } else if rx.bit == n && self.parity() {
-                    if high != (rx.parity ^ (self.smr & 0x10 != 0)) {
-                        rx.error |= 8;
-                    }
-                } else if rx.bit >= n + i8::from(self.parity()) {
-                    if !high {
-                        rx.error |= 0x10;
-                    }
-                    if self.ssr & 0x40 != 0 {
-                        rx.error |= 0x20;
-                    }
-                    self.ssr |= rx.error;
-                    if rx.error == 0 {
-                        self.rdr = rx.value;
-                        self.ssr |= 0x40;
-                        self.received = self.received.wrapping_add(1);
-                    }
-                    self.rx = None;
-                    return Ok(());
-                }
-                rx.bit += 1;
-                rx.next = now.checked_add(rx.period).ok_or(TimeError::Overflow)?;
-                self.rx = Some(rx);
+    /// P30 and P31 after GPIO/peripheral muxes, board shutdown, and fixture
+    /// drivers have been resolved. Input inversion is local to the SCI.
+    pub fn input_pins(
+        &mut self,
+        clock: Option<bool>,
+        input: bool,
+        now: Time,
+        c: &Clocks,
+    ) -> Result<(), Error> {
+        self.sync(now, c)?;
+        let was_positive = self.input ^ (self.spcr & 1 != 0);
+        self.input = input;
+        self.receive_change(was_positive);
+        self.arm_receive();
+        if let Some(high) = clock {
+            self.input_clock = high;
+            if self.baud.external_edge(now, high)? {
+                self.process_basic(now, c)?;
+                self.sync_edge(high, now)?;
+                self.refresh_sync_clock();
             }
         }
         Ok(())
     }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn transmitter_produces_timed_pulses_and_keeps_holding_distinct() {
-        let c = Clocks::new(Time::ZERO, Default::default()).unwrap();
-        let mut s = Sci::default();
-        let mut events = vec![];
-        s.set_gate(true, Time::ZERO, &mut events);
-        for (a, v) in [
-            (0xff91, 0xd0),
-            (0xff99, 1),
-            (0xffa7, 0x80),
-            (0xff9a, 0x20),
-            (0xff9b, 0xa5),
-        ] {
-            s.write(a, v, Time::ZERO, &c, &mut events).unwrap();
+    fn process_basic(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
+        if self.receive_pulse == Some(self.baud.half) {
+            self.receive_pulse = None;
         }
-        assert_eq!(s.ssr & 0x84, 0x80);
-        while let Some(t) = s.deadline() {
-            s.advance(t, &c, &mut events).unwrap();
+        if self.pulse_end == Some(PulseEnd::Basic(self.baud.half)) {
+            self.infrared = false;
+            self.pulse_end = None;
         }
-        assert_eq!(s.transmitted, 1);
-        assert_eq!(s.ssr & 0x84, 0x84);
-        assert_eq!(events.len(), 10);
+        self.advance_tx(now)?;
+        if self.pulse_start == Some(self.baud.half) {
+            self.pulse_start = None;
+            let width = self.ircr >> 4 & 7;
+            self.pulse_end = match width {
+                0 => Some(PulseEnd::Basic(self.baud.half + 6)),
+                n @ 1..=4 => {
+                    let mut wait = ClockWait::after(now, 1 << n, Tap::system(1), c)?;
+                    if !self.main {
+                        wait.pause(now, c)?;
+                    }
+                    Some(PulseEnd::Phi(wait))
+                }
+                _ => None,
+            };
+            self.infrared = self.pulse_end.is_some();
+        }
+        self.advance_rx();
+        self.arm_receive();
+        Ok(())
+    }
+    pub fn advance(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
+        self.sync(now, c)?;
+        if self.mux_glitch == Some(now) {
+            self.mux_glitch = None;
+        }
+        if let Some(PulseEnd::Phi(wait)) = self.pulse_end {
+            if wait.deadline(c)? == Some(now) {
+                self.pulse_end = None;
+                self.infrared = false;
+            }
+        }
+        self.process_basic(now, c)?;
+        if self.sync_next == Some(self.baud.half) {
+            self.sync_next = None;
+            self.sck = !self.sck;
+            self.sync_edge(self.sck, now)?;
+        }
+        self.refresh_sync_clock();
+        Ok(())
     }
 }

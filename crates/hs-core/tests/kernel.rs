@@ -172,6 +172,102 @@ fn external_serial_edges_survive_partition_and_restore_inside_a_byte() {
     assert_eq!(a, b);
 }
 #[test]
+fn sci_pin_edges_and_buffered_characters_survive_partition_and_restore() {
+    let mut code = vec![];
+    for (a, v) in [
+        (0xffd6_u16, 1),
+        (0xffe6, 5),
+        (0xfffa, 0x43),
+        (0xff91, 0xd0),
+        (0xff99, 1),
+        (0xffa7, 0x80),
+        (0xff9a, 0x20),
+        (0xff9b, 0xa5),
+        (0xffd6, 0),
+    ] {
+        code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+    }
+    for value in [0x3c, 0xc3] {
+        code.extend([0x6a, 0x08, 0xff, 0x9c, 0xe8, 0x80, 0x47, 0xf8]);
+        code.extend([0xf8, value, 0x6a, 0x88, 0xff, 0x9b]);
+    }
+    code.extend([0x40, 0xfe]);
+    let mut whole = machine(&code);
+    let mut split = whole.clone();
+    let (mut a, mut b) = (vec![], vec![]);
+    whole
+        .run_until(Time::from_micros(1000), &[], &mut a)
+        .unwrap();
+    for us in (1..1000).step_by(3).chain([1000]) {
+        split.run_until(Time::from_micros(us), &[], &mut b).unwrap();
+        split = Machine::from_snapshot(&split.snapshot());
+    }
+    assert_eq!(a, b);
+    assert_eq!(whole, split);
+    assert_eq!(
+        a.iter()
+            .filter(|e| matches!(e, Event::Infrared { .. }))
+            .count(),
+        30
+    );
+    assert_eq!(whole.peek(0xff9c).unwrap(), 0x84);
+
+    let mut code = vec![];
+    for (a, v) in [
+        (0xfffa_u16, 0x43),
+        (0xff91, 0xd0),
+        (0xff98, 0x80),
+        (0xff99, 0),
+        (0xff9a, 0x32),
+        (0xff9b, 0xa5),
+    ] {
+        code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+    }
+    code.extend([0x40, 0xfe]);
+    let pin = |us, pin, level| TimedInput {
+        at: Time::from_micros(us),
+        input: Input::DigitalPin {
+            pin,
+            level: Some(level),
+        },
+    };
+    let mut inputs = vec![
+        pin(0, DigitalPin::P30, true),
+        pin(0, DigitalPin::P31, false),
+    ];
+    for i in 0..8 {
+        inputs.extend([
+            pin(500 + 100 * i, DigitalPin::P31, 0x3c & (1 << i) != 0),
+            pin(500 + 100 * i, DigitalPin::P30, false),
+            pin(550 + 100 * i, DigitalPin::P30, true),
+        ]);
+    }
+    let mut whole = machine(&code);
+    let mut split = whole.clone();
+    let (mut a, mut b) = (vec![], vec![]);
+    whole
+        .run_until(Time::from_micros(1500), &inputs, &mut a)
+        .unwrap();
+    let mut consumed = 0;
+    for us in (1..1500).step_by(17).chain([1500]) {
+        consumed += split
+            .run_until(Time::from_micros(us), &inputs[consumed..], &mut b)
+            .unwrap()
+            .inputs_consumed;
+        split = Machine::from_snapshot(&split.snapshot());
+    }
+    assert_eq!(a, b);
+    assert_eq!(whole, split);
+    assert_eq!(whole.peek(0xff9d).unwrap(), 0x3c);
+    assert_eq!(whole.peek(0xff9c).unwrap(), 0xc4);
+    assert_eq!(
+        a.iter()
+            .filter(|e| matches!(e, Event::Infrared { .. }))
+            .count(),
+        8
+    );
+}
+#[test]
 fn invalid_timeline_is_rejected_before_mutation() {
     let mut m = machine(LOOP);
     let before = m.snapshot();
