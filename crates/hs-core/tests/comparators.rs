@@ -94,13 +94,13 @@ fn independent_channels_external_reference_and_interrupt_vector() {
     m.write8(0xfffb, 6, true, at(0), &mut ()).unwrap();
     m.write8(0xf0dd, 0xe0, true, at(0), &mut ()).unwrap();
     m.sync(at(20)).unwrap();
-    assert_eq!(m.read8(0xf0de).unwrap() & 3, 2);
+    assert_eq!(m.read8(0xf0de, at(20)).unwrap() & 3, 2);
     m.comparators
         .set_inputs(at(21), 3000, 1700, [0, 1600])
         .unwrap();
     m.sync(at(40)).unwrap();
     assert_eq!(m.interrupt(), Some(36));
-    assert_eq!(m.read8(0xf0de).unwrap() & 0x30, 0x20);
+    assert_eq!(m.read8(0xf0de, at(40)).unwrap() & 0x30, 0x20);
     m.write8(0xf0de, 0x10, true, at(40), &mut ()).unwrap();
     assert_eq!(m.interrupt(), None);
     assert!(m.write8(0xf0dc, 0xb0, true, at(40), &mut ()).is_err());

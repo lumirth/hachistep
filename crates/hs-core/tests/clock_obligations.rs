@@ -184,7 +184,7 @@ fn ssu_partial_shifter_and_holding_register_survive_gating_and_clock_switch() {
             s.finish_edge(t, &c).unwrap();
         }
     }
-    assert_eq!(s.read(0xf0e9), 0xa6);
+    assert_eq!(s.read(0xf0e9, resume, &c).unwrap(), 0xa6);
     assert_eq!(s.transmitted, 1);
     assert_eq!(s.received, 1);
 }
@@ -230,7 +230,7 @@ fn ssu_switches_prescaler_with_a_byte_already_in_flight() {
         remaining += 1;
     }
     assert_eq!(remaining, 10);
-    assert_eq!(s.read(0xf0e9), 0xa6);
+    assert_eq!(s.read(0xf0e9, switch, &c).unwrap(), 0xa6);
     assert_eq!(s.transmitted, 1);
     assert_eq!(s.received, 1);
 }

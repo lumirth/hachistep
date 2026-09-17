@@ -278,7 +278,7 @@ impl Mcu {
             2
         }
     }
-    pub fn read8(&mut self, a: u16) -> Result<u8, Error> {
+    pub fn read8(&mut self, a: u16, now: Time) -> Result<u8, Error> {
         if a < 0xc000 {
             return Ok(self.flash[usize::from(a)]);
         }
@@ -311,7 +311,7 @@ impl Mcu {
             0xf0dc..=0xf0de => Ok(self.comparators.read(a)),
             0xf0d0 => Ok(self.timer_b1.read(a)),
             0xf0d1 => Ok(self.timer_b1.read(a)),
-            0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => Ok(self.ssu.read(a)),
+            0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => self.ssu.read(a, now, &self.clocks),
             0xf0f0..=0xf0f5 => Ok(self.timer_w.read(a)),
             0xffb0..=0xffb3 => Ok(self.watchdog.read(a)),
             0xffbe | 0xffbf => Ok(self.adc.peek(a)),

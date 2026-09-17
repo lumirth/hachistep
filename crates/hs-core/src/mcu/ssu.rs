@@ -23,7 +23,8 @@ pub struct Ssu {
     seen: u8,
     tdr: u8,
     rdr: u8,
-    holding: Option<u8>,
+    receive_started: bool,
+    msb_first: bool,
     tx: u8,
     rx: u8,
     edges: u8,
@@ -48,7 +49,8 @@ impl Default for Ssu {
             seen: 0,
             tdr: 0,
             rdr: 0,
-            holding: None,
+            receive_started: false,
+            msb_first: false,
             tx: 0,
             rx: 0,
             edges: 0,
@@ -93,17 +95,13 @@ impl Ssu {
         self.mode & 0x20 != 0
     }
     fn output_bit(&self, index: u8) -> bool {
-        let shift = if self.mode & 0x80 != 0 {
-            7 - index
-        } else {
-            index
-        };
+        let shift = if self.msb_first { 7 - index } else { index };
         self.tx & (1u8 << shift) != 0
     }
     fn schedule_load(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.next.is_none()
-            && self.holding.is_some()
-            && self.enable & 0x80 != 0
+            && ((self.enable & 0x80 != 0 && self.status & 4 == 0)
+                || (self.enable & 0xc0 == 0x40 && self.receive_started))
             && self.status & 0x40 == 0
             && self.gate
         {
@@ -158,7 +156,7 @@ impl Ssu {
             _ => 0,
         }
     }
-    pub fn read(&mut self, address: u16) -> u8 {
+    pub fn read(&mut self, address: u16, now: Time, clocks: &Clocks) -> Result<u8, Error> {
         let v = self.peek(address);
         if address == 0xf0e4 {
             self.seen = v;
@@ -166,8 +164,12 @@ impl Ssu {
         if address == 0xf0e9 {
             self.status &= !2;
             self.seen &= !2;
+            if self.enable & 0xc0 == 0x40 {
+                self.receive_started = true;
+                self.schedule_load(now, clocks)?;
+            }
         }
-        v
+        Ok(v)
     }
     pub fn write(
         &mut self,
@@ -183,11 +185,11 @@ impl Ssu {
             0xf0e1 => {
                 self.low = value & 0x58;
                 if value & 0x20 != 0 {
-                    self.holding = None;
                     self.next = None;
                     self.edges = 0;
                     self.sampled = 0;
-                    self.status = 4;
+                    self.shifted = 0;
+                    self.receive_started = false;
                 }
             }
             0xf0e2 => {
@@ -206,21 +208,15 @@ impl Ssu {
                 }
             }
             0xf0e3 => {
-                if value & 0xc0 == 0x40 {
-                    return Err(Error::Unsupported {
-                        component: "SSU",
-                        detail: "receive-only autonomous master sequencing is not implemented",
-                        address,
-                    });
-                }
                 self.enable = value & 0xef;
                 if self.enable & 0x80 == 0 {
-                    self.holding = None;
-                    self.next = None;
                     self.status |= 4;
                 }
                 if self.enable & 0x40 == 0 {
-                    self.status &= !0x42;
+                    self.receive_started = false;
+                }
+                if self.enable & 0xc0 == 0 {
+                    self.next = None;
                 }
             }
             0xf0e4 => {
@@ -232,11 +228,6 @@ impl Ssu {
             }
             0xf0eb => {
                 self.tdr = value;
-                if self.holding.is_some() {
-                    self.status |= 1;
-                    return Ok(());
-                }
-                self.holding = Some(value);
                 self.status &= !12;
                 self.seen &= !12;
             }
@@ -260,12 +251,9 @@ impl Ssu {
         }
         match self.phase {
             Phase::Load => {
-                self.tx = self
-                    .holding
-                    .take()
-                    .ok_or(Error::Internal("SSU load without holding byte"))?;
+                self.tx = self.tdr;
+                self.msb_first = self.mode & 0x80 != 0;
                 self.status |= 4;
-                self.status &= !8;
                 self.rx = 0;
                 self.edges = 0;
                 self.shifted = 0;
@@ -305,13 +293,13 @@ impl Ssu {
         if self.sampled >= 8 {
             return;
         }
-        if self.mode & 0x80 != 0 {
+        if self.msb_first {
             self.rx = self.rx << 1 | u8::from(high);
         } else {
             self.rx |= u8::from(high) << self.sampled;
         }
         self.sampled += 1;
-        if self.sampled == 8 && self.enable & 0x40 != 0 {
+        if self.sampled == 8 && self.enable & 0x40 != 0 && self.status & 0x40 == 0 {
             if self.status & 2 != 0 {
                 self.status |= 0x40;
             } else {
@@ -319,16 +307,18 @@ impl Ssu {
                 self.status |= 2;
                 self.received = self.received.wrapping_add(1);
             }
-            if self.enable & 0x20 != 0 {
-                self.enable &= !0x40;
-            }
         }
     }
     pub fn finish_edge(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.edges == 16 && self.next.is_none() {
-            self.transmitted = self.transmitted.wrapping_add(1);
-            if self.holding.is_none() {
-                self.status |= 8;
+            if self.enable & 0x80 != 0 {
+                self.transmitted = self.transmitted.wrapping_add(1);
+                if self.status & 4 != 0 {
+                    self.status |= 8;
+                }
+            }
+            if self.enable & 0x20 != 0 {
+                self.receive_started = false;
             }
             self.schedule_load(now, clocks)?;
         }
@@ -364,7 +354,7 @@ mod tests {
                 s.finish_edge(t, &c).unwrap();
             }
         }
-        assert_eq!(s.read(0xf0e9), 0x35);
+        assert_eq!(s.read(0xf0e9, t, &c).unwrap(), 0x35);
         assert_eq!(s.status & 14, 12);
     }
 }

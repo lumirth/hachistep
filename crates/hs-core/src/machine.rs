@@ -765,7 +765,7 @@ impl Machine {
         } else {
             self.stats.bus_reads = self.stats.bus_reads.wrapping_add(1);
             match w {
-                Width::Byte => u16::from(self.mcu.read8(a)?),
+                Width::Byte => u16::from(self.mcu.read8(a, self.now)?),
                 Width::Word => self.mcu.read16(a)?,
             }
         };
