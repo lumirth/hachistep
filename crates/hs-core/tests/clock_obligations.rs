@@ -154,6 +154,51 @@ fn ssu_partial_shifter_and_holding_register_survive_gating_and_clock_switch() {
 }
 
 #[test]
+fn ssu_switches_prescaler_with_a_byte_already_in_flight() {
+    let c = clocks();
+    let mut s = Ssu::default();
+    s.set_gate(true, Time::ZERO, &c).unwrap();
+    for (a, v) in [
+        (0xf0e0, 0x8c),
+        (0xf0e1, 0x40),
+        (0xf0e2, 0x87),
+        (0xf0e3, 0xc0),
+        (0xf0eb, 0xa6),
+    ] {
+        s.write(a, v, Time::ZERO, &c).unwrap();
+    }
+    // Load, then six watch-clock half edges: a partial byte, not a restart.
+    for _ in 0..7 {
+        let t = s.deadline(&c).unwrap().unwrap();
+        if let Some(e) = s.advance(t, &c).unwrap() {
+            if e.sample {
+                s.sample(e.mosi);
+            }
+            s.finish_edge(t, &c).unwrap();
+        }
+    }
+    let switch = Time::from_micros(190);
+    s.write(0xf0e2, 0x86, switch, &c).unwrap();
+    assert_eq!(
+        s.deadline(&c).unwrap(),
+        Some(c.after(switch, 1, Tap::system(2)).unwrap())
+    );
+    let mut remaining = 0;
+    while let Some(t) = s.deadline(&c).unwrap() {
+        let e = s.advance(t, &c).unwrap().unwrap();
+        if e.sample {
+            s.sample(e.mosi);
+        }
+        s.finish_edge(t, &c).unwrap();
+        remaining += 1;
+    }
+    assert_eq!(remaining, 10);
+    assert_eq!(s.read(0xf0e9), 0xa6);
+    assert_eq!(s.transmitted, 1);
+    assert_eq!(s.received, 1);
+}
+
+#[test]
 fn every_pull_register_accepts_writes_and_affects_only_input_configured_pins() {
     for (reg, dir, port, mask) in [
         (0xffe0, 0xffe4, 0xffd4, 7),

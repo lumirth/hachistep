@@ -191,16 +191,19 @@ impl Ssu {
                 }
             }
             0xf0e2 => {
-                if self.next.is_some() && value != self.mode {
-                    return Err(Error::Unsupported {
-                        component: "SSU",
-                        detail:
-                            "clock/format change during an active transfer needs characterization",
-                        address,
-                    });
-                }
+                let changed = self.mode ^ value;
                 self.mode = value & 0xe7;
-                self.clock_high = self.idle_high();
+                let tap = self.half_period();
+                if let (Phase::Edge, Some(next)) = (self.phase, self.next.as_mut()) {
+                    // CKS selects a live prescaler output. Retain the shifter
+                    // and remaining half-edge obligation when it changes.
+                    next.select(now, tap, clocks)?;
+                    if changed & 0x40 != 0 {
+                        self.clock_high = !self.clock_high;
+                    }
+                } else {
+                    self.clock_high = self.idle_high();
+                }
             }
             0xf0e3 => {
                 if value & 0xc0 == 0x40 {

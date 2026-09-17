@@ -79,7 +79,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "firmware_bytes={} eeprom_bytes={} reset_pc={:04x}",
         firmware.len(),
         eeprom.len(),
-        m.registers().pc
+        u16::from_be_bytes([firmware[0], firmware[1]]) & !1
     );
     println!("firmware_sha256={firmware_hash}\neeprom_sha256={eeprom_hash}");
     if command == "inspect" {

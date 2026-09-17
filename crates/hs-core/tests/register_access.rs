@@ -3,8 +3,8 @@ use hs_core::{Conditions, Images, Machine, Time};
 
 #[test]
 fn actual_guest_accesses_commit_at_the_documented_exclusive_boundary() {
-    // MOV.B @aa:16,R0L. Two 2-state instruction fetches precede the data
-    // access; no native register peek substitutes for the CPU's bus operation.
+    // Reset: vector, two internal states, initial prefetch. MOV.B @aa:16,R0L
+    // then fetches the extension and NEXT before its physical data access.
     for (address, data_states) in [
         (0xf068u16, 2),
         (0xf0d0, 2),
@@ -40,12 +40,12 @@ fn actual_guest_accesses_commit_at_the_documented_exclusive_boundary() {
         // timestamps, and a boundary one quantum later includes the effect.
         let boundary = hs_core::time::Clock::new(Time::ZERO, 1_000_000, 1)
             .unwrap()
-            .after(4 + data_states)
+            .after(10 + data_states)
             .unwrap();
         m.run_until(boundary, &[], &mut ()).unwrap();
-        assert_eq!(m.statistics().bus_reads, 2, "early access {address:04x}");
+        assert_eq!(m.statistics().bus_reads, 4, "early access {address:04x}");
         m.run_until(Time::from_raw(boundary.raw() + 1), &[], &mut ())
             .unwrap();
-        assert_eq!(m.statistics().bus_reads, 3, "late access {address:04x}");
+        assert_eq!(m.statistics().bus_reads, 5, "late access {address:04x}");
     }
 }

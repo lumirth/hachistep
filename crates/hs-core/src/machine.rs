@@ -105,7 +105,7 @@ impl Machine {
             return Err(Error::BadInput("ADC reference must be positive"));
         }
         let mcu = Mcu::new(images.firmware, conditions.clocks)?;
-        let cpu = Cpu::new(mcu.reset_vector());
+        let cpu = Cpu::reset();
         let mut m = Self {
             now: Time::ZERO,
             last_effect: Time::ZERO,
@@ -268,7 +268,7 @@ impl Machine {
         self.eeprom.power_cycle()?;
         self.sensor.power_cycle(self.now)?;
         self.lcd = Nt7508::new();
-        self.cpu = Cpu::new(self.mcu.reset_vector());
+        self.cpu = Cpu::reset();
         self.serial = SerialLevels::default();
         self.powered = true;
         self.fault = None;
@@ -371,7 +371,7 @@ impl Machine {
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         self.mcu.reset(self.now, watchdog, out)?;
-        self.cpu = Cpu::new(self.mcu.reset_vector());
+        self.cpu = Cpu::reset();
         self.pending = None;
         self.resume_after = None;
         self.stats.resets = self.stats.resets.wrapping_add(1);
@@ -590,7 +590,7 @@ impl Machine {
             self.resolve_board(out)?;
             self.refresh_deadline()?;
         }
-        if self.cpu.sleeping() {
+        if self.cpu.sleeping() && self.mcu.control.sleeping() {
             let irq = self.mcu.interrupt();
             if irq.is_none() || (irq != Some(7) && self.cpu.registers.ccr & I != 0) {
                 return Ok(());
@@ -609,7 +609,7 @@ impl Machine {
         }
         loop {
             let action = self.cpu.next(self.mcu.interrupt())?;
-            if self.cpu.entering_vector() == Some(7) {
+            if self.cpu.take_accepted_vector() == Some(7) {
                 self.mcu.control.acknowledge_nmi();
             }
             match action {

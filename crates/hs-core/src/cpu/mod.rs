@@ -104,9 +104,17 @@ struct Transfer {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
+    ResetVector,
     Boundary,
     Fetch,
     Ready(Instruction),
+    Execute(Instruction),
+    Prefetch {
+        address: u16,
+        retain: bool,
+    },
+    Delay(u32),
+    Finish,
     Memory(Transfer),
     BitRead {
         address: u16,
@@ -125,8 +133,25 @@ enum Phase {
         address: u16,
         target: u16,
         return_pc: u16,
+        fetch_target: bool,
+    },
+    BranchTarget {
+        target: u16,
+        take: bool,
+    },
+    JumpTarget {
+        target: u16,
+        call: bool,
+        return_pc: u16,
     },
     BranchWait {
+        target: u16,
+        call: bool,
+    },
+    EntryWait {
+        target: u16,
+    },
+    EntryTarget {
         target: u16,
     },
     ReturnPc,
@@ -164,6 +189,9 @@ enum Phase {
 pub struct Cpu {
     pub registers: Registers,
     phase: Phase,
+    continuation: Phase,
+    prefetch: Option<(u16, u16)>,
+    accepted_vector: Option<u8>,
     pub(crate) words: [u16; 5],
     pub(crate) word_count: u8,
     pub(crate) instruction_pc: u16,
@@ -183,6 +211,9 @@ impl Cpu {
                 ccr: I,
             },
             phase: Phase::Boundary,
+            continuation: Phase::Boundary,
+            prefetch: None,
+            accepted_vector: None,
             words: [0; 5],
             word_count: 0,
             instruction_pc: reset_vector & !1,
@@ -191,17 +222,19 @@ impl Cpu {
             interrupt_delay: 0,
         }
     }
+    /// Power/reset entry performs the vector read and pipeline fill on the bus.
+    pub(crate) fn reset() -> Self {
+        let mut cpu = Self::new(0);
+        cpu.phase = Phase::ResetVector;
+        cpu
+    }
     pub fn sleeping(&self) -> bool {
         self.phase == Phase::Sleeping
     }
     /// Integration acknowledges a latched request only after the CPU selected
     /// its exception, never merely because a request was offered to `next`.
-    pub(crate) fn entering_vector(&self) -> Option<u8> {
-        if let Phase::ExceptionPc { vector, .. } = self.phase {
-            Some(vector)
-        } else {
-            None
-        }
+    pub(crate) fn take_accepted_vector(&mut self) -> Option<u8> {
+        self.accepted_vector.take()
     }
     pub fn boundary(&self) -> bool {
         matches!(self.phase, Phase::Boundary | Phase::Sleeping)
@@ -211,15 +244,24 @@ impl Cpu {
     }
     pub fn phase_name(&self) -> &'static str {
         match self.phase {
+            Phase::ResetVector => "reset-vector",
             Phase::Boundary => "boundary",
             Phase::Fetch => "fetch",
             Phase::Ready(_) => "decoded",
+            Phase::Execute(_) => "execute",
+            Phase::Prefetch { .. } => "prefetch",
+            Phase::Delay(_) => "internal",
+            Phase::Finish => "finish",
             Phase::Memory(_) => "memory",
             Phase::BitRead { .. } => "bit-read",
             Phase::BitWrite { .. } => "bit-write",
             Phase::IndirectJump { .. } => "indirect-jump",
             Phase::Call { .. } => "call-stack",
             Phase::BranchWait { .. } => "branch-wait",
+            Phase::BranchTarget { .. } => "branch-target",
+            Phase::JumpTarget { .. } => "jump-target",
+            Phase::EntryWait { .. } => "entry-wait",
+            Phase::EntryTarget { .. } => "entry-target",
             Phase::ReturnPc => "return-pc",
             Phase::ReturnCcr => "return-ccr",
             Phase::ReturnExceptionPc { .. } => "return-exception-pc",
@@ -240,6 +282,57 @@ impl Cpu {
     fn finish(&mut self) {
         self.retired = self.retired.wrapping_add(1);
         self.phase = Phase::Boundary;
+    }
+    fn prefetch_then(&mut self, address: u16, retain: bool, next: Phase) {
+        self.continuation = next;
+        self.phase = Phase::Prefetch {
+            address: address & !1,
+            retain,
+        };
+    }
+    fn delay_then(&mut self, states: u32, next: Phase) {
+        self.continuation = next;
+        self.phase = Phase::Delay(states);
+    }
+    fn continue_execution(&mut self) -> Result<(), Error> {
+        self.phase = core::mem::replace(&mut self.continuation, Phase::Boundary);
+        match self.phase {
+            Phase::Execute(i) => self.begin(i)?,
+            Phase::Finish => self.finish(),
+            _ => {}
+        }
+        Ok(())
+    }
+    fn prepare(&mut self, i: Instruction) -> Result<(), Error> {
+        // REJ09B0213-0300 §2.8: NEXT is a real retained bus fetch. Memory
+        // bit operations and EEPMOV fetch it later in their own sequences.
+        match i {
+            Instruction::Bit {
+                target: Target::Memory(_),
+                ..
+            }
+            | Instruction::EepMov { .. }
+            | Instruction::Jump {
+                target: Jump::Absolute(_),
+                ..
+            } => self.begin(i)?,
+            Instruction::Branch { .. } | Instruction::BranchSubroutine(_)
+                if self.word_count == 2 =>
+            {
+                self.delay_then(2, Phase::Execute(i))
+            }
+            _ => {
+                let retain = !matches!(
+                    i,
+                    Instruction::Jump { .. }
+                        | Instruction::BranchSubroutine(_)
+                        | Instruction::Return { .. }
+                        | Instruction::Trap(_)
+                );
+                self.prefetch_then(self.registers.pc, retain, Phase::Execute(i));
+            }
+        }
+        Ok(())
     }
     fn target_address(&mut self, address: Address, size: Size) -> (u16, Option<(u8, u32)>) {
         match address {
@@ -267,16 +360,26 @@ impl Cpu {
         if !self.sleeping() {
             return Err(Error::Internal("direct transition outside SLEEP"));
         }
-        self.enter_exception(13);
+        self.enter_exception(13, false);
         Ok(())
     }
-    fn enter_exception(&mut self, vector: u8) {
+    fn enter_exception(&mut self, vector: u8, trap: bool) {
+        let sleeping = self.sleeping();
         let pc = self.registers.pc;
         let ccr = self.registers.ccr;
         self.registers.ccr |= I;
         self.interrupt_entries = self.interrupt_entries.wrapping_add(1);
+        self.accepted_vector = Some(vector);
+        self.prefetch = None;
         self.registers.move_sp(-2);
-        self.phase = Phase::ExceptionPc { vector, pc, ccr };
+        let stack = Phase::ExceptionPc { vector, pc, ccr };
+        if trap || sleeping {
+            // A sleeping CPU substitutes two internal states for the discarded
+            // fetch. TRAPA has already fetched NEXT.
+            self.delay_then(if sleeping { 4 } else { 2 }, stack);
+        } else {
+            self.prefetch_then(pc.wrapping_add(2), false, stack);
+        }
     }
     /// Produce the next action. A request is stable until `complete` is called.
     /// `interrupt` is a controller-selected vector, not an already-cleared flag.
@@ -287,7 +390,7 @@ impl Cpu {
                     if self.interrupt_delay == 0 {
                         if let Some(v) = interrupt {
                             if v == 7 || self.registers.ccr & I == 0 {
-                                self.enter_exception(v);
+                                self.enter_exception(v, false);
                                 continue;
                             }
                         }
@@ -300,6 +403,18 @@ impl Cpu {
                     self.word_count = 0;
                     self.words = [0; 5];
                     self.phase = Phase::Fetch;
+                    if let Some((address, word)) = self.prefetch.take() {
+                        if address == self.registers.pc {
+                            self.complete(word)?;
+                        }
+                    }
+                }
+                Phase::ResetVector => {
+                    return Ok(Action::Read {
+                        address: 0,
+                        width: Width::Word,
+                        fetch: false,
+                    })
                 }
                 Phase::Fetch => {
                     return Ok(Action::Read {
@@ -308,7 +423,24 @@ impl Cpu {
                         fetch: true,
                     })
                 }
-                Phase::Ready(i) => self.begin(i)?,
+                Phase::Ready(i) => self.prepare(i)?,
+                Phase::Execute(i) => self.begin(i)?,
+                Phase::Finish => self.finish(),
+                Phase::Prefetch { address, .. }
+                | Phase::BranchTarget {
+                    target: address, ..
+                }
+                | Phase::JumpTarget {
+                    target: address, ..
+                }
+                | Phase::EntryTarget { target: address } => {
+                    return Ok(Action::Read {
+                        address: address & !1,
+                        width: Width::Word,
+                        fetch: true,
+                    })
+                }
+                Phase::Delay(states) => return Ok(Action::Idle(states)),
                 Phase::Memory(t) => {
                     let width = if t.size == Size::Byte {
                         Width::Byte
@@ -367,7 +499,7 @@ impl Cpu {
                         mov_byte: false,
                     })
                 }
-                Phase::BranchWait { .. } => return Ok(Action::Idle(2)),
+                Phase::BranchWait { .. } | Phase::EntryWait { .. } => return Ok(Action::Idle(2)),
                 Phase::ReturnPc | Phase::ReturnCcr | Phase::ReturnExceptionPc { .. } => {
                     return Ok(Action::Read {
                         address: self.registers.sp() & !1,
@@ -411,7 +543,7 @@ impl Cpu {
                         // .B defers even NMI; an issued read/write pair is never
                         // split here. Resumption requires the firmware loop.
                         self.finish();
-                        self.enter_exception(7);
+                        self.enter_exception(7, false);
                         continue;
                     }
                     if stage == 2 {
@@ -451,6 +583,50 @@ impl Cpu {
     }
     pub fn complete(&mut self, value: u16) -> Result<(), Error> {
         match self.phase {
+            Phase::ResetVector => self.phase = Phase::EntryWait { target: value },
+            Phase::Prefetch { address, retain } => {
+                if retain {
+                    self.prefetch = Some((address, value));
+                }
+                if matches!(self.continuation, Phase::ExceptionPc { .. }) {
+                    self.phase = Phase::Delay(2);
+                } else {
+                    self.continue_execution()?;
+                }
+            }
+            Phase::Delay(_) => self.continue_execution()?,
+            Phase::BranchTarget { target, take } => {
+                if take {
+                    self.registers.pc = target & !1;
+                    self.prefetch = Some((target & !1, value));
+                }
+                self.finish();
+            }
+            Phase::JumpTarget {
+                target,
+                call,
+                return_pc,
+            } => {
+                self.registers.pc = target & !1;
+                self.prefetch = Some((target & !1, value));
+                if call {
+                    self.registers.move_sp(-2);
+                    self.phase = Phase::Call {
+                        address: self.registers.sp(),
+                        target,
+                        return_pc,
+                        fetch_target: false,
+                    };
+                } else {
+                    self.finish();
+                }
+            }
+            Phase::EntryWait { target } => self.phase = Phase::EntryTarget { target },
+            Phase::EntryTarget { target } => {
+                self.registers.pc = target & !1;
+                self.prefetch = Some((target & !1, value));
+                self.phase = Phase::Boundary;
+            }
             Phase::Fetch => {
                 if self.word_count >= 5 {
                     return Err(Error::Internal("decoder requested more than ten bytes"));
@@ -509,25 +685,55 @@ impl Cpu {
             }
             Phase::BitRead { address, op, bit } => {
                 let (result, writes) = self.apply_bit(op, bit, value as u8);
-                if writes {
-                    self.phase = Phase::BitWrite {
+                let next = if writes {
+                    Phase::BitWrite {
                         address,
                         value: result,
+                    }
+                } else {
+                    Phase::Finish
+                };
+                self.prefetch_then(self.registers.pc, true, next);
+            }
+            Phase::BitWrite { .. } => self.finish(),
+            Phase::IndirectJump { call, .. } => {
+                if call {
+                    self.registers.move_sp(-2);
+                    self.phase = Phase::Call {
+                        address: self.registers.sp(),
+                        target: value,
+                        return_pc: self.registers.pc,
+                        fetch_target: true,
+                    };
+                } else {
+                    self.jump(value, false);
+                }
+            }
+            Phase::Call {
+                target,
+                fetch_target,
+                ..
+            } => {
+                if fetch_target {
+                    self.phase = Phase::JumpTarget {
+                        target,
+                        call: false,
+                        return_pc: 0,
                     };
                 } else {
                     self.finish();
                 }
             }
-            Phase::BitWrite { .. } => self.finish(),
-            Phase::IndirectJump { call, .. } => self.jump(value, call),
-            Phase::Call { target, .. } => self.phase = Phase::BranchWait { target },
-            Phase::BranchWait { target } => {
-                self.registers.pc = target & !1;
-                self.finish();
+            Phase::BranchWait { target, call } => {
+                self.phase = Phase::JumpTarget {
+                    target,
+                    call,
+                    return_pc: self.registers.pc,
+                }
             }
             Phase::ReturnPc => {
                 self.registers.move_sp(2);
-                self.phase = Phase::BranchWait { target: value };
+                self.jump(value, false);
             }
             Phase::ReturnCcr => {
                 self.registers.move_sp(2);
@@ -539,7 +745,7 @@ impl Cpu {
                 self.registers.move_sp(2);
                 self.registers.ccr = ccr;
                 // RTE is not one of §3.8.5's CCR-writing deferral instructions.
-                self.phase = Phase::BranchWait { target: value };
+                self.jump(value, false);
             }
             Phase::ExceptionPc { vector, ccr, .. } => {
                 self.registers.move_sp(-2);
@@ -547,8 +753,7 @@ impl Cpu {
             }
             Phase::ExceptionCcr { vector, .. } => self.phase = Phase::ExceptionVector { vector },
             Phase::ExceptionVector { .. } => {
-                self.registers.pc = value & !1;
-                self.phase = Phase::Boundary;
+                self.phase = Phase::EntryWait { target: value };
             }
             Phase::MulDiv {
                 size,
@@ -577,7 +782,7 @@ impl Cpu {
                     }
                     1 => {
                         if count == 0 {
-                            self.finish();
+                            self.prefetch_then(self.registers.pc, true, Phase::Finish);
                         } else {
                             self.phase = Phase::Copy {
                                 word_count,
@@ -599,7 +804,7 @@ impl Cpu {
                         self.registers
                             .write(count_size, field, count.wrapping_sub(1));
                         if count == 1 {
-                            self.finish();
+                            self.prefetch_then(self.registers.pc, true, Phase::Finish);
                         } else {
                             self.phase = Phase::Copy {
                                 word_count,
@@ -619,17 +824,7 @@ impl Cpu {
         Ok(())
     }
     fn jump(&mut self, target: u16, call: bool) {
-        if call {
-            let return_pc = self.registers.pc;
-            self.registers.move_sp(-2);
-            self.phase = Phase::Call {
-                address: self.registers.sp(),
-                target,
-                return_pc,
-            };
-        } else {
-            self.phase = Phase::BranchWait { target };
-        }
+        self.phase = Phase::BranchWait { target, call };
     }
     fn apply_bit(&mut self, op: Bit, bit: u8, value: u8) -> (u8, bool) {
         let mask = 1u8 << (bit & 7);
@@ -738,6 +933,10 @@ impl Cpu {
                 // an aliased source (RnH/RnL/Rn/En/ERn). ADE-602-053A
                 // MOV.B/W/L usage notes, pp. 121/123/125. Loads still commit
                 // a post-increment before replacing the destination field.
+                let updating = matches!(
+                    address,
+                    Address::PreDecrement(_) | Address::PostIncrement(_)
+                );
                 let (mut address, post) = self.target_address(address, size);
                 let value = if ccr {
                     u32::from(self.registers.ccr) << 8
@@ -747,7 +946,7 @@ impl Cpu {
                 if size != Size::Byte {
                     address &= !1;
                 }
-                self.phase = Phase::Memory(Transfer {
+                let transfer = Phase::Memory(Transfer {
                     address,
                     size,
                     register: reg,
@@ -757,24 +956,46 @@ impl Cpu {
                     done: 0,
                     post,
                 });
+                if updating {
+                    self.delay_then(2, transfer);
+                } else {
+                    self.phase = transfer;
+                }
             }
             Instruction::Branch {
                 condition,
                 displacement,
             } => {
-                let target = if alu::condition(condition, self.registers.ccr) {
-                    self.registers.pc.wrapping_add(displacement as u16)
-                } else {
+                let taken = alu::condition(condition, self.registers.ccr);
+                // Bcc8 reads both fallthrough and target, even when untaken.
+                // Bcc16 instead has an address-calculation interval followed
+                // by the selected next fetch (§2.8, pp.235–236).
+                let target = if self.word_count == 2 && !taken {
                     self.registers.pc
+                } else {
+                    self.registers.pc.wrapping_add(displacement as u16)
                 };
-                self.phase = Phase::BranchWait { target };
+                self.phase = Phase::BranchTarget {
+                    target,
+                    take: taken || self.word_count == 2,
+                };
             }
             Instruction::BranchSubroutine(displacement) => {
-                self.jump(self.registers.pc.wrapping_add(displacement as u16), true)
+                self.phase = Phase::JumpTarget {
+                    target: self.registers.pc.wrapping_add(displacement as u16),
+                    call: true,
+                    return_pc: self.registers.pc,
+                };
             }
             Instruction::Jump { target, call } => match target {
                 Jump::Absolute(addr) => self.jump(addr, call),
-                Jump::Register(r) => self.jump(self.registers.er[usize::from(r)] as u16, call),
+                Jump::Register(r) => {
+                    self.phase = Phase::JumpTarget {
+                        target: self.registers.er[usize::from(r)] as u16,
+                        call,
+                        return_pc: self.registers.pc,
+                    }
+                }
                 Jump::Vector(addr) => {
                     self.phase = Phase::IndirectJump {
                         address: u16::from(addr),
@@ -791,7 +1012,7 @@ impl Cpu {
             }
             Instruction::Trap(vector) => {
                 self.retired = self.retired.wrapping_add(1);
-                self.enter_exception(8 + vector);
+                self.enter_exception(8 + vector, true);
             }
             Instruction::Ccr { op, source } => {
                 let v = self.source(Size::Byte, source) as u8;
@@ -888,71 +1109,47 @@ impl Cpu {
                 flags = (flags & !(N | Z)) | alu::nz(value, out_size);
             }
         } else {
-            if divisor == 0 {
-                return Err(Error::Unsupported {
-                    component: "CPU division",
-                    detail: "division by zero has no characterized silicon witness",
-                    address: self.instruction_pc,
-                });
-            }
-            let (q, r, negative) = if signed {
-                let a = if size == Size::Byte {
-                    dividend as u16 as i16 as i64
-                } else {
-                    dividend as i32 as i64
-                };
-                let b = if size == Size::Byte {
-                    divisor as u8 as i8 as i64
-                } else {
-                    divisor as u16 as i16 as i64
-                };
-                let q = a / b;
-                let r = a % b;
-                let min = -(1i64 << (size.bits() - 1));
-                let max = (1i64 << (size.bits() - 1)) - 1;
-                if q < min || q > max {
-                    return Err(Error::Unsupported {
-                        component: "CPU division",
-                        detail: "signed quotient overflow has no characterized silicon witness",
-                        address: self.instruction_pc,
-                    });
-                }
-                (q as u32, r as u32, (a < 0) != (b < 0))
+            // §2.2.26–27: neither zero division nor overflow raises an
+            // exception. N follows operand signs (even for a zero quotient),
+            // and Z reports a zero divisor. Undefined destination bits use a
+            // deterministic continuation: retain on zero, narrow on overflow.
+            let negative = if signed {
+                (dividend & out_size.sign() != 0) != (divisor & size.sign() != 0)
             } else {
-                let q = dividend / divisor;
-                let r = dividend % divisor;
-                if q > size.mask() {
-                    return Err(Error::Unsupported {
-                        component: "CPU division",
-                        detail: "unsigned quotient overflow has no characterized silicon witness",
-                        address: self.instruction_pc,
-                    });
-                }
-                (q, r, divisor & size.sign() != 0)
+                divisor & size.sign() != 0
             };
-            value = ((r & size.mask()) << size.bits()) | (q & size.mask());
-            flags = (flags & !(N | Z)) | if negative { N } else { 0 };
-        }
-        // Fetches are charged by the bus. Remaining nominal internal states:
-        // unsigned byte 14 total, unsigned word 22; signed adds a prefix fetch.
-        let total: u32 = if divide {
-            if size == Size::Byte {
-                14
+            flags = (flags & !(N | Z))
+                | if negative { N } else { 0 }
+                | if divisor == 0 { Z } else { 0 };
+            value = if divisor == 0 {
+                dividend
             } else {
-                22
-            }
-        } else if size == Size::Byte {
-            14
-        } else {
-            22
-        };
-        let total = total + if signed { 2 } else { 0 };
+                let (q, r) = if signed {
+                    let a = if size == Size::Byte {
+                        dividend as u16 as i16 as i64
+                    } else {
+                        dividend as i32 as i64
+                    };
+                    let b = if size == Size::Byte {
+                        divisor as u8 as i8 as i64
+                    } else {
+                        divisor as u16 as i16 as i64
+                    };
+                    ((a / b) as u32, (a % b) as u32)
+                } else {
+                    (dividend / divisor, dividend % divisor)
+                };
+                ((r & size.mask()) << size.bits()) | (q & size.mask())
+            };
+        }
+        // The prefix and NEXT fetches are physical bus actions. The table
+        // assigns a further 12/20 internal states for byte/word operands.
         self.phase = Phase::MulDiv {
             size: out_size,
             dst,
             value,
             flags,
-            states: total.saturating_sub(u32::from(self.word_count) * 2),
+            states: if size == Size::Byte { 12 } else { 20 },
         };
         Ok(())
     }
@@ -985,7 +1182,9 @@ mod tests {
                     address,
                     fetch: true,
                     ..
-                } => cpu.complete(code[usize::from(address / 2)]).unwrap(),
+                } => cpu
+                    .complete(code.get(usize::from(address / 2)).copied().unwrap_or(0))
+                    .unwrap(),
                 Action::Idle(_) => cpu.complete(0).unwrap(),
                 Action::Sleep => break,
                 other => panic!("unexpected {other:?}"),
@@ -1002,6 +1201,17 @@ mod tests {
         cpu.registers.ccr = 0x21;
         assert_eq!(
             cpu.next(Some(25)).unwrap(),
+            Action::Read {
+                address: 0x1236,
+                width: Width::Word,
+                fetch: true,
+            }
+        );
+        cpu.complete(0).unwrap();
+        assert_eq!(cpu.next(None).unwrap(), Action::Idle(2));
+        cpu.complete(0).unwrap();
+        assert_eq!(
+            cpu.next(None).unwrap(),
             Action::Write {
                 address: 0xff7a,
                 width: Width::Word,
@@ -1019,5 +1229,30 @@ mod tests {
                 mov_byte: false
             }
         );
+        cpu.complete(0).unwrap();
+        assert_eq!(
+            cpu.next(None).unwrap(),
+            Action::Read {
+                address: 50,
+                width: Width::Word,
+                fetch: false,
+            }
+        );
+        cpu.complete(0x200).unwrap();
+        assert_eq!(cpu.next(None).unwrap(), Action::Idle(2));
+        cpu.complete(0).unwrap();
+        assert_eq!(
+            cpu.next(None).unwrap(),
+            Action::Read {
+                address: 0x200,
+                width: Width::Word,
+                fetch: true,
+            }
+        );
+        cpu.complete(0).unwrap();
+        assert!(cpu.boundary());
+        assert_eq!(cpu.registers.pc, 0x200);
+        assert_eq!(cpu.retired, 0);
+        assert_eq!(cpu.interrupt_entries, 1);
     }
 }

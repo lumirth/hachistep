@@ -9,12 +9,14 @@ use hs_core::cpu::{
 struct Bus {
     bytes: Vec<u8>,
     writes: Vec<(u16, Width, u16)>,
+    cycles: Vec<(char, u16, u32)>,
 }
 impl Bus {
     fn new(words: &[u16]) -> Self {
         let mut b = Self {
             bytes: vec![0; 65536],
             writes: Vec::new(),
+            cycles: Vec::new(),
         };
         for (i, w) in words.iter().enumerate() {
             b.word(0x100 + i as u16 * 2, *w);
@@ -26,6 +28,12 @@ impl Bus {
         self.bytes[usize::from(a.wrapping_add(1))] = w as u8;
     }
     fn perform(&mut self, c: &mut Cpu, a: Action) {
+        self.cycles.push(match a {
+            Action::Read { address, fetch, .. } => (if fetch { 'f' } else { 'r' }, address, 2),
+            Action::Write { address, .. } => ('w', address, 2),
+            Action::Idle(states) => ('i', 0, states),
+            Action::Sleep => panic!("unexpected sleep"),
+        });
         let value = match a {
             Action::Read { address, width, .. } => {
                 let hi = self.bytes[usize::from(address)];
@@ -58,6 +66,158 @@ impl Bus {
         let a = c.next(irq).unwrap();
         self.perform(c, a);
         a
+    }
+    fn retire(&mut self, c: &mut Cpu) {
+        let retired = c.retired;
+        for _ in 0..32 {
+            self.action(c, None);
+            if c.retired != retired {
+                return;
+            }
+        }
+        panic!("instruction did not retire");
+    }
+    fn enter(&mut self, c: &mut Cpu, vector: u8, return_pc: u16) -> Action {
+        assert_eq!(
+            self.action(c, Some(vector)),
+            Action::Read {
+                address: return_pc.wrapping_add(2),
+                width: Width::Word,
+                fetch: true,
+            }
+        );
+        assert_eq!(self.action(c, None), Action::Idle(2));
+        c.next(None).unwrap()
+    }
+}
+
+#[test]
+fn ordered_bus_cycles_follow_the_h8_tables() {
+    // REJ09B0213-0300 §2.8. Include the initial pipeline fill, then the
+    // documented instruction sequence. Bus timing here is two-state memory.
+    type Case<'a> = (&'a [u16], &'a [(char, u16, u32)]);
+    let cases: &[Case<'_>] = &[
+        (
+            &[0x6902],
+            &[('f', 0x100, 2), ('f', 0x102, 2), ('r', 0xf800, 2)],
+        ),
+        (
+            &[0x6982],
+            &[('f', 0x100, 2), ('f', 0x102, 2), ('w', 0xf800, 2)],
+        ),
+        (
+            &[0x6d02],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('i', 0, 2),
+                ('r', 0xf800, 2),
+            ],
+        ),
+        (
+            &[0x6d72],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('i', 0, 2),
+                ('r', 0xff70, 2),
+            ],
+        ),
+        (
+            &[0x6df2],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('i', 0, 2),
+                ('w', 0xff6e, 2),
+            ],
+        ),
+        (
+            &[0x6d82],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('i', 0, 2),
+                ('w', 0xf7fe, 2),
+            ],
+        ),
+        (
+            &[0x7d00, 0x7000],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('r', 0xf800, 2),
+                ('f', 0x104, 2),
+                ('w', 0xf800, 2),
+            ],
+        ),
+        (
+            &[0x4006],
+            &[('f', 0x100, 2), ('f', 0x102, 2), ('f', 0x108, 2)],
+        ),
+        (
+            &[0x4106],
+            &[('f', 0x100, 2), ('f', 0x102, 2), ('f', 0x108, 2)],
+        ),
+        (
+            &[0x5810, 0x0006],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('i', 0, 2),
+                ('f', 0x104, 2),
+            ],
+        ),
+        (
+            &[0x5e00, 0x0200],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('i', 0, 2),
+                ('f', 0x200, 2),
+                ('w', 0xff6e, 2),
+            ],
+        ),
+        (
+            &[0x5f20],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('r', 0x20, 2),
+                ('w', 0xff6e, 2),
+                ('f', 0x200, 2),
+            ],
+        ),
+        (
+            &[0x5470],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('r', 0xff70, 2),
+                ('i', 0, 2),
+                ('f', 0x200, 2),
+            ],
+        ),
+        (&[0x5181], &[('f', 0x100, 2), ('f', 0x102, 2), ('i', 0, 12)]),
+        (
+            &[0x01d0, 0x5301],
+            &[
+                ('f', 0x100, 2),
+                ('f', 0x102, 2),
+                ('f', 0x104, 2),
+                ('i', 0, 20),
+            ],
+        ),
+    ];
+    for (words, expected) in cases {
+        let mut b = Bus::new(words);
+        b.word(0x20, 0x200);
+        b.word(0xff70, 0x200);
+        let mut c = Cpu::new(0x100);
+        c.registers.er[0] = 0xf800;
+        c.registers.er[7] = 0xff70;
+        b.retire(&mut c);
+        assert_eq!(&b.cycles, expected, "{words:04x?}");
     }
 }
 
@@ -132,6 +292,15 @@ fn long_predecrement_exposes_completed_prefix_not_an_atomic_store() {
     c.registers.er[2] = 0x1234_ff00;
     b.action(&mut c, None); // prefix fetch
     b.action(&mut c, None); // final fetch
+    assert_eq!(
+        b.action(&mut c, None),
+        Action::Read {
+            address: 0x104,
+            width: Width::Word,
+            fetch: true,
+        }
+    );
+    assert_eq!(b.action(&mut c, None), Action::Idle(2));
     let a = c.next(None).unwrap();
     assert!(matches!(
         a,
@@ -160,14 +329,12 @@ fn rte_does_not_inherit_the_ldc_one_instruction_interrupt_delay() {
     b.word(0xff72, 0x0200);
     let mut c = Cpu::new(0x100);
     c.registers.er[7] = 0xabcd_ff70;
-    for _ in 0..4 {
-        b.action(&mut c, None);
-    }
+    b.retire(&mut c);
     assert_eq!(c.registers.pc, 0x200);
     assert_eq!(c.registers.ccr, 0x35);
     assert_eq!(c.registers.er[7], 0xabcd_ff74);
     assert_eq!(c.retired, 1);
-    let a = c.next(Some(19)).unwrap();
+    let a = b.enter(&mut c, 19, 0x200);
     assert!(matches!(
         a,
         Action::Write {
@@ -188,17 +355,17 @@ fn ldc_still_defers_an_interrupt_for_the_following_instruction() {
     let mut b = Bus::new(&[0x0700, 0x0000, 0x0000]); // LDC #0,CCR; NOP; NOP
     let mut c = Cpu::new(0x100);
     c.registers.er[7] = 0xff70;
-    b.action(&mut c, None);
+    b.retire(&mut c);
     assert_eq!(
         c.next(Some(19)).unwrap(),
         Action::Read {
-            address: 0x102,
+            address: 0x104,
             width: Width::Word,
             fetch: true
         }
     );
     c.complete(0).unwrap();
-    let a = c.next(Some(19)).unwrap();
+    let a = b.enter(&mut c, 19, 0x104);
     assert!(matches!(
         a,
         Action::Write {
@@ -282,7 +449,7 @@ fn eepmov_word_accepts_nmi_only_between_complete_byte_transfers() {
         }
     ));
     b.perform(&mut c, a); // NMI cannot discard an already-read transfer byte
-    let a = c.next(Some(7)).unwrap();
+    let a = b.enter(&mut c, 7, 0x104);
     assert!(matches!(
         a,
         Action::Write {
@@ -319,7 +486,15 @@ fn eepmov_byte_defers_even_nmi_and_word_defers_maskable_requests() {
         assert_eq!(c.registers.er[4], 0);
         assert_eq!(c.interrupt_entries, 0);
         assert_eq!(&b.bytes[0xf900..0xf903], &[0xa1, 0xb2, 0xc3]);
-        let a = c.next(Some(irq)).unwrap();
+        assert_eq!(
+            b.action(&mut c, Some(irq)),
+            Action::Read {
+                address: 0x104,
+                width: Width::Word,
+                fetch: true,
+            }
+        );
+        let a = b.enter(&mut c, irq, 0x104);
         assert!(matches!(
             a,
             Action::Write {
@@ -356,7 +531,7 @@ fn eepmov_issued_read_is_stable_when_interrupt_offer_changes() {
     ));
     b.action(&mut c, Some(7));
     assert!(matches!(
-        c.next(Some(7)).unwrap(),
+        b.enter(&mut c, 7, 0x104),
         Action::Write {
             address: 0xff6e,
             value: 0x104,

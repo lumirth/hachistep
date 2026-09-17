@@ -202,6 +202,23 @@ impl ClockWait {
         }
         Ok(())
     }
+    /// Select another prescaler output without discarding unfinished work.
+    /// Already consumed edges belong to the old source; the remaining count
+    /// rejoins the selected divider's existing phase. A closed gate stays closed.
+    pub fn select(&mut self, now: Time, tap: Tap, clocks: &Clocks) -> Result<(), Error> {
+        if tap.divide == 0 {
+            return Err(Error::BadInput("zero clock divider"));
+        }
+        if self.tap != tap {
+            let running = !matches!(self.state, WaitState::Paused { .. });
+            self.pause(now, clocks)?;
+            self.tap = tap;
+            if running {
+                self.resume(now, clocks)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
