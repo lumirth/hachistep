@@ -20,7 +20,7 @@ REPORT_KEYS = (
     'events', 'lcd_events', 'nv_commits', 'buzzer_events', 'ir_events',
     'serial_tx', 'serial_rx', 'bus_reads', 'bus_writes', 'resets', 'fault',
 )
-EXPORTS = ('ram.bin', 'eeprom.bin', 'eeprom.status', 'sensor-nv.bin', 'lcd-ram.bin', 'frame.pgm')
+EXPORTS = ('ram.bin', 'eeprom.bin', 'eeprom.status', 'sensor-nv.bin', 'lcd-ram.bin', 'lcd-icons.bin', 'frame.pgm')
 
 
 def compare(left: Path, right: Path, left_trace: Path | None = None,
