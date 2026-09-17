@@ -276,8 +276,13 @@ TE=RE=0 and a one-bit BRR settling interval; it does not prescribe every
 mid-frame register-write race. Complete the state machine with these local rules:
 
 - Retain the current BRC countdown across CKS changes; consume remaining counts
-  on the new source's next real edges. A BRR write supplies the next reload.
-  Neither action restarts a frame or creates a synthetic clock edge.
+  on the new source's next real edges. With TE or RE enabled, a BRR write supplies
+  the next reload. With both disabled, reload BRC immediately from the new BRR,
+  retaining source phase and divider polarity. Otherwise FF-to-00 initialization
+  could take 256 old source edges, violating the documented one-new-bit settling
+  interval of 32 edges. Neither write creates a synthetic clock edge or restarts
+  a frame. The internal reload circuit is not exposed by the manual; this rule
+  meets the initialization contract while retaining live-transfer progress.
 - CKE changes select future internal/external clock events while retaining bit
   and sample position. COM/format/ABCS changes are retained for the next
   character; latch active format when TX loads TSR or RX accepts its start.
