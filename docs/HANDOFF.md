@@ -28,6 +28,10 @@ retail workloads and native replay remain unchanged in `out/persistence-retail`.
 Exact clock inversion then passed `out/clock-reduction-check` and
 `out/clock-reduction-retail`; paired measurements and the derivation are in
 [clock inversion](research/clock-inversion-performance.md).
+Report serialization, generated capture/partition checks and dormant-clock
+validation pass `out/host-completion-check2`, all four retail workloads in
+`out/host-completion-retail`, and the Rust 1.95.0 workspace tests in
+`out/host-msrv-tests.log`.
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their
@@ -76,10 +80,11 @@ in SAVE_STATES. The exact owner limitations remain in STATUS.
    12 kHz sensor publication and decoding. Validate complete outputs before paired
    timing; retain one transition mechanism and portable optimizations. Record
    host, workload, code size and memory rather than extrapolating synthetic gains.
-6. **Host tooling.** Replace handwritten report JSON with the justified standard
-   serializer when touching report structure. Add generative tests where a real
-   behavioral invariant benefits. Rust core completion precedes frontend/C/Wasm
-   adapters; presentation helpers should follow a concrete frontend need.
+6. **Host tooling.** Reports now use Serde JSON and include the resumed segment's
+   start time. Proptest varies execution partitions and native capture points,
+   comparing complete causal state and events. Extend generative checks only
+   where a further behavioral invariant benefits. Rust core completion precedes
+   frontend/C/Wasm adapters; presentation helpers follow a concrete frontend need.
 
 ## Updating expectations
 

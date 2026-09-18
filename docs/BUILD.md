@@ -22,7 +22,11 @@ with `force-soft`, keeping portable backend selection in the library dependency
 rather than requiring downstream compiler flags. Hashing and serialization run
 only during construction, inspection and explicit save/load. Ordinary execution
 still allocates nothing. The CLI shares SHA-256 and uses Clap for argument
-relationships, validation and generated help. See `Cargo.lock` for the complete
+relationships, validation and generated help. Serde JSON owns report encoding;
+its arbitrary-precision feature preserves the core's full time range. Proptest
+is a test-only dependency for shrinking execution-partition and native-restore
+counterexamples. It replaces the test's handwritten random generator; default
+fork/timeout and bit-set features are disabled. See `Cargo.lock` for the complete
 runtime/build dependency graph; proc macros run at build time.
 
 The 1.74 declaration in the starter was untested and has been replaced by a

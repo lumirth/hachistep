@@ -69,35 +69,30 @@ fn watch_counter_keeps_the_last_tick_of_oscillator_stabilization() {
     assert_eq!(b.peek(0xf0d1).unwrap(), 34);
     assert_eq!(a.registers(), b.registers());
 }
-#[test]
-fn run_partition_and_snapshot_replay_preserve_all_state_and_events() {
-    let mut long = machine(LOOP);
-    let mut short = long.clone();
-    let mut a = Vec::new();
-    let mut b = Vec::new();
-    let end = Time::from_micros(3000);
-    long.run_until(end, &[], &mut a).unwrap();
-    let mut rng = 1234567u32;
-    let mut us = 0;
-    while us < 3000 {
-        rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
-        us = (us + 1 + u64::from(rng % 43)).min(3000);
-        short.run_until(Time::from_micros(us), &[], &mut b).unwrap();
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn run_partition_and_snapshot_replay_preserve_all_state_and_events(
+        mut horizons in proptest::collection::vec(1u64..5000, 0..16),
+        checkpoint in 0u64..=5000,
+    ) {
+        let mut long = machine(LOOP);
+        let mut short = long.clone();
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        long.run_until(Time::from_micros(5000), &[], &mut a).unwrap();
+        horizons.extend([checkpoint, 5000]);
+        horizons.sort_unstable();
+        horizons.dedup();
+        for us in horizons {
+            short.run_until(Time::from_micros(us), &[], &mut b).unwrap();
+            if us == checkpoint {
+                short = state::restore_file(&short.snapshot());
+            }
+        }
+        proptest::prop_assert_eq!(a, b);
+        state::assert_same_state(&long, &short);
     }
-    assert_eq!(a, b);
-    assert_eq!(long, short);
-    let snap = short.snapshot();
-    let mut restored = state::restore_file(&snap);
-    let mut c = Vec::new();
-    let mut d = Vec::new();
-    short
-        .run_until(Time::from_micros(5000), &[], &mut c)
-        .unwrap();
-    restored
-        .run_until(Time::from_micros(5000), &[], &mut d)
-        .unwrap();
-    assert_eq!(c, d);
-    state::assert_same_state(&short, &restored);
 }
 #[test]
 fn horizon_and_input_timestamps_are_exclusive() {
@@ -552,6 +547,10 @@ fn immediate_power_failure_latches_before_any_further_transition() {
     let mut m = machine(LOOP);
     m.power_off(&mut ()).unwrap();
     m.run_until(Time::MAX, &[], &mut ()).unwrap();
+    let restored = state::restore_file(&m.snapshot());
+    assert_eq!(restored.now(), Time::MAX);
+    assert!(!restored.powered());
+    state::assert_same_state(&m, &restored);
     let mut events = vec![];
     let error = m.power_on(&mut events).unwrap_err();
     assert_eq!(m.fault(), Some(&error));

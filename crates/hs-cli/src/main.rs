@@ -1,4 +1,5 @@
 //! Deterministic frontend. Input files are never overwritten.
+#![recursion_limit = "256"] // Expansion depth of the report's JSON object.
 mod args;
 mod digest;
 mod output;
@@ -60,6 +61,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             sensor_nv.as_deref(),
         )?
     };
+    let start = m.now();
     let conditions = m.conditions();
     let status = m.eeprom_status();
     let firmware_hash = m
@@ -145,6 +147,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             initial_eeprom_status: status,
             input_hash: input_hash.as_deref(),
             chunk_us: chunk,
+            start,
             requested: end,
             conditions,
         },

@@ -84,21 +84,6 @@ pub fn frame(m: &Machine) -> Vec<u8> {
     data.extend(pixels.iter().map(|v| 255 - *v * 85));
     data
 }
-fn escape(s: &str) -> String {
-    let mut r = String::new();
-    for c in s.chars() {
-        match c {
-            '"' => r.push_str("\\\""),
-            '\\' => r.push_str("\\\\"),
-            '\n' => r.push_str("\\n"),
-            '\r' => r.push_str("\\r"),
-            '\t' => r.push_str("\\t"),
-            c if c.is_control() => r.push_str(&format!("\\u{:04x}", c as u32)),
-            _ => r.push(c),
-        }
-    }
-    r
-}
 pub struct RunMetadata<'a> {
     pub firmware: &'a str,
     pub initial_eeprom: &'a str,
@@ -106,6 +91,7 @@ pub struct RunMetadata<'a> {
     pub initial_eeprom_status: u8,
     pub input_hash: Option<&'a str>,
     pub chunk_us: u64,
+    pub start: Time,
     pub requested: Time,
     pub conditions: hs_core::Conditions,
 }
@@ -117,40 +103,63 @@ pub fn report(
     failure: Option<&str>,
 ) -> String {
     let s = m.statistics();
-    let conditions = metadata.conditions;
-    let input_hash = metadata
-        .input_hash
-        .map(|v| format!("\"{}\"", escape(v)))
-        .unwrap_or_else(|| "null".into());
+    let c = metadata.conditions;
     let (serial_tx, serial_rx) = m.ssu_counts();
-    let fault = failure
-        .map(|v| format!("\"{}\"", escape(v)))
-        .unwrap_or("null".into());
-    let registers = m
-        .registers()
-        .er
-        .iter()
-        .map(|v| format!("{v}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    format!(concat!("{{\n  \"schema\": 2,\n  \"model\": \"hachistep-development-0.2\",\n",
-      "  \"firmware_sha256\": \"{}\",\n  \"initial_eeprom_sha256\": \"{}\",\n",
-      "  \"initial_sensor_nv_sha256\": \"{}\",\n  \"initial_eeprom_status\": {},\n  \"input_sha256\": {},\n  \"chunk_us\": {},\n",
-      "  \"initial_conditions\": {{\"supply_millivolts\": {}, \"temperature_millicelsius\": {}, \"avcc_override_millivolts\": {}, \"battery_sense_drop_millivolts\": {}, \"main_hz\": {}, \"watch_hz\": {}, \"on_chip_hz\": {}}},\n",
-      "  \"requested_time_raw\": \"{}\",\n  \"time_raw\": \"{}\",\n  \"time_us\": {},\n  \"wall_seconds\": {:.9},\n",
-      "  \"pc\": {},\n  \"instruction_pc\": {},\n  \"phase\": \"{}\",\n  \"er\": [{}],\n  \"ccr\": {},\n",
-      "  \"retired\": {},\n  \"interrupt_entries\": {},\n  \"sleeping\": {},\n  \"display_on\": {},\n  \"display_start\": {},\n",
-      "  \"events\": {},\n  \"lcd_events\": {},\n  \"nv_commits\": {},\n  \"buzzer_events\": {},\n  \"ir_events\": {},\n",
-      "  \"serial_tx\": {},\n  \"serial_rx\": {},\n  \"bus_reads\": {},\n  \"bus_writes\": {},\n  \"resets\": {},\n",
-      "  \"ram_sha256\": \"{}\",\n  \"lcd_ram_sha256\": \"{}\",\n  \"eeprom_sha256\": \"{}\",\n  \"eeprom_status\": {},\n",
-      "  \"fault\": {},\n  \"trace_records\": {},\n  \"trace_limit\": {},\n  \"trace_dropped\": {},\n  \"trace_complete\": {}\n}}\n"),metadata.firmware,metadata.initial_eeprom,
-      metadata.initial_sensor, metadata.initial_eeprom_status, input_hash, metadata.chunk_us,
-      conditions.supply_millivolts, conditions.temperature_millicelsius,
-      conditions.avcc_override_millivolts.map_or_else(|| "null".into(), |v| v.to_string()), conditions.battery_sense_drop_millivolts,
-      conditions.clocks.main_hz, conditions.clocks.watch_hz, conditions.clocks.on_chip_hz,
-      metadata.requested.raw(),m.now().raw(),m.now().as_micros(),wall,
-      m.registers().pc,m.instruction_pc(),m.phase_name(),registers,m.registers().ccr,m.retired(),m.interrupt_entries(),m.sleeping(),m.display_enabled(),m.display_start_line(),
-      e.count,e.lcd,e.nv,e.buzzer,e.ir,serial_tx,serial_rx,s.bus_reads,s.bus_writes,s.resets,sha256(m.ram()),sha256(m.lcd_ram()),sha256(&m.eeprom()),m.eeprom_status(),fault,e.trace_count,e.trace_limit,e.trace_dropped,e.trace.is_some() && e.trace_dropped == 0)
+    let value = serde_json::json!({
+        "schema": 2,
+        "model": "hachistep-development-0.2",
+        "firmware_sha256": metadata.firmware,
+        "initial_eeprom_sha256": metadata.initial_eeprom,
+        "initial_sensor_nv_sha256": metadata.initial_sensor,
+        "initial_eeprom_status": metadata.initial_eeprom_status,
+        "input_sha256": metadata.input_hash,
+        "chunk_us": metadata.chunk_us,
+        "initial_conditions": {
+            "supply_millivolts": c.supply_millivolts,
+            "temperature_millicelsius": c.temperature_millicelsius,
+            "avcc_override_millivolts": c.avcc_override_millivolts,
+            "battery_sense_drop_millivolts": c.battery_sense_drop_millivolts,
+            "main_hz": c.clocks.main_hz,
+            "watch_hz": c.clocks.watch_hz,
+            "on_chip_hz": c.clocks.on_chip_hz,
+        },
+        "start_time_raw": metadata.start.raw().to_string(),
+        "requested_time_raw": metadata.requested.raw().to_string(),
+        "time_raw": m.now().raw().to_string(),
+        "time_us": m.now().as_micros(),
+        "wall_seconds": wall,
+        "pc": m.registers().pc,
+        "instruction_pc": m.instruction_pc(),
+        "phase": m.phase_name(),
+        "er": m.registers().er,
+        "ccr": m.registers().ccr,
+        "retired": m.retired(),
+        "interrupt_entries": m.interrupt_entries(),
+        "sleeping": m.sleeping(),
+        "display_on": m.display_enabled(),
+        "display_start": m.display_start_line(),
+        "events": e.count,
+        "lcd_events": e.lcd,
+        "nv_commits": e.nv,
+        "buzzer_events": e.buzzer,
+        "ir_events": e.ir,
+        "serial_tx": serial_tx,
+        "serial_rx": serial_rx,
+        "bus_reads": s.bus_reads,
+        "bus_writes": s.bus_writes,
+        "resets": s.resets,
+        "ram_sha256": sha256(m.ram()),
+        "lcd_ram_sha256": sha256(m.lcd_ram()),
+        "eeprom_sha256": sha256(&m.eeprom()),
+        "eeprom_status": m.eeprom_status(),
+        "fault": failure,
+        "trace_records": e.trace_count,
+        "trace_limit": e.trace_limit,
+        "trace_dropped": e.trace_dropped,
+        "trace_complete": e.trace.is_some() && e.trace_dropped == 0,
+    });
+    // Value formatting owns JSON escaping and arbitrary-width integer output.
+    format!("{value:#}\n")
 }
 pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
     // Caller creates a new directory before running. Each file is create_new;
@@ -170,4 +179,44 @@ pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
     write_new(&dir.join("state.bin"), &saved)?;
     write_new(&dir.join("frame.pgm"), &frame(m))?;
     write_new(&dir.join("report.json"), report.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_preserves_times_beyond_u64_microseconds() {
+        let mut m = Machine::new(hs_core::Images {
+            firmware: &[0; 49152],
+            eeprom: &[0xff; 65536],
+            eeprom_status: 0,
+        })
+        .unwrap();
+        m.power_off(&mut ()).unwrap();
+        m.run_until(Time::MAX, &[], &mut ()).unwrap();
+        let text = report(
+            &m,
+            &Events::default(),
+            0.0,
+            &RunMetadata {
+                firmware: "unused",
+                initial_eeprom: "unused",
+                initial_sensor: "unused",
+                initial_eeprom_status: 0,
+                input_hash: None,
+                chunk_us: 1,
+                start: Time::ZERO,
+                requested: Time::MAX,
+                conditions: m.conditions(),
+            },
+            None,
+        );
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            value["time_us"].as_number().and_then(|v| v.as_u128()),
+            Some(Time::MAX.as_micros())
+        );
+        assert_eq!(value["time_raw"], Time::MAX.raw().to_string());
+    }
 }

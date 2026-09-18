@@ -155,6 +155,74 @@ initialization, not exact continuation of the faulted instant. Previously
 delivered effects are never silently undone. [Design §§5.7, 13.6][design],
 [host cursor ownership][api]
 
+## Follow-up: healthy dormant captures at long horizons
+
+The current source now routes immediate power calls through `check_fault` and
+`latch_error`. The following native-load defect is independent of fault
+recovery: it affects a **healthy** machine before any reconnect is attempted.
+[Machine lifecycle][machine]
+
+Public-API witness: construct at ordinary 3 V, call `power_off` immediately,
+then successfully `run_until(Time::MAX, &[], output)`. The 10 ms retention
+appointment runs first; afterward the absent-supply owners have no running
+appointments. Time reaches the requested horizon with `fault() == None`.
+Capture and encode that stopped state, then decode it. The reviewed validation
+rejects it with `clock ordinal overflow`, despite no source advancing during
+the long absence. This remains a source-derived fixture, not an executed test.
+[Physical run/retention paths][machine], [power owner][power], [native load][codec]
+
+Two separate owner checks cause rejection:
+
+| Owner | Cause | Minimal correction |
+| --- | --- | --- |
+| All seven MCU `Domain`s: system, CPU, watch, ROSC, main oscillator, subclock, watch crystal | `Domain::validate` passes wall `now` to the retained rational clock, although runtime `time(now)` returns `held_at` when stopped. `Clock::validate` computes fictitious elapsed edges and reserves another 65,536 ordinals. | Preserve `held_at <= now` and, when stopped, `clock.at <= held_at`; then call `clock.validate(self.time(now))`. Running domains still validate through `now`. |
+| BMA150 sample clock | After the Domain fix, `sample_clock.validate(now)` independently extrapolates the retained 12 kHz oscillator while sampling is absent. The runtime excludes sampling when unpowered, asleep, or waiting for acquisition. | Preserve `sample_clock.at <= now`; use `now` only when sampling is active, otherwise its stored `sample_clock.at`. If unpowered, require the clock anchor not to follow `unpowered_since`, which must itself be no later than `now`. |
+
+Sources: [Clock validation, lines 191–211][clock], [Domain time/validation,
+lines 22–31 and 63–69][domain], [Clocks validation, lines 569–599][clocks],
+[BMA sample eligibility/validation, lines 240–249 and 585–620][bma].
+
+For BMA, use the explicit inactivity predicate
+`unpowered_since.is_some() || asleep || wake_deadline.is_some()`.
+Do not infer inactivity from `next_sample().is_none()`: that method converts a
+clock arithmetic error into `None` using `.ok()`. Such a test would also exempt
+an overflowing **active** clock. Dormant clock validation at its stored anchor
+needs no new sleep timestamp: acquisition completion replaces the oscillator
+with `Clock::new(now, 12000, 1)` before future samples. [BMA sampling][bma],
+[acquisition transitions][bma-control]
+
+No additional wall-time projection barrier was found in this witness.
+LCD digital supply loss removes `Scan.clock`; `Some(clock)` continues to mean
+an advancing internal scan and must retain `validate(now)`. Prescaler and
+watchdog validation use `Clocks::ticks`, which already observes held domains.
+SCI baud and other MCU counter checks bound stored counters rather than
+inventing elapsed edges. Unfinished source-edge waits have no deadline while
+their source is unavailable. EEPROM/sensor programming is interrupted at rail loss;
+the sensor already permits its retained absolute timers to be past while
+unpowered. Keep those owner-specific checks. [LCD scan][scan], [clock waits and
+prescalers][clocks], [watchdog validation][watchdog], [SCI baud validation][baud],
+[sensor validation][bma], [MCU owner validation][mcu]
+
+Separate the regression cases. First, the healthy off-state capture must load
+with no fault and unchanged state. Only on a separate copy should reconnect at
+`Time::MAX` produce the terminal arithmetic error described above. Correct
+dormant-clock validation does not imply that reconnect can succeed beyond the
+time representation. Ordinary CPU sleep may leave other oscillators running;
+that state does not qualify for a blanket exemption.
+
+Retain negative cases for invalid rational periods, future clock anchors,
+future/reversed hold timestamps, and exhausted stored ordinals. Active clocks
+must retain the existing elapsed-edge and ordinal-headroom bounds. Do not key
+these corrections on `fault`: the rejected off-state witness is healthy.
+
+[clock]: ../../crates/hs-core/src/time.rs
+[domain]: ../../crates/hs-core/src/mcu/clocks/domain.rs
+[clocks]: ../../crates/hs-core/src/mcu/clocks.rs
+[bma]: ../../crates/hs-core/src/devices/bma150.rs
+[bma-control]: ../../crates/hs-core/src/devices/bma150/control.rs
+[scan]: ../../crates/hs-core/src/devices/nt7508/scan.rs
+[watchdog]: ../../crates/hs-core/src/mcu/watchdog.rs
+[baud]: ../../crates/hs-core/src/mcu/sci/baud.rs
 [machine]: ../../crates/hs-core/src/machine.rs
 [power]: ../../crates/hs-core/src/power.rs
 [cpu]: ../../crates/hs-core/src/cpu/mod.rs

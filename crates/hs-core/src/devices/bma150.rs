@@ -586,7 +586,17 @@ impl Bma150 {
         use crate::state::{future, require};
         self.filter.rebuild()?;
         self.interrupts.validate()?;
-        self.sample_clock.validate(now)?;
+        require(
+            self.sample_clock.at <= now,
+            "sensor clock is ahead of saved time",
+        )?;
+        self.sample_clock.validate(
+            if self.unpowered_since.is_some() || self.asleep || self.wake_deadline.is_some() {
+                self.sample_clock.at
+            } else {
+                now
+            },
+        )?;
         require(
             self.rx_bits < 8
                 && self.tx_bit <= 8
@@ -595,7 +605,9 @@ impl Bma150 {
                     Serial::Read(a) | Serial::Write(a) => a < 128,
                 }
                 && self.filtered.iter().all(|v| (-512..=511).contains(v))
-                && self.unpowered_since.is_none_or(|t| t <= now),
+                && self
+                    .unpowered_since
+                    .is_none_or(|t| self.sample_clock.at <= t && t <= now),
             "invalid sensor state",
         )?;
         if let Some((cycle, address, _)) = self.nv_operation {

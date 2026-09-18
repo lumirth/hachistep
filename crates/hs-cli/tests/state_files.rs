@@ -92,6 +92,18 @@ fn file_resume_matches_continuous_execution_and_never_overwrites_inputs() {
             "{file}"
         );
     }
+    let resumed: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.0.join("resumed/report.json")).unwrap()).unwrap();
+    let continuous: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.0.join("continuous/report.json")).unwrap()).unwrap();
+    assert_eq!(
+        resumed["start_time_raw"],
+        hs_core::Time::from_micros(1000).raw().to_string()
+    );
+    assert_eq!(continuous["start_time_raw"], "0");
+    assert_eq!(resumed["time_raw"], continuous["time_raw"]);
+    assert_eq!(resumed["fault"], serde_json::Value::Null);
+    assert!(resumed["retired"].as_u64().unwrap() < continuous["retired"].as_u64().unwrap());
     run(
         &["run", "--load-state", "mid.state", "--firmware", "rom.bin"],
         false,

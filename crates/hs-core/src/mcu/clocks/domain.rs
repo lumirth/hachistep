@@ -61,10 +61,10 @@ impl Domain {
 
 impl Domain {
     pub(super) fn validate(&self, now: Time) -> Result<(), Error> {
-        self.clock.validate(now)?;
         crate::state::require(
             self.held_at <= now && (self.running || self.held_at >= self.clock.at),
             "invalid held clock phase",
-        )
+        )?;
+        self.clock.validate(self.time(now))
     }
 }

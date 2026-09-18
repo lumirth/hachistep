@@ -85,8 +85,9 @@ python3 tools/bench.py --left /path/to/baseline --right /path/to/candidate \
 The comparator checks semantic report fields, canonical native state, exported bytes and, when
 requested, every product-event record. It identifies the first difference and
 rejects truncated, missing, mixed bus/product, or report-length-mismatched
-histories. It does not equate endpoint equality with history equality. It does
-not serialize all hidden machine state; the Rust replay tests compare that.
+histories. It does not equate endpoint equality with history equality. The
+reviewed retail baselines record hardware observations, while equivalence runs
+also compare the current native capture of causal internal state.
 
 A paired benchmark first performs two **untimed** complete-product-history runs.
 Measured runs do not trace or hash every event in the simulation path. They use

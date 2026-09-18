@@ -98,7 +98,9 @@ hachistep run --load-state session.state --milliseconds 2000 --out resumed
 from a file supplies the whole machine, so image/initial-condition arguments
 conflict with `--load-state`. Horizons and input CSV times remain absolute device
 time; CSV entries before the restored instant are skipped. Outputs and reports
-contain only the resumed segment's diagnostic/event totals.
+contain only the resumed segment's diagnostic/event totals. `start_time_raw`
+records that segment's starting instant, alongside its requested and reached
+horizons.
 
 Validation covers quarter-cycle CPU captures, split SFR lanes, copy and exception
 progress, flash pulses, EEPROM interruption, clock/reset/power transitions,
