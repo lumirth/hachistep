@@ -488,6 +488,14 @@ impl Machine {
         [mosi, miso]
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<[bool; 4], Error> {
+        self.settle_board(true, out)
+    }
+    fn settle_board(
+        &mut self,
+        configuration_changed: bool,
+        out: &mut dyn Output,
+    ) -> Result<[bool; 4], Error> {
+        let previous = self.mcu.gpio.levels;
         self.mcu.update_clock_output(self.now);
         let sci_pins = self.mcu.sci.pins();
         self.mcu.gpio.set_sci_pins(sci_pins, self.incident_light);
@@ -571,13 +579,15 @@ impl Machine {
         }
         // Selection and an external clock edge can change the SSU's output
         // drivers. Resolve that electrical consequence at this same instant.
-        let (sck, rxd) = self.mcu.gpio.sci_inputs();
-        if self
-            .mcu
-            .sci
-            .input_pins(sck, rxd, self.now, &self.mcu.clocks)?
-        {
-            self.changed_peripherals |= schedule::SCI;
+        if configuration_changed || previous[1] != self.mcu.gpio.levels[1] {
+            let (sck, rxd) = self.mcu.gpio.sci_inputs();
+            if self
+                .mcu
+                .sci
+                .input_pins(sck, rxd, self.now, &self.mcu.clocks)?
+            {
+                self.changed_peripherals |= schedule::SCI;
+            }
         }
         let [scl, sda] = self.mcu.gpio.iic_inputs();
         if self
@@ -614,6 +624,16 @@ impl Machine {
                 at: self.now,
                 drive,
             });
+        }
+        // Clock edges preserve pin routing. Notify analog and timer inputs
+        // when their connected ports change; configuration writes revisit all.
+        let connected_ports_changed = configuration_changed
+            || previous[0] != self.mcu.gpio.levels[0]
+            || previous[1] != self.mcu.gpio.levels[1]
+            || previous[2] != self.mcu.gpio.levels[2]
+            || previous[4] != self.mcu.gpio.levels[4];
+        if !connected_ports_changed {
+            return Ok(sampled);
         }
         if self.mcu.comparators.enabled_mask() != 0 {
             self.changed_peripherals |= schedule::COMPARATORS;
@@ -827,7 +847,7 @@ impl Machine {
         }
         if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
             let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;
-            let sampled = self.resolve_board(out)?;
+            let sampled = self.settle_board(due == schedule::ALL, out)?;
             if let Some(edge) = edge {
                 if edge.sample {
                     self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
@@ -836,11 +856,11 @@ impl Machine {
                 self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
                 // Completing a frame can release selection and data drivers.
                 if self.mcu.ssu.pins() != pins {
-                    self.resolve_board(out)?;
+                    self.settle_board(due == schedule::ALL, out)?;
                 }
             }
         } else {
-            self.resolve_board(out)?;
+            self.settle_board(due == schedule::ALL, out)?;
         }
         self.refresh_peripherals(due)
     }
