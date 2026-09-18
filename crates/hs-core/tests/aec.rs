@@ -39,7 +39,7 @@ fn reset_readonly_and_undefined_register_contracts() {
     let c = clocks();
     let mut a = make(&c);
     assert_eq!(a.read_word(0xff8c).unwrap(), 0xffff);
-    assert!(a.read_word(0xff8e).is_err());
+    assert_eq!(a.read_word(0xff8e).unwrap(), 0);
     for addr in [0xff92, 0xff94, 0xff95, 0xff96, 0xff97] {
         assert_eq!(a.read(addr), 0);
     }
@@ -105,9 +105,18 @@ fn disabling_count_retains_value_and_reset_control_clears_it() {
     assert_eq!(count(&a), 300);
     a.write(0xff95, 0, t(&c, 900), &c).unwrap();
     assert_eq!(count(&a), 0);
-    assert!(a.write(0xff95, 2, t(&c, 900), &c).is_err());
+    a.write(0xff95, 2, t(&c, 900), &c).unwrap();
+    assert_eq!(count(&a), 0);
     a.write(0xff95, 0x0f, t(&c, 900), &c).unwrap();
-    assert!(a.write(0xff95, 7, t(&c, 900), &c).is_err());
+    a.sync(t(&c, 1000), &c).unwrap();
+    a.write(0xff95, 7, t(&c, 1000), &c).unwrap();
+    assert_eq!(count(&a), 50);
+    a.sync(t(&c, 1412), &c).unwrap();
+    assert_eq!(
+        count(&a),
+        0,
+        "disabled high counter does not receive low overflow"
+    );
 }
 #[test]
 fn asynchronous_selected_edges_work_without_system_clock() {
@@ -172,6 +181,11 @@ fn pwm_low_high_period_and_invalid_duty_are_distinct() {
     a.write_word(0xff8c, 3, Time::ZERO, &c).unwrap();
     a.write_word(0xff8e, 1, Time::ZERO, &c).unwrap();
     a.write(0xff92, 0x0a, Time::ZERO, &c).unwrap();
+    assert_eq!(
+        a.take_requests(),
+        2,
+        "selecting initial low PWM lowers the old high gate"
+    );
     for (edge, high, request) in [
         (1, false, 0),
         (3, false, 0),
@@ -184,8 +198,6 @@ fn pwm_low_high_period_and_invalid_duty_are_distinct() {
         assert_eq!(a.pwm_output(), Some(high));
         assert_eq!(a.take_requests(), request);
     }
-    assert!(a.write_word(0xff8c, 5, t(&c, 12), &c).is_err());
-    assert!(a.write(0xff94, 2, t(&c, 12), &c).is_err());
     a.write(0xff92, 0, t(&c, 12), &c).unwrap();
     a.write_word(0xff8e, 3, t(&c, 12), &c).unwrap();
     a.write(0xff92, 2, t(&c, 12), &c).unwrap();
@@ -275,22 +287,71 @@ fn pwm_and_counter_evolution_is_partition_invariant() {
     assert_eq!(a, b);
 }
 #[test]
-fn illegal_modes_rejected_without_mutating_configuration() {
+fn reserved_fields_and_disconnected_selectors_retain_register_values() {
     let c = clocks();
     let mut a = make(&c);
-    for (address, value) in [
-        (0xff92, 1),
-        (0xff92, 0x0c),
-        (0xff92, 0x30),
-        (0xff92, 0xc0),
-        (0xff94, 1),
-        (0xff94, 14),
-        (0xff95, 0x20),
-    ] {
-        let before = a.clone();
-        assert!(a.write(address, value, Time::ZERO, &c).is_err());
-        assert_eq!(a, before);
+    for (address, value) in [(0xff92, 0xfd), (0xff94, 0x0f), (0xff95, 0x3f)] {
+        a.write(address, value, Time::ZERO, &c).unwrap();
+        assert_eq!(a.read(address), value);
     }
+    a.input_pins([Some(true); 3], t(&c, 10), &c).unwrap();
+    a.input_pins([Some(false); 3], t(&c, 20), &c).unwrap();
+    assert_eq!(count(&a), 0);
+    assert_eq!(a.take_requests(), 0);
+    a.write(0xff92, 0xff, t(&c, 20), &c).unwrap();
+    a.sync(t(&c, 10000), &c).unwrap();
+    assert_eq!(a.pwm_output(), Some(false));
+    assert_eq!(a.deadline(&c).unwrap(), None);
+}
+#[test]
+fn live_pwm_writes_keep_counter_phase_and_force_low_through_the_gate() {
+    let c = clocks();
+    let mut a = make(&c);
+    a.write_word(0xff8c, 9, Time::ZERO, &c).unwrap();
+    a.write_word(0xff8e, 1, Time::ZERO, &c).unwrap();
+    a.write(0xff92, 0x0a, Time::ZERO, &c).unwrap();
+    a.sync(t(&c, 6), &c).unwrap(); // PWM count3, high.
+    a.take_requests();
+    a.write_word(0xff8e, 9, t(&c, 6), &c).unwrap();
+    assert_eq!(a.pwm_output(), Some(false));
+    assert_eq!(a.take_requests(), 2);
+    a.sync(t(&c, 10), &c).unwrap(); // Count5 despite output forced low.
+    a.write_word(0xff8e, 7, t(&c, 10), &c).unwrap();
+    assert_eq!(a.deadline(&c).unwrap(), Some(t(&c, 16)));
+    a.sync(t(&c, 16), &c).unwrap();
+    assert_eq!(a.pwm_output(), Some(true));
+    a.write(0xff94, 14, t(&c, 17), &c).unwrap(); // Park the selected clock.
+    a.sync(t(&c, 100), &c).unwrap();
+    assert_eq!(a.pwm_output(), Some(true));
+    assert_eq!(a.deadline(&c).unwrap(), None);
+    a.write(0xff94, 2, t(&c, 100), &c).unwrap(); // phi/4, count8 remains.
+    assert_eq!(a.deadline(&c).unwrap(), Some(t(&c, 108)));
+    a.sync(t(&c, 108), &c).unwrap();
+    assert_eq!(a.pwm_output(), Some(false));
+}
+#[test]
+fn live_period_below_count_waits_for_wrapping_equality() {
+    let c = clocks();
+    let mut a = make(&c);
+    a.write_word(0xff8c, 9, Time::ZERO, &c).unwrap();
+    a.write_word(0xff8e, 1, Time::ZERO, &c).unwrap();
+    a.write(0xff92, 2, Time::ZERO, &c).unwrap();
+    a.sync(t(&c, 6), &c).unwrap(); // Count3, already past the new period2.
+    a.write_word(0xff8c, 2, t(&c, 6), &c).unwrap();
+    assert_eq!(a.deadline(&c).unwrap(), Some(t(&c, 131078)));
+    a.sync(t(&c, 131078), &c).unwrap();
+    assert_eq!(a.pwm_output(), Some(false));
+}
+#[test]
+fn live_counter_clock_selection_can_create_a_rising_edge() {
+    let c = clocks();
+    let mut a = make(&c);
+    a.write(0xff94, 0x80, Time::ZERO, &c).unwrap(); // H phi/4.
+    a.write(0xff95, 0x1f, Time::ZERO, &c).unwrap();
+    a.write(0xff94, 0x40, t(&c, 2), &c).unwrap(); // Low phi/4 -> high phi/2.
+    assert_eq!(a.read(0xff96), 1);
+    a.sync(t(&c, 4), &c).unwrap();
+    assert_eq!(a.read(0xff96), 2);
 }
 fn fixture(gate_irq: bool) -> Machine {
     let mut rom = vec![0; 49152];

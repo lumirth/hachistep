@@ -176,14 +176,35 @@ impl Aec {
         }
     }
     fn pwm_distance(&self) -> u64 {
+        let period = u64::from(self.period.wrapping_sub(self.pwm_phase)) + 1;
         if self.pwm_high {
-            u64::from(self.period) - u64::from(self.pwm_phase) + 1
+            period
         } else {
-            u64::from(self.duty) - u64::from(self.pwm_phase) + 1
+            let duty = u64::from(self.duty.wrapping_sub(self.pwm_phase)) + 1;
+            if duty < period {
+                duty
+            } else {
+                period + u64::from(self.duty) + 1
+            }
         }
     }
+    fn pwm_clocked(&self, c: &Clocks) -> bool {
+        self.module
+            && self.pwm_enabled()
+            && self.pwm_running
+            && self.clock & 14 != 14
+            && c.available(self.pwm_tap())
+    }
+    fn advance_pwm_count(&mut self, n: u64) {
+        let first = u64::from(self.period.wrapping_sub(self.pwm_phase)) + 1;
+        self.pwm_phase = if n < first {
+            self.pwm_phase.wrapping_add(n as u16)
+        } else {
+            ((n - first) % (u64::from(self.period) + 1)) as u16
+        };
+    }
     fn pwm_deadline(&self, c: &Clocks) -> Result<Option<Time>, Error> {
-        if !self.module || !self.pwm_enabled() || !self.pwm_running || self.duty >= self.period {
+        if !self.pwm_clocked(c) || self.duty >= self.period {
             return Ok(None);
         }
         Ok(Some(
@@ -224,9 +245,9 @@ impl Aec {
         }
         self.clocks_to(now, c)?;
         let tick = c.ticks(now, self.pwm_tap());
-        if self.module && self.pwm_running && self.pwm_enabled() && self.duty < self.period {
+        if self.pwm_clocked(c) {
             let n = tick.checked_sub(self.pwm_last).ok_or(TimeError::Reversed)?;
-            self.pwm_phase = self.pwm_phase.wrapping_add(n as u16);
+            self.advance_pwm_count(n);
         }
         self.pwm_last = tick;
         self.at = now;
@@ -313,8 +334,7 @@ impl Aec {
         match a {
             0xff8c => (self.period >> 8) as u8,
             0xff8d => self.period as u8,
-            0xff8e => (self.duty >> 8) as u8,
-            0xff8f => self.duty as u8,
+            0xff8e | 0xff8f => 0, // Write-only duty register has no readback path.
             0xff92 => self.edges,
             0xff94 => self.clock,
             0xff95 => self.status,
@@ -324,25 +344,19 @@ impl Aec {
         }
     }
     pub fn read_word(&self, a: u16) -> Result<u16, Error> {
-        if a == 0xff8c {
-            Ok(self.period)
-        } else {
-            Err(Error::Unsupported {
-                component: "AEC",
-                detail: "ECPWDR has an undefined read value (§13.3.2)",
+        match a {
+            0xff8c => Ok(self.period),
+            0xff8e => Ok(0), // Selected deterministic value for an undriven read.
+            _ => Err(Error::Unmapped {
                 address: a,
-            })
+                write: false,
+                width: 2,
+            }),
         }
     }
     pub fn write_word(&mut self, a: u16, value: u16, now: Time, c: &Clocks) -> Result<(), Error> {
         self.sync(now, c)?;
-        if self.pwm_enabled() {
-            return Err(Error::Unsupported {
-                component: "AEC",
-                detail: "stop PWM before changing period or duty (§13.6)",
-                address: a,
-            });
-        }
+        let old_gate = self.gate();
         match a {
             0xff8c => self.period = value,
             0xff8e => self.duty = value,
@@ -354,19 +368,18 @@ impl Aec {
                 })
             }
         }
+        if self.duty >= self.period {
+            self.pwm_high = false;
+        }
+        self.gate_transition(old_gate, self.gate(), now, c);
         Ok(())
     }
     pub fn write(&mut self, a: u16, value: u8, now: Time, c: &Clocks) -> Result<(), Error> {
         self.sync(now, c)?;
+        let old_gate = self.gate();
+        let old_levels = [self.source_level(0, now, c), self.source_level(1, now, c)];
         match a {
             0xff92 => {
-                if value & 1 != 0 || [2, 4, 6].into_iter().any(|n| value >> n & 3 == 3) {
-                    return Err(Error::Unsupported {
-                        component: "AEC",
-                        detail: "prohibited edge selection or reserved bit",
-                        address: a,
-                    });
-                }
                 let was = self.pwm_enabled();
                 self.edges = value;
                 if was != self.pwm_enabled() {
@@ -374,51 +387,9 @@ impl Aec {
                     self.pwm_high = false;
                 }
             }
-            0xff94 => {
-                if value & 1 != 0 || value & 14 == 14 {
-                    return Err(Error::Unsupported {
-                        component: "AEC",
-                        detail: "prohibited PWM clock or reserved bit",
-                        address: a,
-                    });
-                }
-                if self.pwm_enabled() && (self.clock ^ value) & 14 != 0 {
-                    return Err(Error::Unsupported {
-                        component: "AEC",
-                        detail: "stop PWM before changing PWCK (§13.3.4)",
-                        address: a,
-                    });
-                }
-                self.clock = value;
-            }
+            0xff94 => self.clock = value,
             0xff95 => {
-                if value & 0x20 != 0 {
-                    return Err(Error::Unsupported {
-                        component: "AEC",
-                        detail: "reserved ECCSR bit",
-                        address: a,
-                    });
-                }
-                if !self.independent()
-                    && self.status & 2 != 0
-                    && value & 2 != 0
-                    && (self.status ^ value) & 8 != 0
-                {
-                    return Err(Error::Unsupported {
-                        component: "AEC",
-                        detail:
-                            "CUEH cannot change while 16-bit high counter is released (§13.6.3)",
-                        address: a,
-                    });
-                }
-                if value & 16 == 0 && value & 2 != 0 && value & 8 == 0 {
-                    return Err(Error::Unsupported {
-                        component: "AEC",
-                        detail: "enable CUEH before releasing CRCH in 16-bit mode (§13.6.3)",
-                        address: a,
-                    });
-                }
-                self.status = (self.status & !(self.seen & !value) & 0xc0) | (value & 31);
+                self.status = (self.status & !(self.seen & !value) & 0xc0) | (value & 0x3f);
                 self.seen &= value;
                 for i in 0..2 {
                     if value & (2 >> i) == 0 {
@@ -426,13 +397,28 @@ impl Aec {
                     }
                 }
             }
-            0xff96..=0xff97 => {} // Read-only counters: writes cannot preload them.
+            0xff96..=0xff97 => {} // Counter writes have no preload path.
             _ => {
                 return Err(Error::Unmapped {
                     address: a,
                     write: true,
                     width: 1,
                 })
+            }
+        }
+        self.gate_transition(old_gate, self.gate(), now, c);
+        if a == 0xff94 && old_gate && self.gate() {
+            for (i, old) in old_levels.into_iter().enumerate() {
+                if let (Some(old), Some(new)) = (old, self.source_level(i, now, c)) {
+                    let mode = if self.source(i) == 0 {
+                        self.edge_mode(i)
+                    } else {
+                        1
+                    };
+                    if Self::selected(mode, old, new) {
+                        self.increment(i, 1);
+                    }
+                }
             }
         }
         for i in 0..2 {

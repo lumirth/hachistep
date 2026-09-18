@@ -441,6 +441,28 @@ ordinary power-mode halts retain counts/phase. Counter overflow requests and
 IRQAEC/IECPWM edge requests remain distinct; the latter has up to one CPU/subclock
 cycle synchronization delay. ([Manual table 13.3 and §13.6.6, pp. 228–230][aec-power])
 
+### AEC implementation checkpoint, 2026-09-18
+
+The existing AEC owner now accepts all register encodings, including the
+explicitly readable/writable reserved bits. Edge selector 11 accepts neither
+edge; PWCK 111 disconnects PWM clocking. ECPWDR has no modeled readback path and
+reads zero. CRCH/CRCL remain actual reset controls; live CUEH/CH2 changes retain
+counts otherwise.
+
+PWM period/duty writes retain count and output. Comparator distances wrap in
+16 bits when a new threshold is below the current count. A period reset that
+does not change the output is crossed arithmetically; even duty ≥ period keeps
+the hidden counter running while forcing output low. Forced-low and enable
+selection traverse the same gate/request rules as clock-driven changes. Live
+counter-source selection also passes a physical mux edge through the existing
+increment path. The next PWM reload uses the new clock; remaining count survives
+a disconnected source.
+
+`out/aec-live-check` passed workspace checks and 81 independent diagnostics.
+Twenty focused AEC tests include live wrap, forced-low counting, disconnected
+clock resume and register read/write behavior. `out/aec-live-retail` passed the
+home/menu and partition/restoration regressions against unchanged expectations.
+
 ## Reached firmware behavior
 
 Public `lumirth/pw` commit `6dc7bc09950078fa3fe0dffa4dae34e9549a99da` corroborates
