@@ -7,14 +7,14 @@ tests, an all-features/trace build, Clippy, host-tool checks, and the independen
 encoded guest fixtures in hachiware. Run:
 
 ```sh
-python3 tools/check.py --out out/check
-python3 tools/mutation_check.py --out out/mutations
-python3 tools/verify_retail.py --out out/retail --menu-trace
+uv run tools/check.py --out out/check
+uv run tools/mutation_check.py --out out/mutations
+uv run tools/verify_retail.py --out out/retail --menu-trace
 ```
 
 All destinations must be new. Check outputs record the source revision, commands,
-toolchain, and results. Historical receipts in `evidence/` describe their own revisions;
-they do not establish the current checkout's coverage.
+toolchain, and results under ignored `out/`. Keep a reviewed expectation or supporting
+hardware capture with the test that uses it. Individual run reports stay local.
 
 The private Rust test compares the complete typed machine state and complete
 product-event vectors across randomized run partitions, then a further interval after
@@ -30,6 +30,20 @@ signal fixtures, and their expected observations. HachiStep's
 observations. Expected results come from hardware documentation, measurements, firmware
 evidence, or justified inference; the emulator must not generate its own hardware
 oracle.
+
+List or rerun selected diagnostics using the fixtures produced by `check.py`:
+
+```sh
+uv run ../hachiware/run.py --fixtures out/check/fixtures --list --case 'adc-*'
+uv run ../hachiware/run.py --fixtures out/check/fixtures --case 'adc-*' \
+  --adapter tools/hachiware_adapter.py --runner target/release/hachistep \
+  --out out/adc-check
+```
+
+The adapter advertises available observations, inputs and configured conditions.
+Hachiware requests only the observations each case checks. The adapter verifies the
+requested endpoint using HachiStep's clock representation. A failed experiment retains
+its observations and logs; `--keep-passed` also retains successful exports.
 
 Local tests protect embedding contracts, timing and access regressions, partition/save
 state behavior, resource guarantees, and host-tool behavior. Prefer observations that
@@ -68,9 +82,9 @@ response to that input.
 ## Compare histories before measuring speed
 
 ```sh
-python3 tools/compare_runs.py out/left out/right \
+uv run tools/compare_runs.py out/left out/right \
   --left-trace out/left-events.txt --right-trace out/right-events.txt
-python3 tools/bench.py --left /path/to/baseline --right /path/to/candidate \
+uv run tools/bench.py --left /path/to/baseline --right /path/to/candidate \
   --input workloads/menu.csv --milliseconds 6500 \
   --repeats 4 --out out/paired
 ```
@@ -92,8 +106,8 @@ separately. Report the host and sample spread with each result.
 
 ## Host-tool tests
 
-Tests cover import/no-clobber/path safety, PGM pixel preservation, aperture audio,
-truncated histories, result-manifest input hashes/schema, actual IRQ assertions,
+Tests cover output safety, PGM pixel preservation, aperture audio,
+truncated histories, fixture input hashes, actual IRQ assertions, adapter completion,
 software regression frame/identity/duration checks and missing expectations. These tests
 also deliberately change observed records while keeping final state unchanged, so an
 endpoint-only comparison cannot accidentally claim history coverage.

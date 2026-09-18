@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,7 +65,7 @@ def run(command: list[str], directory: Path, name: str,
     return record
 
 def versions() -> dict:
-    result = {}
+    result = {'python': sys.version}
     for name in ('rustc', 'cargo', 'rustfmt', 'clippy-driver'):
         exe = shutil.which(name)
         if exe:

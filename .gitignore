@@ -1,10 +1,8 @@
 /target/
-/local-inputs/*
-!/local-inputs/README.md
+/inputs/
 /out/
+/.venv/
+/.ruff_cache/
 __pycache__/
 *.tmp
 .DS_Store
-
-/private-observations/
-/DELIVERY-MANIFEST.json

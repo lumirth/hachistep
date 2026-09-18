@@ -21,8 +21,8 @@ EEPROM bytes: 65536
 EEPROM SHA-256: 9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008
 ```
 
-Verification checks both image hashes before and after execution. Local document hashes
-and extraction metadata are retained in `evidence/input-provenance.json`.
+The images are unmodified. Retail verification checks their identities before and after
+execution against `workloads/retail.json`.
 
 ## Primary hardware references
 
@@ -41,8 +41,17 @@ and extraction metadata are retained in `evidence/input-provenance.json`.
 
 The archive also carries an SSD1854 datasheet. Its presence is not evidence that the LCD
 owner should implement that controller. HachiStep implements NT7508 commands and the
-reached `pw` driver behavior. The original PDF bytes are not redistributed; local
-document hashes are in `evidence/input-provenance.json`.
+reached `pw` driver behavior. The original PDF bytes are not redistributed. These hashes
+identify the supplied copies.
+
+| Document | SHA-256 |
+| --- | --- |
+| `components_bma150_datasheet.pdf` | `8e07fb86bce3daaa2c4b9b86558dfcba8ae6c861e4e1696cd8006b022d514eff` |
+| `architecture_h8-300h_programming-manual-ade-602-053a.pdf` | `5c79702dcafcba0adacf77b8672bb1358ad5519ebf20d98e1b2f88000a32ed98` |
+| `devices_h8-38602r_h8-38606-addition-note.pdf` | `416cd2b732a060b038519b0e38e935bf675a2fb99cd2d1554bc0daaf732ed2bb` |
+| `components_ssd1854_datasheet.pdf` | `27a6bf6140ec2ae72898ed1e91526a88592dc6d9c9b2165ee019cc6c99782ff9` |
+| `components_m95512r_datasheet.pdf` | `0f91e5ebc32c8eed6f389be81b01a2e90aa94c3a9b118a5fac428cd61af76bab` |
+| `devices_h8-38602r_hardware-manual.pdf` | `5029638c5ab3e3448fbadb9dcbe689ff8e74fbd50412e3abd5720f1651a1cc0f` |
 
 ## Decompilation evidence
 
@@ -62,11 +71,6 @@ stable reads. The owner notes below distinguish manufacturer requirements from s
 physical parameters and circuit inferences.
 
 ## Implementation and diagnostic provenance
-
-This repository develops the supplied fresh starter. Its Git history records that
-implementation and subsequent changes. Historical build receipts and compiler/input
-identities remain in `evidence/`; they are records of particular runs rather than
-current requirements.
 
 The independent fixture corpus is maintained in
 [hachiware](https://github.com/lumirth/hachiware), without a dependency on

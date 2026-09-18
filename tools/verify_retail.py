@@ -10,8 +10,8 @@ from _support import ROOT, binary, create_directory, digest, environment, run, v
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--firmware', type=Path, default=ROOT / 'local-inputs/pokewalker.bin')
-    p.add_argument('--eeprom', type=Path, default=ROOT / 'local-inputs/eeprom.bin')
+    p.add_argument('--firmware', type=Path, default=ROOT / 'inputs/pokewalker.bin')
+    p.add_argument('--eeprom', type=Path, default=ROOT / 'inputs/eeprom.bin')
     p.add_argument('--out', type=Path, default=ROOT / 'out/retail-check')
     p.add_argument('--quick', action='store_true', help='omit walking and long-idle workloads')
     p.add_argument('--menu-trace', action='store_true', help='retain a complete product trace for audio rendering')

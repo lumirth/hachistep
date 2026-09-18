@@ -738,9 +738,16 @@ examples in the
 
 ### 14.1 Suite structure
 
-Organize cases by hardware mechanism. Share startup/linker support, target definitions
-and compact result reporting. An ordinary case needs one source file and, when useful,
-expected data. Keep generated corpora and captures as data.
+Organize cases by hardware mechanism. Keep a program's expected observations, duration,
+conditions and evidence beside its definition. A module may generate related cases
+from a table. Share instruction encoding and target definitions where they remove
+duplication. Keep generated corpora and run reports in ignored output directories;
+retain curated reference data with the cases that use it.
+
+Adapters declare the observations and inputs they support and their configured
+conditions. Each case requests the observations it needs. The adapter owns conversion
+to its execution clock and verifies completion of the requested experiment. The suite
+retains failed observations and records the inputs, adapter and executable identities.
 
 Support guest diagnostics, component signal fixtures and CPU cases with an explicit bus
 setup. State which environment each result describes.

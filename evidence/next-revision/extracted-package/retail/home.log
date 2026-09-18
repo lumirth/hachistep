@@ -1,6 +1,0 @@
-firmware_bytes=49152 eeprom_bytes=65536 reset_pc=02c4
-firmware_sha256=f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607
-eeprom_sha256=9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008
-time=10.000000s wall_seconds=1.384476 pc=259c instruction_pc=259a phase=sleep retired=6205679 interrupts=237 sleeping=true display_on=true display_start=64
-events=81018 lcd=81018 nv_commits=0 buzzer=0 infrared=0 serial=(124699, 43265) statistics=Statistics { bus_reads: 7369343, bus_writes: 278745, resets: 0, peripheral_boundaries: 2128683 }
-er=[6a2cf7b5, 00190800, 00000000, 00000000, 00000000, 00000000, 0000f7be, 0000ff78] ccr=08

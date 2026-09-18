@@ -1,9 +1,0 @@
-   Compiling hs-core v0.2.0 (/tmp/hachistep-mutations-g01ae2hw/source/crates/hs-core)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.17s
-     Running tests/cpu_regressions.rs (/tmp/hachistep-mutations-g01ae2hw/target/debug/deps/cpu_regressions-fd95c793973a2c0a)
-
-running 1 test
-test eepmov_word_accepts_nmi_only_between_complete_byte_transfers ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
-

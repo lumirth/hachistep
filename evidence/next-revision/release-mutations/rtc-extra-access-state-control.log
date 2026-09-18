@@ -1,9 +1,0 @@
-   Compiling hs-core v0.2.0 (/tmp/hachistep-mutations-g01ae2hw/source/crates/hs-core)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.36s
-     Running tests/register_access.rs (/tmp/hachistep-mutations-g01ae2hw/target/debug/deps/register_access-3b81ce52169473c2)
-
-running 1 test
-test complete_documented_register_width_and_timing_map ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
-

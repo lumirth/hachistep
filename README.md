@@ -8,32 +8,36 @@ unmodified retail firmware through boot, menus, motion processing and idle. The
 
 ## Build and run
 
-Use Rust 1.95+ and Python 3.10+ for the supporting tools. Fetch the locked crates once,
-then builds and checks can run offline:
+Use Rust 1.95+ for the core. The supporting tools use Python's standard library;
+[uv](https://docs.astral.sh/uv/getting-started/installation/) selects the interpreter
+from `.python-version`. Fetch the locked crates once, then builds can run offline:
 
 ```sh
 cargo fetch --locked
 cargo build --workspace --release --locked --offline
 cargo test --workspace --locked --offline
 
+mkdir -p out
 ./target/release/hachistep run \
-  --firmware local-inputs/pokewalker.bin --eeprom local-inputs/eeprom.bin \
-  --milliseconds 10000 --out out-home
+  --firmware inputs/pokewalker.bin --eeprom inputs/eeprom.bin \
+  --milliseconds 10000 --out out/home
 ```
 
-Supply your own 49,152-byte firmware and 65,536-byte EEPROM images. Private inputs stay
-in ignored `local-inputs/`; the MIT license covers the source, not firmware, artwork or
-recordings. See [SOURCES](docs/SOURCES.md).
+Supply your own 49,152-byte firmware and 65,536-byte EEPROM images. Create ignored
+`inputs/` when placing them there, or pass paths elsewhere. Put generated reports,
+traces and recordings under ignored `out/`. The MIT license covers the source;
+private firmware and derived artwork or recordings retain their own terms.
+See [INPUTS](docs/INPUTS.md) and [SOURCES](docs/SOURCES.md).
 
-`out-home` must be new. It receives persistent images, memory/controller dumps,
+`out/home` must be new. It receives persistent images, memory/controller dumps,
 `frame.pgm`, `state.bin` and `report.json`. The CLI creates new files and leaves input
 files intact. Guest writes still affect the emulated nonvolatile cells.
 
 ## Resume an exact session
 
 ```sh
-./target/release/hachistep run --load-state out-home/state.bin \
-  --milliseconds 12000 --out out-resumed
+./target/release/hachistep run --load-state out/home/state.bin \
+  --milliseconds 12000 --out out/resumed
 ```
 
 The endpoint and any CSV inputs use absolute emulated time. An EEPROM export starts a
@@ -66,8 +70,8 @@ The independent diagnostic suite lives in
 
 ```sh
 gh repo clone lumirth/hachiware ../hachiware
-python3 tools/check.py --out out/check-1
-python3 tools/verify_retail.py --out out/retail-1
+uv run tools/check.py --out out/check-1
+uv run tools/verify_retail.py --out out/retail-1
 ```
 
 Each destination must be new. Standard checks include debug/release/trace Rust tests,

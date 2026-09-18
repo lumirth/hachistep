@@ -2,6 +2,12 @@
 
 ## Images
 
+Create ignored `inputs/` for private firmware, EEPROM saves and calibration images, or
+pass their paths directly. Tool defaults use `inputs/pokewalker.bin` and
+`inputs/eeprom.bin`. Keep generated exports, reports, traces and rendered media under
+ignored `out/`. The tracked `workloads/` directory contains reusable input timelines
+and reviewed retail regression expectations.
+
 Firmware is a raw 49,152-byte internal image. External EEPROM is a raw 65,536-byte
 array. The optional `--status` value contains only persistent M95512 status bits;
 transient WIP/WEL values are not an initial persistent image. `--sensor-nv FILE` loads
@@ -22,16 +28,16 @@ argument. For example, this Python snippet invokes a cold restart:
 ```python
 from pathlib import Path
 import subprocess
-folder = Path("out-home")
+folder = Path("out/home")
 status = (folder / "eeprom.status").read_bytes()
 assert len(status) == 1
 subprocess.run([
     "./target/release/hachistep", "run",
-    "--firmware", "local-inputs/pokewalker.bin",
+    "--firmware", "inputs/pokewalker.bin",
     "--eeprom", str(folder / "eeprom.bin"),
     "--status", str(status[0]),
     "--sensor-nv", str(folder / "sensor-nv.bin"),
-    "--milliseconds", "1000", "--out", "out-restarted",
+    "--milliseconds", "1000", "--out", "out/restarted",
 ], check=True)
 ```
 
@@ -117,9 +123,9 @@ runtime.
 Render captured buzzer drive from a complete trace:
 
 ```sh
-python3 tools/verify_retail.py --quick --menu-trace --out out/audio-run
-python3 tools/render_audio.py --trace out/audio-run/menu-events.txt \
-  --report out/audio-run/menu/report.json --out menu.wav
+uv run tools/verify_retail.py --quick --menu-trace --out out/audio-run
+uv run tools/render_audio.py --trace out/audio-run/menu-events.txt \
+  --report out/audio-run/menu/report.json --out out/audio-run/menu.wav
 ```
 
 The WAV tool integrates differential drive over sample intervals. Acoustic filtering and

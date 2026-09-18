@@ -1,38 +1,15 @@
 from __future__ import annotations
-import importlib.util
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-import zipfile
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
-from import_inputs import import_images, ROM_MEMBER
 from preview import read_pgm, render
 from render_audio import samples, load, ONE
 
 class HostTools(unittest.TestCase):
-    def test_import_only_expected_member_and_never_overwrites(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            with zipfile.ZipFile(root/'inputs.zip', 'w') as z:
-                z.writestr(ROM_MEMBER, b'R' * 49152)
-                z.writestr('../escape.txt', 'must not extract')
-            (root/'eeprom.bin').write_bytes(b'E'*65536)
-            result = import_images(root/'inputs.zip', root/'eeprom.bin', root/'out')
-            self.assertEqual((root/'out/pokewalker.bin').stat().st_size, 49152)
-            self.assertFalse((root/'escape.txt').exists())
-            self.assertTrue(result['private_inputs'])
-            with self.assertRaises(FileExistsError):
-                import_images(root/'inputs.zip', root/'eeprom.bin', root/'out')
-    def test_bad_input_leaves_no_destination(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            (root/'eeprom.bin').write_bytes(b'bad')
-            with self.assertRaises(ValueError):
-                import_images(root/'missing.zip', root/'eeprom.bin', root/'out')
-            self.assertFalse((root/'out').exists())
     def test_pgm_preserves_whitespace_valued_pixels(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

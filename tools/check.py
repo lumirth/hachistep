@@ -34,7 +34,7 @@ def main() -> None:
         records.append(run(command, out, name, timeout=900))
     exe = release_executable()
     records.append(run([sys.executable, str(suite / 'run.py'), '--adapter', str(ROOT / 'tools/hachiware_adapter.py'), '--runner', str(exe),
-                        '--fixtures', str(out / 'fixtures'), '--report', str(out / 'conformance.json')], out, 'conformance'))
+                        '--fixtures', str(out / 'fixtures'), '--out', str(out / 'conformance')], out, 'conformance'))
     write_json(out / 'summary.json', {'schema': 1, 'source': source_identity(), 'toolchain': versions(), 'steps': records,
                                     'hardware_captures': False, 'private_retail_test': 'not run by this command'})
     print(f'Checks passed. Reports: {out}')
