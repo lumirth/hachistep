@@ -4,13 +4,20 @@ This document defines required behavior and architectural choices. Revise a choi
 concrete consequences justify it. Track implementation progress and completed work in Git
 and the task discussion.
 
-HachiStep models one physical Pokéwalker through one statically compiled, resumable
-interpreter. Compact representations of hardware evolution reduce host work while
+HachiStep is a Pokéwalker emulator core for downstream applications and frontend users.
+It should make ordinary Pokéwalker use practical and support custom firmware development
+with useful confidence in behavior on the physical device. Hardware fidelity,
+performance, interface usability and readable, compact code are joint design goals.
+
+One coherent architecture supplies the same hardware behavior for every firmware image.
+The current executor is a resumable interpreter. Execution techniques, state
+representations and interface choices remain revisable when a better design serves
+these goals. Compact representations of hardware evolution reduce host work while
 preserving observable effects and their timing.
 
-Given the same initial physical state and input history, regrouping host work must
-preserve every hardware effect, its timing and the state that determines future effects.
-Performance is measured in the resulting default build.
+Given the same initial state, input history and host state modifications, regrouping
+host work must preserve every hardware effect, its timing and the state that determines
+future effects. Performance is measured in the resulting default build.
 
 ## 1. Target and fidelity
 
@@ -51,6 +58,12 @@ sequences, connected signals, display history, sound, infrared and persistent
 operations. Retain all hidden state that can affect later behavior. Firmware identity
 and recognized routines must not select hardware shortcuts.
 
+Retail use guides representative sessions and frontend needs. Implement known hardware
+behavior even when retail firmware does not exercise it. Custom firmware authors should
+be able to use execution results and the model's stated limits to judge likely behavior
+on a physical Pokéwalker. Record assumptions where they affect that judgment; improve
+them through research and observations as described in §1.1.
+
 ### 1.3 Physical parameters
 
 Instruction effects, commands and latch rules belong in the implementation. Explicit
@@ -78,17 +91,18 @@ preserve every observable consequence, including its timing.
 | Scheduler | Find the next interaction that bounds execution. |
 | Board wiring | Propagate actual pin, interrupt and device connections. |
 
-Use concrete components with fixed connections. One resumable implementation performs
-each effect, including complete instructions, suspended instructions, RAM execution and
-serial transfers. A replacement execution technique must replace that implementation
-throughout production. This excludes a second interpreter, a JIT fallback, firmware
-substitutions and speculative rollback.
+Use concrete components with fixed connections and one authority for each hardware
+effect. Internal specialization, batching or different execution techniques may share
+that model when they preserve behavior and justify their combined complexity. Full
+fidelity is the default; separate fast and accurate hardware models would undermine
+this contract. Assess architecture changes alongside local optimizations, including
+their effect on resumability, RAM execution and component interactions.
 
 Near's synchronization model provides a useful precedent for advancing components when
 they interact. HachiStep retains that principle with explicit state instead of a
 coroutine stack per component. [Synchronization design][3]. MAME's paired
-normal/restarted instruction implementations explain another tradeoff; the single
-executor requirement selects a different organization.
+normal/restarted instruction implementations explain another tradeoff in organizing
+resumable execution.
 [MAME CPU design][4]. Correct cycle totals must also preserve the order of
 interactions within them. [mGBA's accuracy discussion][5].
 
@@ -112,7 +126,8 @@ own file.
 | Connections between pins | Board composition. |
 | Simultaneous hardware causes | Affected component's conflict rule. |
 | Next consequence | Component state, cached by the scheduler. |
-| Output rendering and storage | Host adapters. |
+| Reusable pixel and audio conversion | Core library or shared helpers. |
+| Host display, playback and file storage | Frontend. |
 
 ### 3.3 State
 
@@ -151,8 +166,8 @@ and dependency rationale are recorded in
 Unsafe Rust is forbidden by default. An exception requires a concrete, proportionate
 justification: a meaningful measured benefit or substantially less complexity than the
 viable safe alternatives. Convenience alone is insufficient. Any exception must be
-narrow, explain its safety invariants, and preserve the portable single execution
-mechanism. Do not weaken the existing prohibition before such a case exists.
+narrow, explain its safety invariants, and preserve portable hardware behavior. Do not
+weaken the existing prohibition before such a case exists.
 
 This prohibition applies to HachiStep's own code. Calling safe APIs from the standard
 library or a justified dependency does not require their internals to contain no unsafe
@@ -282,8 +297,9 @@ conceal the timing defect.
 
 ### 6.1 Advancement
 
-Implement one advancement function over an elapsed edge count, including `n=1`.
-Independent recurrence models in tests can check its results.
+An advancement function over an elapsed edge count can also handle `n=1`. Share the
+hardware rules across any specialized cases. Independent recurrence models in tests can
+check their results.
 
 ### 6.2 Exclusive edge counting
 
@@ -377,18 +393,20 @@ Specialize widths and instruction families when measurements show that the saved
 justifies the code footprint. The rs80 results demonstrate why dispatch choices need
 measurement. [rs80][7].
 
-The default compact decoder feeds the single executor. A justified decode cache may
+The current compact decoder feeds the resumable interpreter. A justified decode cache may
 store interpretations of fetched bits. Hardware fetches retain their timing and side
 effects; actual prefetched bytes survive later memory changes. RAM execution,
 extension-word changes and flash programming remain valid. Clearing all decode metadata
 changes only host execution cost.
 
-### 7.5 Compiler choice
+### 7.5 Execution technique
 
-Use interpretation compiled with the host application. A JIT would add code-cache
-management and precise exits to the single execution requirement. GameRoy shows both the
-performance potential and the fallback cost of that approach; its peripheral
-optimizations are also relevant independently. [GameRoy][8].
+The current interpreter compiles with the host application. Evaluate changes to dispatch,
+generation or translation by their realistic workload benefit, hardware behavior,
+portability and maintenance cost. A JIT would need code-cache management and precise
+exits. GameRoy describes performance benefits and implementation costs relevant to that
+decision; its peripheral optimizations are also useful independently. [GameRoy][8].
+The current technique carries no compatibility obligation before release.
 
 ## 8. CPU timing and exceptions
 
@@ -565,8 +583,9 @@ example of reducing output work. [SameBoy][11].
 
 ### 12.2 Buzzer output
 
-Expose the buzzer's drive law for an audio adapter to evaluate at its requested sample
-rate. Resolve simultaneous changes to both terminals together so host update order
+Retain the buzzer's timed drive behavior and provide reusable conversion into PCM audio
+at a requested sample rate. Preserve sampling phase across run calls and changes to the
+drive. Resolve simultaneous changes to both terminals together so host update order
 cannot introduce a pulse in their differential voltage.
 
 ### 12.3 Feedback
@@ -602,15 +621,17 @@ so the caller can process several changes before its next inspection.
 
 ### 12.7 Frontend integration
 
-When building the first frontend, decide which display conversion, audio sampling,
-filtering and presentation history merit helpers shared across frontends. Choose
-appearance and sound models from those requirements. Hardware controller behavior and
-any feedback into the machine remain core responsibilities. Presentation helpers may
-convert compact outputs to pixels or samples on demand.
+Provide pixels and audio samples that frontends can consume without interpreting
+controller commands or rebuilding sound generation. Conversion may live in the core
+library or a small shared helper. Frontends own display placement, device playback,
+buffering and host pacing. Hardware controller behavior and feedback into the machine
+remain core responsibilities even when output is discarded.
 
-[Established emulator examples](research/emulator-presentation.md) inform this
-future decision. Detailed panel and piezo models require a concrete use and evidence
-before implementation.
+Use [established emulator examples](research/emulator-presentation.md) to evaluate this
+boundary. As frontend work reveals concrete needs, decide which filters, appearance
+effects and presentation history should be shared. Detailed panel and piezo models
+require a specific use and evidence. Keep helpers proportional to the consumers they
+serve.
 
 ## 13. Public API and save states
 
@@ -620,9 +641,22 @@ Build the Rust core and embedding API first. Add C and JavaScript/Wasm adapters 
 consumers require them. Before release, improve interfaces and update callers together.
 Compatibility machinery requires a concrete external need.
 
-The API constructs a machine from images and conditions, accepts timestamped physical
-inputs, runs to an exclusive horizon, exposes observations and persistent contents,
-applies power operations, and captures/restores state.
+The API must support construction from images and conditions, timestamped physical
+inputs, bounded execution, usable outputs, persistent storage, power operations,
+state inspection and modification, and save/restore. [API](API.md) describes the
+implemented interface.
+
+Provide controlled access to modify emulated memory and persistent contents while
+execution is stopped. A frontend can use knowledge of a firmware's data layout to
+change its values through these general operations. The core owns hardware behavior;
+the caller owns the meaning of its edits. Firmware identity must not select the
+available operations.
+
+Define each write operation's timing and side effects. A guest bus access and direct
+editing of stored bytes have different semantics. Specify the affected storage,
+interaction with unfinished work, and any synchronization or derived-state invalidation
+needed before execution resumes. Keep the interface small and base its details on actual
+embedding needs and established emulator APIs.
 
 Timed execution, inspection without guest effects and optional traces provide the
 initial debugging controls. Add stepping, breakpoints or watchpoints when a specific
@@ -641,8 +675,8 @@ Supply conditions
 Incident infrared signal
 ```
 
-No `add_steps`, `receive_packet_into_ram`, or `set_retail_clock_counter` operation
-belongs in the hardware core.
+Step counting, protocol processing and software clock bookkeeping belong to firmware.
+The core exposes their underlying hardware and general state access through §13.1.
 
 Motion input includes a defined coordinate frame and interpolation rule. Specify whether
 samples are held or interpolated between timestamps. Choose a representation for the
@@ -706,6 +740,17 @@ does not make pairing or speed restrictions core responsibilities. Reusable conn
 helpers follow concrete frontend needs, as presentation helpers do in §12.7.
 
 The source comparison is in [emulator linking](research/emulator-linking.md).
+
+Application suspension is a separate policy decision. A frontend may resume a paused
+session, execute elapsed device time, or adjust firmware state using general state
+access. It owns the interpretation of phone step history and any related firmware
+values. The core requires neither synthetic motion reconstruction nor replay of every
+elapsed hour to support these choices.
+
+State edits establish the machine state from which execution continues. They do not
+execute the firmware work that the application skipped. Fidelity applies to subsequent
+execution from that state. A frontend can make these tradeoffs without adding firmware
+recognition or an offline progression subsystem to the core.
 
 ### 13.6 Native save state design
 
@@ -870,8 +915,8 @@ and mutations on either side of a fetch.
 ### 17.4 State comparison
 
 Normalize or project lazy representations without guest read effects before comparing
-them. Independent recurrences and mathematical oracles belong in tests; production
-retains the single execution mechanism.
+them. Independent recurrences and mathematical oracles belong in tests. Every production
+technique must preserve the same hardware effects and future behavior.
 
 ## 18. Failure localization
 
@@ -889,11 +934,17 @@ the minimal controls in §13.1 when an actual debugging task requires it.
 
 Native and browser execution are target uses. Optimize portable algorithms, data
 representations, and eliminated work. Do not introduce ARM64- or WebAssembly-specific
-tricks or alternative execution paths; the compiler may perform its normal
+tricks or host-specific execution implementations; the compiler may perform its normal
 target-specific lowering.
 
 Interactive embedding shapes the public interface. Measure interactive use and batch
 firmware execution as equally important workloads through the complete core.
+
+Use profiles to reconsider execution structure, synchronization and representations.
+An optimization must earn the added difficulty of reading, changing and verifying the
+code. Prefer simpler code when extra complexity buys only a small gain. Learn from
+mature emulators of similarly modest systems, accounting for their hardware and workload
+differences.
 
 ### 19.1 Execution cost
 
@@ -953,19 +1004,38 @@ and output consumer. Use repeated paired runs with varied ordering and report th
 spread. Measure wall/CPU time, memory, allocation count, compiled code and table size,
 short-call latency and active throughput. Report energy only when measured.
 
-Comparisons must identify differences in modeled behavior and enabled output. A faster
-approximate competitor still provides a useful performance target. An accepted
-optimization identifies the repeated work removed, the invariant that permits it, the
-independent checks, workload gains and regressions, and its code/memory cost. The
-default build uses the selected implementation with its full hardware behavior.
+Comparisons must identify differences in modeled behavior and enabled output. Beating
+PocketWalker or any one emulator does not establish that HachiStep avoids unnecessary
+work. Compare relevant designs and costs as well as throughput. An accepted optimization
+identifies the repeated work removed, the invariant that permits it, the independent
+checks, workload gains and regressions, and its code/memory cost. The default build uses
+the selected implementation with its full hardware behavior.
 
 ## 20. Completion criteria
 
-Measure performance and test accuracy as each mechanism becomes executable. Completion
-requires its accesses, retained state, timing, reset/power behavior, interactions and
-applicable corner cases to be accounted for. Expectations need an independent basis.
-Each retained state variable and abstraction should explain hardware behavior or remove
-demonstrated host cost.
+Assess readiness through the intended uses of the core:
+
+- Ordinary Pokéwalker sessions exercise buttons, walking, display, sound, saving,
+  restoration and communication through the hardware model.
+- The Rust API lets frontends control execution, supply inputs, consume outputs and
+  inspect or modify state without reproducing device emulation.
+- Known hardware behavior supports custom firmware beyond the retail workload. Evidence
+  covers relevant accesses, timing, reset/power behavior and component interactions;
+  remaining limits explain their practical consequences.
+- Realistic workloads show efficient execution with full fidelity enabled. Code and
+  generated data remain understandable and proportionate to the behavior they provide.
+
+Measure performance and test accuracy throughout implementation. Independent expectations
+and focused regressions support these outcomes; test counts alone do not establish them.
+Prioritize further research by a concrete hardware question, failure, consumer need or
+demonstrated cost. Strong inference can support implementation as described in §1.1.
+Unknown behavior does not require an expanding program of hypothetical tests before
+release, and retail success does not excuse known hardware omissions.
+
+Use existing consumers and small integration examples to check embedding decisions.
+Extend them when they expose a specific gap. Frontend-specific offline progression and
+detailed physical presentation are application work. Future consumer feedback may refine
+the API; pre-release changes should update callers directly.
 
 [1]: https://dmitry.gr/?proj=28.+pokewalker&r=05.Projects "https://dmitry.gr/?proj=28.+pokewalker&r=05.Projects"
 [2]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual "https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual"

@@ -1,7 +1,8 @@
 # HachiStep
 
-A Rust Pokéwalker emulator core for retail and custom firmware. The goal is one highly
-accurate, maximally fast execution path with a compact implementation. The core runs
+A Rust Pokéwalker emulator core for retail and custom firmware, built for use in
+downstream applications. The goal is faithful hardware behavior and high performance
+by default through a compact, coherent architecture. The core runs
 unmodified retail firmware through boot, menus, motion processing and idle. The
 [design](docs/DESIGN.md) defines the intended behavior;
 [hardware references](docs/SOURCES.md) explain the evidence and model choices.
@@ -60,8 +61,10 @@ Borsh encodes selected hardware state; SHA-256 identifies firmware and checks st
 files. Clap owns CLI argument validation and help.
 
 `hs-cli` accepts physical input CSVs, exports persistent images, produces run reports
-and captures bounded traces. Frontends, audio rendering and file/slot management remain
-outside the core. [API](docs/API.md) describes embedding.
+and captures bounded traces. The current audio renderer converts captured buzzer events
+to WAV through `tools/render_audio.py`. Frontends own device playback and file/slot
+management. [API](docs/API.md) describes the available embedding interface;
+[DESIGN §12](docs/DESIGN.md#12-outputs-and-presentation) defines the intended output support.
 
 ## Verification
 

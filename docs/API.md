@@ -113,9 +113,16 @@ polarity. It includes PWM/FRC, the output latch, and frame-latched start line. I
 not advance the guest or alter snapshot state. Power-save and display-off return
 inactive drive. This is separate from analog glass response.
 
+Audio output currently consists of timestamped `Event::Buzzer` drive changes. The
+offline `tools/render_audio.py` tool converts a captured trace into WAV. The Rust API
+does not yet provide the reusable PCM conversion required by
+[DESIGN §12.2](DESIGN.md#122-buzzer-output).
+
 `firmware`, `ram`, `eeprom`, `eeprom_status`, `sensor_nonvolatile`, `lcd_ram` and
-`lcd_icons` return read-only data. No mutable bypass into a guest register or memory
-array is part of the ordinary facade. Guest modifications go through normal execution.
+`lcd_icons` return read-only data. The current `Machine` API has no host write operation
+for memory or registers. Image loading and whole-machine restoration are available, but
+neither provides direct editing of a running session. The intended state access contract
+is in [DESIGN §13.1](DESIGN.md#131-public-interface).
 
 `firmware()` returns an owned 48-KiB image of the current flash cells, including the
 physical progress of an unfinished pulse. It may differ from the firmware loaded at

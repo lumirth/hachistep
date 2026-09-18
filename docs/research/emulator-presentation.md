@@ -1,10 +1,9 @@
 # Emulator output and frontend presentation
 
 Research checked 2026-09-16. SameBoy and jgenesis provide concrete examples of the
-boundary between emulated display/audio hardware and host presentation. They support
-keeping controller behavior in the core while deferring decisions about reusable
-presentation helpers until a frontend needs them. They do not establish one mandatory
-output format or location for every filter.
+boundary between emulated display/audio hardware and host presentation. Both provide
+usable pixels and sampled audio through reusable code, with host display and playback
+handled by frontends. The placement of conversion and filtering varies.
 
 ## Observed practice
 
@@ -55,17 +54,11 @@ host refresh scheduling are presentation choices. The existing [display
 contract](../DESIGN.md#125-display-output) already distinguishes controller
 interpretation from requested pixel conversion.
 
-Similarly, timer and pin behavior driving the buzzer remain part of hardware execution.
-Muting playback must not stop their progression or erase effects on other emulated
-hardware. Converting their output into audible samples and feeding an audio device is a
-separate responsibility. The mature examples above permit sampled audio APIs; they do
-not justify requiring every emulator consumer to handle raw waveforms. HachiStep's
-compact output descriptions should serve its actual performance and fidelity
-requirements.
+Timer and pin behavior driving the buzzer remain part of hardware execution even when
+playback is muted. The examples support providing reusable conversion into audio samples
+while frontends handle the playback device. Choose the location and buffering contract
+of that converter to suit embedding and preserve timing across execution calls.
 
-While building the first frontend, decide whether display conversion, audio conversion,
-or appearance effects deserve shared helpers. Extract useful common code when that work
-makes the boundary concrete. Do not introduce a presentation framework or detailed
-physical panel/piezo simulation as a prerequisite for a working, accurate core. Any
-later physical model needs a specific purpose and evidence; it is not implied by the
-word "emulator."
+Concrete frontend needs should guide shared appearance effects, filters and presentation
+history. Detailed physical panel or piezo models need a specific purpose and evidence.
+The design assigns these responsibilities without prescribing a presentation framework.

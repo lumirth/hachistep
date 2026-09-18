@@ -33,9 +33,9 @@ not general documentation.
 ## Evidence and completion
 
 Use `docs/TESTING.md` for validation and evidence limits. At substantive milestones,
-explain the results and remaining gaps for the affected goals: hardware fidelity, one
-execution path, realistic performance and compact implementation. Keep this in the task
-or issue.
+explain the results and remaining gaps for the affected goals: hardware fidelity,
+frontend usability, realistic performance and a compact, coherent architecture. Keep
+this in the task or issue.
 
 ## Project references
 

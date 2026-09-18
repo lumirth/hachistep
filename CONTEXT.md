@@ -47,11 +47,10 @@ when given the same subsequent inputs.
 Resuming a usable session without guaranteeing identical subsequent hardware
 observations and timing.
 
-### Single execution path
+### Hardware model
 
-The sole production execution mechanism used to model the Pokéwalker for every supported
-firmware image, with the same hardware fidelity in default operation. Avoid "fast mode"
-and "accurate mode" for alternate hardware models.
+The state and rules describing the Pokéwalker's components, their connections and their
+behavior over time, shared by retail and custom firmware.
 
 ### Infrared signal
 
