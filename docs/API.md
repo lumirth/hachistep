@@ -84,11 +84,14 @@ an exact snapshot additionally preserves intermediate cell charge and controls.
 
 ## Checkpoint
 
-`snapshot()` creates an owned, typed causal snapshot. `restore(&snapshot)`
-restores the same object; `Machine::from_snapshot(&snapshot)` creates another
-instance. Snapshot equality and complete subsequent event equality are tested.
-This is not serialization, save-state compatibility between versions, or
-multi-device network coordination.
+`snapshot()` captures typed state without advancing the machine. Its `encode()`
+method produces a native file; `Snapshot::decode(bytes)` validates a complete
+candidate. `restore(&snapshot)` returns an error on a different original firmware
+identity and leaves the live machine intact. `Machine::from_snapshot` constructs
+another instance from the full captured state. Diagnostic counters reset on both
+restoration paths. See [save states](SAVE_STATES.md) for the hardware contract,
+bounded encoding, CLI usage and exclusions. There is no version or compatibility
+machinery before release.
 
 A host must also retain its input cursor and output-delivery position. The core
 snapshot does not own a host queue. The simplest policy is to drain output,

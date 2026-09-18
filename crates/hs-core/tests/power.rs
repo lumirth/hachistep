@@ -1,4 +1,6 @@
 //! Package rules and the explicit nominal RC/startup/retention realization.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Input, Machine, Time, TimedInput};
 
 fn t(us: u64) -> Time {
@@ -80,12 +82,12 @@ fn cold_res_qualification_precedes_the_real_flash_vector_transfer() {
             .run_until(t(us), &changes[consumed..], &mut b)
             .unwrap()
             .inputs_consumed;
-        split = Machine::from_snapshot(&split.snapshot());
+        split = state::restore_file(&split.snapshot());
     }
     split
         .run_until(first, &changes[consumed..], &mut b)
         .unwrap();
-    assert_eq!(m, split);
+    state::assert_same_state(&m, &split);
     assert_eq!(a, b);
     m.run_until(after(first), &[], &mut a).unwrap();
     assert_eq!(m.statistics().bus_reads, 1);
@@ -124,7 +126,7 @@ fn a_short_collapse_preserves_execution_and_ram_but_five_ms_requires_res() {
             split = Machine::from_snapshot(&split.snapshot());
         }
         split.run_until(end, &changes[consumed..], &mut b).unwrap();
-        assert_eq!(m, split);
+        state::assert_same_state(&m, &split);
         assert_eq!(a, b);
         assert_eq!(m.instruction_pc(), 0x10c);
     }
@@ -141,7 +143,7 @@ fn retention_loss_is_a_physical_elapsed_time_boundary_even_with_no_cpu_clock() {
         let mut restored = Machine::from_snapshot(&m.snapshot());
         m.run_until(t(101 + duration), &[], &mut ()).unwrap();
         restored.run_until(t(101 + duration), &[], &mut ()).unwrap();
-        assert_eq!(m, restored);
+        state::assert_same_state(&m, &restored);
         assert_eq!(m.ram()[0], 0);
         assert_eq!(m.peek(0xf069).unwrap(), 0);
         assert!(!m.powered() || mv != 0);

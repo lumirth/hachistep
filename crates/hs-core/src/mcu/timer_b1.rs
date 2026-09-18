@@ -1,7 +1,7 @@
 //! Timer B1: interval/reload operation, shared prescaler phase, and lazy reads.
 use super::clocks::{Clocks, Tap};
 use crate::{error::Error, time::Time};
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TimerB1 {
     mode: u8,
     count: u8,
@@ -102,6 +102,16 @@ impl TimerB1 {
         )?))
     }
 }
+
+impl TimerB1 {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::state::require(
+            self.mode & 0x38 == 0x38 && self.last.checked_add(256).is_some(),
+            "invalid Timer B1 progress",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

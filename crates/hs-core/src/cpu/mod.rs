@@ -3,14 +3,17 @@
 //! atomic-instruction executor or rollback path.
 pub mod alu;
 pub mod decode;
+pub(crate) mod state;
 use crate::error::Error;
 use alu::{C, H, I, N, Z};
 use decode::{Address, Alu, Bit, CcrOp, Decode, Instruction, Jump, Size, Source, Target};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Width {
-    Byte,
-    Word,
+    Byte = 0,
+    Word = 1,
 }
 impl Width {
     pub const fn bytes(self) -> u8 {
@@ -20,21 +23,23 @@ impl Width {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Action {
     Read {
         address: u16,
         width: Width,
         fetch: bool,
-    },
+    } = 0,
     Write {
         address: u16,
         width: Width,
         value: u16,
         mov_byte: bool,
-    },
-    Idle(u32),
-    Sleep,
+    } = 1,
+    Idle(u32) = 2,
+    Sleep = 3,
 }
 /// Only the instruction provenance used by register hardware. Word-store
 /// lanes and bit-operation writebacks are not MOV.B accesses.
@@ -49,7 +54,7 @@ impl WriteOrigin {
         self != Self::Other
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Registers {
     pub er: [u32; 8],
     pub pc: u16,
@@ -104,7 +109,7 @@ impl Registers {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct Transfer {
     address: u16,
     size: Size,
@@ -415,8 +420,143 @@ impl Cpu {
     }
     /// Produce the next action. A request is stable until `complete` is called.
     /// `interrupt` is a controller-selected vector, not an already-cleared flag.
+    /// Pure projection of work that has already been admitted. No fetch,
+    /// exception admission, address update or effect occurs here.
+    #[inline]
+    pub(crate) fn issued_action(&self) -> Option<Action> {
+        match self.phase {
+            Phase::ResetVector => Some(Action::Read {
+                address: 0,
+                width: Width::Word,
+                fetch: false,
+            }),
+            Phase::Fetch => Some(Action::Read {
+                address: self.registers.pc & !1,
+                width: Width::Word,
+                fetch: true,
+            }),
+            Phase::Prefetch { address, .. }
+            | Phase::BranchTarget {
+                target: address, ..
+            }
+            | Phase::JumpTarget {
+                target: address, ..
+            }
+            | Phase::EntryTarget { target: address } => Some(Action::Read {
+                address: address & !1,
+                width: Width::Word,
+                fetch: true,
+            }),
+            Phase::Delay(states) => Some(Action::Idle(states)),
+            Phase::Memory(t) => {
+                let width = if t.size == Size::Byte {
+                    Width::Byte
+                } else {
+                    Width::Word
+                };
+                let address = t.address.wrapping_add(u16::from(t.done));
+                Some(if t.store {
+                    let shift =
+                        (u32::from(t.size.bytes()) - u32::from(t.done) - u32::from(width.bytes()))
+                            * 8;
+                    Action::Write {
+                        address,
+                        width,
+                        value: (t.value >> shift) as u16,
+                        mov_byte: width == Width::Byte && !t.ccr,
+                    }
+                } else {
+                    Action::Read {
+                        address,
+                        width,
+                        fetch: false,
+                    }
+                })
+            }
+            Phase::BitRead { address, .. } => Some(Action::Read {
+                address,
+                width: Width::Byte,
+                fetch: false,
+            }),
+            Phase::BitWrite { address, value } => Some(Action::Write {
+                address,
+                width: Width::Byte,
+                value: u16::from(value),
+                mov_byte: false,
+            }),
+            Phase::IndirectJump { address, .. } => Some(Action::Read {
+                address: address & !1,
+                width: Width::Word,
+                fetch: false,
+            }),
+            Phase::Call {
+                address, return_pc, ..
+            } => Some(Action::Write {
+                address: address & !1,
+                width: Width::Word,
+                value: return_pc,
+                mov_byte: false,
+            }),
+            Phase::BranchWait { .. } | Phase::EntryWait { .. } => Some(Action::Idle(2)),
+            Phase::ReturnPc | Phase::ReturnCcr | Phase::ReturnExceptionPc { .. } => {
+                Some(Action::Read {
+                    address: self.registers.sp() & !1,
+                    width: Width::Word,
+                    fetch: false,
+                })
+            }
+            Phase::ExceptionPc { pc, .. } => Some(Action::Write {
+                address: self.registers.sp() & !1,
+                width: Width::Word,
+                value: pc,
+                mov_byte: false,
+            }),
+            Phase::ExceptionCcr { ccr, .. } => Some(Action::Write {
+                address: self.registers.sp() & !1,
+                width: Width::Word,
+                value: u16::from(ccr) * 0x0101,
+                mov_byte: false,
+            }),
+            Phase::ExceptionVector { vector } => Some(Action::Read {
+                address: u16::from(vector) * 2,
+                width: Width::Word,
+                fetch: false,
+            }),
+            Phase::MulDiv { states, .. } => Some(Action::Idle(states)),
+            Phase::Copy {
+                stage: stage @ (0 | 1 | 3 | 4),
+                value,
+                ..
+            } => {
+                let source = self.registers.er[5] as u16;
+                let dest = self.registers.er[6] as u16;
+                Some(match stage {
+                    0 | 4 => Action::Read {
+                        address: source,
+                        width: Width::Byte,
+                        fetch: false,
+                    },
+                    1 => Action::Read {
+                        address: dest,
+                        width: Width::Byte,
+                        fetch: false,
+                    },
+                    _ => Action::Write {
+                        address: dest,
+                        width: Width::Byte,
+                        value: u16::from(value),
+                        mov_byte: false,
+                    },
+                })
+            }
+            _ => None,
+        }
+    }
     pub fn next(&mut self, interrupt: Option<u8>) -> Result<Action, Error> {
         loop {
+            if let Some(action) = self.issued_action() {
+                return Ok(action);
+            }
             match self.phase {
                 Phase::Boundary | Phase::Sleeping => {
                     if self.interrupt_delay == 0 {
@@ -441,134 +581,15 @@ impl Cpu {
                         }
                     }
                 }
-                Phase::ResetVector => {
-                    return Ok(Action::Read {
-                        address: 0,
-                        width: Width::Word,
-                        fetch: false,
-                    })
-                }
-                Phase::Fetch => {
-                    return Ok(Action::Read {
-                        address: self.registers.pc & !1,
-                        width: Width::Word,
-                        fetch: true,
-                    })
-                }
                 Phase::Ready(i) => self.prepare(i)?,
                 Phase::Execute(i) => self.begin(i)?,
                 Phase::Finish => self.finish(),
-                Phase::Prefetch { address, .. }
-                | Phase::BranchTarget {
-                    target: address, ..
-                }
-                | Phase::JumpTarget {
-                    target: address, ..
-                }
-                | Phase::EntryTarget { target: address } => {
-                    return Ok(Action::Read {
-                        address: address & !1,
-                        width: Width::Word,
-                        fetch: true,
-                    })
-                }
-                Phase::Delay(states) => return Ok(Action::Idle(states)),
-                Phase::Memory(t) => {
-                    let width = if t.size == Size::Byte {
-                        Width::Byte
-                    } else {
-                        Width::Word
-                    };
-                    let address = t.address.wrapping_add(u16::from(t.done));
-                    return Ok(if t.store {
-                        let shift = (u32::from(t.size.bytes())
-                            - u32::from(t.done)
-                            - u32::from(width.bytes()))
-                            * 8;
-                        Action::Write {
-                            address,
-                            width,
-                            value: (t.value >> shift) as u16,
-                            mov_byte: width == Width::Byte && !t.ccr,
-                        }
-                    } else {
-                        Action::Read {
-                            address,
-                            width,
-                            fetch: false,
-                        }
-                    });
-                }
-                Phase::BitRead { address, .. } => {
-                    return Ok(Action::Read {
-                        address,
-                        width: Width::Byte,
-                        fetch: false,
-                    })
-                }
-                Phase::BitWrite { address, value } => {
-                    return Ok(Action::Write {
-                        address,
-                        width: Width::Byte,
-                        value: u16::from(value),
-                        mov_byte: false,
-                    })
-                }
-                Phase::IndirectJump { address, .. } => {
-                    return Ok(Action::Read {
-                        address: address & !1,
-                        width: Width::Word,
-                        fetch: false,
-                    })
-                }
-                Phase::Call {
-                    address, return_pc, ..
-                } => {
-                    return Ok(Action::Write {
-                        address: address & !1,
-                        width: Width::Word,
-                        value: return_pc,
-                        mov_byte: false,
-                    })
-                }
-                Phase::BranchWait { .. } | Phase::EntryWait { .. } => return Ok(Action::Idle(2)),
-                Phase::ReturnPc | Phase::ReturnCcr | Phase::ReturnExceptionPc { .. } => {
-                    return Ok(Action::Read {
-                        address: self.registers.sp() & !1,
-                        width: Width::Word,
-                        fetch: false,
-                    })
-                }
-                Phase::ExceptionPc { pc, .. } => {
-                    return Ok(Action::Write {
-                        address: self.registers.sp() & !1,
-                        width: Width::Word,
-                        value: pc,
-                        mov_byte: false,
-                    })
-                }
-                Phase::ExceptionCcr { ccr, .. } => {
-                    return Ok(Action::Write {
-                        address: self.registers.sp() & !1,
-                        width: Width::Word,
-                        value: u16::from(ccr) * 0x0101,
-                        mov_byte: false,
-                    })
-                }
-                Phase::ExceptionVector { vector } => {
-                    return Ok(Action::Read {
-                        address: u16::from(vector) * 2,
-                        width: Width::Word,
-                        fetch: false,
-                    })
-                }
-                Phase::MulDiv { states, .. } => return Ok(Action::Idle(states)),
                 Phase::Copy {
                     word_count,
-                    stage,
+                    stage: 2,
                     value,
                 } => {
-                    if word_count && stage == 2 && interrupt == Some(7) {
+                    if word_count && interrupt == Some(7) {
                         // REJ09B0152-0300 §3.8.6: .W accepts NMI at a break
                         // between transfer cycles, saves the NEXT instruction,
                         // and leaves R4/ER5/ER6 describing the remaining copy.
@@ -578,7 +599,7 @@ impl Cpu {
                         self.enter_exception(7, false);
                         continue;
                     }
-                    if stage == 2 {
+                    {
                         // Commit the admission decision before exposing a read.
                         // Repeating next() must not replace that outstanding
                         // physical request when a new interrupt is offered.
@@ -589,27 +610,8 @@ impl Cpu {
                         };
                         continue;
                     }
-                    let source = self.registers.er[5] as u16;
-                    let dest = self.registers.er[6] as u16;
-                    return Ok(match stage {
-                        0 | 4 => Action::Read {
-                            address: source,
-                            width: Width::Byte,
-                            fetch: false,
-                        },
-                        1 => Action::Read {
-                            address: dest,
-                            width: Width::Byte,
-                            fetch: false,
-                        },
-                        _ => Action::Write {
-                            address: dest,
-                            width: Width::Byte,
-                            value: u16::from(value),
-                            mov_byte: false,
-                        },
-                    });
                 }
+                _ => return Err(Error::Internal("CPU phase without issued work")),
             }
         }
     }

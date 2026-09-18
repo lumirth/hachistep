@@ -1,3 +1,5 @@
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{Buttons, DigitalPin, Event, Images, Input, Machine, Time, TimedInput};
 fn machine(code: &[u8]) -> Machine {
     let mut flash = vec![0u8; 49152];
@@ -85,7 +87,7 @@ fn run_partition_and_snapshot_replay_preserve_all_state_and_events() {
     assert_eq!(a, b);
     assert_eq!(long, short);
     let snap = short.snapshot();
-    let mut restored = Machine::from_snapshot(&snap);
+    let mut restored = state::restore_file(&snap);
     let mut c = Vec::new();
     let mut d = Vec::new();
     short
@@ -95,7 +97,7 @@ fn run_partition_and_snapshot_replay_preserve_all_state_and_events() {
         .run_until(Time::from_micros(5000), &[], &mut d)
         .unwrap();
     assert_eq!(c, d);
-    assert_eq!(short, restored);
+    state::assert_same_state(&short, &restored);
 }
 #[test]
 fn horizon_and_input_timestamps_are_exclusive() {
@@ -168,7 +170,7 @@ fn external_serial_edges_survive_partition_and_restore_inside_a_byte() {
         }
     }
     assert_eq!(whole.peek(0xf0e9).unwrap(), 0x96);
-    assert_eq!(whole, split);
+    state::assert_same_state(&whole, &split);
     assert_eq!(a, b);
 }
 #[test]
@@ -203,7 +205,7 @@ fn sci_pin_edges_and_buffered_characters_survive_partition_and_restore() {
         split = Machine::from_snapshot(&split.snapshot());
     }
     assert_eq!(a, b);
-    assert_eq!(whole, split);
+    state::assert_same_state(&whole, &split);
     assert_eq!(
         a.iter()
             .filter(|e| matches!(e, Event::Infrared { .. }))
@@ -257,7 +259,7 @@ fn sci_pin_edges_and_buffered_characters_survive_partition_and_restore() {
         split = Machine::from_snapshot(&split.snapshot());
     }
     assert_eq!(a, b);
-    assert_eq!(whole, split);
+    state::assert_same_state(&whole, &split);
     assert_eq!(whole.peek(0xff9d).unwrap(), 0x3c);
     assert_eq!(whole.peek(0xff9c).unwrap(), 0xc4);
     assert_eq!(
@@ -325,7 +327,7 @@ fn iic_package_inputs_preserve_frames_through_partition_and_restore() {
     }
     assert_eq!(&whole.ram()[0x80..0x83], &[0x54, 0x3c, 0xa5]);
     assert_eq!(a, b);
-    assert_eq!(whole, split);
+    state::assert_same_state(&whole, &split);
 }
 
 #[test]
@@ -424,7 +426,7 @@ fn adc_trigger_and_held_sample_survive_partition_and_restore() {
     }
     assert_eq!(whole.peek(0xffbc).unwrap(), 0xff);
     assert_eq!(whole.peek(0xffbd).unwrap(), 0xc0);
-    assert_eq!(whole, split);
+    state::assert_same_state(&whole, &split);
     assert_eq!(a, b);
 }
 #[test]
@@ -468,7 +470,7 @@ fn rtc_clock_output_is_a_physical_pin_even_with_the_counter_stopped() {
             .unwrap();
         split = Machine::from_snapshot(&split.snapshot());
     }
-    assert_eq!(whole, split);
+    state::assert_same_state(&whole, &split);
 }
 #[test]
 fn invalid_timeline_is_rejected_before_mutation() {
@@ -609,7 +611,7 @@ fn guest_serial_page_write_reaches_the_real_device_owner_and_commits_later() {
     assert_eq!(m.eeprom()[2], 0xff, "unaddressed cells remain untouched");
     assert!(!events.iter().any(|e| matches!(e, Event::NvCommit { .. })));
     let snapshot = m.snapshot();
-    let mut interrupted = Machine::from_snapshot(&snapshot);
+    let mut interrupted = state::restore_file(&snapshot);
     let partial = interrupted.eeprom();
     assert_ne!(partial[0x7e], 0xff, "erase has physically started");
     let mut loss = Vec::new();
@@ -631,7 +633,7 @@ fn guest_serial_page_write_reaches_the_real_device_owner_and_commits_later() {
     assert!(!loss.iter().any(|e| matches!(e, Event::NvCommit { .. })));
     interrupted.power_on(&mut ()).unwrap();
     assert_eq!(interrupted.eeprom(), partial);
-    let mut reset = Machine::from_snapshot(&snapshot);
+    let mut reset = state::restore_file(&snapshot);
     reset
         .run_until(
             Time::from_micros(7000),

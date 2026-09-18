@@ -140,7 +140,7 @@ impl Bus {
         let mut data = 0;
         for bit in (0..8).rev() {
             self.clock_level(false);
-            self.external[1] = receive.map_or(true, |v| v & (1 << bit) != 0);
+            self.external[1] = receive.is_none_or(|v| v & (1 << bit) != 0);
             self.resolve();
             self.clock_level(true);
             data = (data << 1) | u8::from(self.pads[1]);

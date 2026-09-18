@@ -9,16 +9,18 @@ use crate::{
 use domain::Domain;
 use prescaler::Prescaler;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Source {
-    System,
-    Cpu,
-    Watch,
-    OnChip,
-    Oscillator,
-    Subclock,
+    System = 0,
+    Cpu = 1,
+    Watch = 2,
+    OnChip = 3,
+    Oscillator = 4,
+    Subclock = 5,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tap {
     pub source: Source,
     pub divide: u32,
@@ -61,7 +63,7 @@ impl Tap {
         }
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frequencies {
     pub main_hz: u64,
     pub watch_hz: u64,
@@ -76,7 +78,7 @@ impl Default for Frequencies {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Clocks {
     pub frequencies: Frequencies,
     system: Domain,
@@ -95,6 +97,7 @@ pub struct Clocks {
     system_divide: u64,
     system_numerator: u64,
     system_denominator: u64,
+    #[borsh(skip)]
     revision: u64,
 }
 pub(crate) mod startup;
@@ -436,24 +439,41 @@ impl Clocks {
 /// switch changes the projection, not the outstanding edge target. Downstream
 /// gating retains the number of unconsumed edges and rejoins the shared divider
 /// phase on resume. It does not replay the old wall-time remainder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[borsh(init = invalidate)]
 pub struct ClockWait {
     tap: Tap,
     state: WaitState,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum WaitState {
     Running {
         target: u64,
+        #[borsh(skip)]
         cached: Time,
+        #[borsh(skip)]
         revision: u64,
-    },
+    } = 0,
     Paused {
         remaining: u64,
-    },
-    Ready(Time),
+    } = 1,
+    Ready(Time) = 2,
 }
 impl ClockWait {
+    fn invalidate(&mut self) {
+        if let WaitState::Running { revision, .. } = &mut self.state {
+            *revision = u64::MAX;
+        }
+    }
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        self.tap.validate()
+    }
+    pub(crate) fn uses(&self, tap: Tap) -> bool {
+        self.tap == tap
+    }
+
     pub fn after(now: Time, edges: u64, tap: Tap, clocks: &Clocks) -> Result<Self, Error> {
         if tap.divide == 0 {
             return Err(Error::BadInput("zero clock divider"));
@@ -528,6 +548,48 @@ impl ClockWait {
                 self.resume(now, clocks)?;
             }
         }
+        Ok(())
+    }
+}
+
+impl Tap {
+    pub(crate) fn validate(self) -> Result<(), Error> {
+        crate::state::require(self.divide != 0, "zero saved clock divider")
+    }
+}
+impl Clocks {
+    pub(crate) fn validate(&mut self, now: Time) -> Result<(), Error> {
+        use crate::state::require;
+        for domain in [
+            &self.system,
+            &self.cpu,
+            &self.watch,
+            &self.on_chip,
+            &self.oscillator,
+            &self.subclock,
+            &self.watch_crystal,
+        ] {
+            domain.validate(now)?;
+        }
+        require(
+            self.frequencies.main_hz > 0
+                && self.frequencies.watch_hz > 0
+                && self.frequencies.on_chip_hz > 0
+                && self.subclock_divide > 0
+                && self.system_divide > 0
+                && self.system_numerator > 0
+                && self.system_denominator > 0
+                && matches!(
+                    self.system_source,
+                    Source::Oscillator | Source::OnChip | Source::Watch
+                ),
+            "invalid clock routes",
+        )?;
+        self.prescaler_s
+            .validate(self.raw_ticks(now, Source::System))?;
+        self.prescaler_w
+            .validate(self.raw_ticks(now, Source::Watch) / 4)?;
+        self.revision = 0;
         Ok(())
     }
 }

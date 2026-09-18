@@ -1,137 +1,89 @@
-# HachiStep — development core 0.2.0
+# HachiStep
 
-A dependency-free Rust Pokéwalker development core, continued from the delivered
-starter and its Git history. It runs real firmware; it is not a mock UI, native
-replacement of firmware routines, or a wrapper around another emulator.
+A Rust Pokéwalker emulator core for retail and custom firmware. The goal is one
+highly accurate, maximally fast execution path with a compact implementation.
+The core currently runs unmodified retail firmware through boot, menus, motion
+processing and idle. [STATUS](docs/STATUS.md) records the implemented hardware
+and the remaining fidelity work.
 
-**This revision adds functional AEC and dual-comparator owners, Timer W capture/
-buffering/external clocks, NMI and block-copy interruption, clock-relative waits,
-and independent timing/ISA regressions.** See [revision notes](docs/REVISION-0.2.md).
+## Build and run
 
-**This is a working starter, not the completed hardware-indistinguishable core.**
-The current model executes the supplied, unmodified 48 KiB firmware through boot,
-button-driven menus, motion processing and idle transitions. Several timing
-rules are provisional and several peripheral modes stop as unsupported. The
-exact boundary is in [STATUS](docs/STATUS.md). Successful retail execution must
-not be confused with arbitrary-firmware silicon conformance.
-
-## Run
-
-Use Rust/Cargo and, for the supporting tools, Python 3.10 or newer. There are no
-crates.io dependencies and no required Python packages.
+Use Rust 1.95+ and Python 3.10+ for the supporting tools. Fetch the locked crates
+once, then builds and checks can run offline:
 
 ```sh
+cargo fetch --locked
 cargo build --workspace --release --locked --offline
 cargo test --workspace --locked --offline
 
-cargo run -p hs-cli --release --offline -- run \
+./target/release/hachistep run \
   --firmware local-inputs/pokewalker.bin --eeprom local-inputs/eeprom.bin \
   --milliseconds 10000 --out out-home
 ```
 
-`out-home` must not already exist. It receives `frame.pgm`, persistent images,
-RAM/controller dumps, and `report.json`. The CLI never overwrites input images
-or an existing output file. Guest EEPROM writes still execute normally; not
-writing them back to the original host file does not alter the emulated chip.
+Supply your own 49,152-byte firmware and 65,536-byte EEPROM images. Private
+inputs stay in ignored `local-inputs/`; the MIT license covers the source, not
+firmware, artwork or recordings. See [SOURCES](docs/SOURCES.md).
 
-The delivered **private ZIP includes the supplied firmware and EEPROM in the
-Git-ignored `local-inputs/` directory**. These images, derived LCD artwork, and
-captured sound are not licensed under the starter's MIT license. Do not publish
-this private archive. The original large `pw-inputs.zip` and compiler distribution
-are deliberately not bundled. See [input provenance](docs/SOURCES.md).
+`out-home` must be new. It receives persistent images, memory/controller dumps,
+`frame.pgm`, `state.bin` and `report.json`. The CLI creates new files and leaves
+input files intact. Guest writes still affect the emulated nonvolatile cells.
 
-## Reproduce the demonstrated behavior
+## Resume an exact session
 
 ```sh
-# Boot, menu, motion and 120-second idle runs; includes exact replay tests.
-python3 tools/verify_retail.py
-
-# Menu buttons and a separately captured final screen.
-cargo run -p hs-cli --release --offline -- run \
-  --firmware local-inputs/pokewalker.bin --eeprom local-inputs/eeprom.bin \
-  --input workloads/menu.csv --milliseconds 6500 --out out-menu
-
-# Physical acceleration only: the firmware itself decides whether to add steps.
-cargo run -p hs-cli --release --offline -- run \
-  --firmware local-inputs/pokewalker.bin --eeprom local-inputs/eeprom.bin \
-  --input workloads/walking.csv --milliseconds 61000 --out out-walk
-
-python3 tools/preview.py out-home/frame.pgm out-menu/frame.pgm out-walk/frame.pgm \
-  --out captured-frames.html
+./target/release/hachistep run --load-state out-home/state.bin \
+  --milliseconds 12000 --out out-resumed
 ```
 
-With the packaged images and default conditions, observed results include:
+The endpoint and any CSV inputs use absolute emulated time. An EEPROM export
+starts a fresh session; a native save state retains unfinished CPU accesses,
+serial shifts, clock phase, device history and programming operations. Loading
+validates a complete candidate before replacing a session. The native format
+remains changeable before release, without versions or compatibility layers.
+See [SAVE_STATES](docs/SAVE_STATES.md).
 
-| Scenario | Observed result |
-|---|---|
-| 10-second boot | Home screen, 6,205,679 retired instructions, 237 interrupt entries. |
-| 6.5-second button replay | Menu navigation; 688 timestamped differential buzzer transitions. |
-| 61-second synthetic movement | Firmware displays **107 steps**; 16,779,551 retired instructions. |
-| 120-second stationary run | Completes without a model fault; display enters power save. |
-| Random run partitioning | Complete product event vectors and full machine state agree. |
-| Snapshot replay | Subsequent complete event vectors and full machine state agree. |
-| Independent guest fixtures | Fifteen pass, including guest-driven comparator, capture, AEC overflow/gate, NMI and aliased-store cases. |
+## Implementation
 
-The movement input is a synthetic 2 Hz trajectory, not a hardware capture or a
-pedometer-accuracy study. The private frame viewer is
-`private-observations/index.html`; `private-observations/menu.wav` is ideal-drive
-host rendering of the captured buzzer transitions, not a calibrated recording.
-Machine-readable execution reports and build/test logs are under `evidence/`.
+`hs-core` owns one resumable H8 interpreter, physical bus accesses, rational
+clocks, interrupt admission, GPIO, timers, RTC, watchdog, ADC, comparators, AEC,
+SSU, SCI/IrDA, IIC2 and internal flash programming. External EEPROM, accelerometer
+and LCD controllers consume the resolved board signals. RAM and flash execute
+through the same interpreter.
 
-## What's implemented
+Time advances to the next consequence and respects exclusive run horizons.
+Ordinary execution allocates nothing with an allocation-free output sink.
+Construction, inspection and explicit save/load may allocate. Production source
+forbids unsafe Rust. Borsh encodes selected hardware state; SHA-256 identifies
+firmware and checks state files. Clap owns CLI argument validation and help.
 
-`hs-core` contains one resumable H8 executor, incremental decoding, explicit-width
-ALU/CCR operations, partial physical accesses, 64.64 timestamps, rational clocks,
-fixed hardware composition, interrupts, clock/power controls, GPIO, Timer B1,
-Timer W capture/buffers/external clock, RTC, watchdog, ADC, AEC, dual comparators,
-SSU, asynchronous SCI/IrDA, M95512,
-BMA150 and NT7508 owners. RAM execution uses the same executor as flash.
+`hs-cli` accepts physical input CSVs, exports persistent images, produces run
+reports and captures bounded traces. Frontends, audio rendering and file/slot
+management remain outside the core. [API](docs/API.md) describes embedding.
 
-The kernel accepts exact exclusive horizons and physical input timelines. It
-retains in-flight CPU/serial/nonvolatile state in typed snapshots. Ordinary
-execution with an allocation-free output sink performs no heap allocations;
-construction, snapshots, diagnostic inspection and user-chosen collectors may
-allocate. Production core code forbids `unsafe`.
+## Verification
 
-`hs-cli` supplies input parsing, bounded event traces, image inspection, raw
-persistence export/import, screenshots, SHA-256 identities, and JSON run reports.
-Python tools provide independent fixtures, verification, paired measurements,
-private-input extraction, PGM viewing, WAV rendering and ZIP packaging. The
-retail verifier now checks a reviewed **software-observed** baseline, not merely
-completion; `--smoke-only` is explicitly execution-only. Paired benchmarks first
-compare complete product traces outside the timed runs. Mutation checks confirm
-that selected deliberately broken implementations are rejected by their tests.
-
-## Start contributing
-
-Read [HANDOFF](docs/HANDOFF.md) first, then the relevant owner and its tests. The
-highest-priority gaps are CPU fetch/microtiming and interrupt-admission fidelity,
-clock-transition and same-time race handling, missing MCU modes, and sensor/
-analog characterization—not a second interpreter or a new emulator framework.
+The independent diagnostic suite lives in
+[hachiware](https://github.com/lumirth/hachiware):
 
 ```sh
-python3 tools/check.py                 # offline Rust + host-tool + fixture gates
-python3 tools/mutation_check.py        # isolated temporary mutants; no source edits
-cargo run -p hs-core --release --example replay -- \
-  local-inputs/pokewalker.bin local-inputs/eeprom.bin
+gh repo clone lumirth/hachiware ../hachiware
+python3 tools/check.py --out out/check-1
+python3 tools/verify_retail.py --out out/retail-1
 ```
 
-The documented toolchain floor is declared in Cargo metadata; only the exact
-compiler recorded in [BUILD](docs/BUILD.md) and `evidence/` was exercised here.
-No GitHub workflow is installed or triggered. The `.git` directory and actual
-incremental commits are included in the ZIP.
+Each destination must be new. Standard checks include debug/release/trace Rust
+tests, formatting, Clippy, host tools and independent guest diagnostics. Retail
+verification additionally needs private images and checks reviewed boot, menu,
+walking and idle observations, event histories, partitioning and restoration.
+Expected hardware behavior comes from documented independent cases; retail
+hashes are software regression evidence. [TESTING](docs/TESTING.md) explains the
+coverage and [BUILD](docs/BUILD.md) records tested toolchains and dependencies.
 
-## Documentation
+## Development
 
-| Document | Contents |
-|---|---|
-| [REVISION-0.2](docs/REVISION-0.2.md) | Implemented changes, validation and remaining boundaries. |
-| [BUILD](docs/BUILD.md) | Build commands, offline setup, tested compiler, output safety. |
-| [ARCHITECTURE](docs/ARCHITECTURE.md) | State authority, execution/timing, integration and error contracts. |
-| [API](docs/API.md) | Embedding, input horizons, snapshots, reset and power. |
-| [INPUTS](docs/INPUTS.md) | Physical input CSV, units, traces, persistent-image round trips. |
-| [STATUS](docs/STATUS.md) | Implemented behavior, provisional witnesses and missing hardware. |
-| [HANDOFF](docs/HANDOFF.md) | Ordered implementation tasks, exact files and acceptance tests. |
-| [TESTING](docs/TESTING.md) | What the checks prove, what they do not, conformance organization. |
-| [SOURCES](docs/SOURCES.md) | Firmware, EEPROM, documentation and toolchain provenance. |
-| [hachiware](https://github.com/lumirth/hachiware) | Core-independent diagnostic-image contract. |
+Read [DESIGN](docs/DESIGN.md), [CONTEXT](CONTEXT.md), the relevant
+[architecture](docs/ARCHITECTURE.md) section and owner research before changing
+behavior. [HANDOFF](docs/HANDOFF.md) tracks concrete remaining work. Decisions
+come from hardware documentation, observations, the matching `pw` decompilation
+and explicit inferences that explain the mechanism for arbitrary firmware.

@@ -1,5 +1,5 @@
 //! Unsafe code is restricted to this allocator-observation test harness.
-//! The production library forbids unsafe code and has no external dependencies.
+//! The production library forbids unsafe code and uses safe library interfaces.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[path = "support/flash.rs"]
@@ -58,7 +58,8 @@ fn ordinary_run_has_no_heap_allocation() {
     // Construction and snapshots may allocate; executing custom programming
     // firmware after either operation must retain the same execution contract.
     let mut m = flash_guest::machine();
-    m = hs_core::Machine::from_snapshot(&m.snapshot());
+    let encoded = m.snapshot().encode().unwrap();
+    m = hs_core::Machine::from_snapshot(&hs_core::Snapshot::decode(&encoded).unwrap());
     ENABLED.store(true, Ordering::SeqCst);
     let result = m.run_until(hs_core::Time::from_micros(12000), &[], &mut ());
     ENABLED.store(false, Ordering::SeqCst);

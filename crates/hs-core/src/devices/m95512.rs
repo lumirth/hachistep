@@ -11,26 +11,31 @@ pub const EEPROM_SIZE: usize = 65536;
 pub const PAGE_SIZE: usize = 128;
 const PERSISTENT_MASK: u8 = 0x8c;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Command {
-    Opcode,
-    Enable,
-    Disable,
-    ReadStatus,
-    WriteStatus,
-    Address { write: bool, high: Option<u8> },
-    Read,
-    Write,
-    Ignore,
+    Opcode = 0,
+    Enable = 1,
+    Disable = 2,
+    ReadStatus = 3,
+    WriteStatus = 4,
+    Address { write: bool, high: Option<u8> } = 5,
+    Read = 6,
+    Write = 7,
+    Ignore = 8,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Programming {
-    None,
-    Page { cycle: WriteCycle, base: u16 },
-    Status { cycle: WriteCycle, value: u8 },
+    None = 0,
+    Page { cycle: WriteCycle, base: u16 } = 1,
+    Status { cycle: WriteCycle, value: u8 } = 2,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct M95512 {
+    #[borsh(deserialize_with = "crate::state::read_bytes")]
     array: Box<[u8; EEPROM_SIZE]>,
     status: u8,
     wel: bool,
@@ -389,6 +394,30 @@ impl M95512 {
         self.pending_status = None;
         self.data_count = 0;
         self.written = [0; 2];
+    }
+}
+
+impl M95512 {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        use crate::state::require;
+        require(
+            self.status & !PERSISTENT_MASK == 0
+                && self.rx_bits < 8
+                && self.tx_bit <= 8
+                && self.write_time != Duration::ZERO,
+            "invalid EEPROM state",
+        )?;
+        match self.programming {
+            Programming::None => Ok(()),
+            Programming::Page { cycle, base } => {
+                require(base & 127 == 0, "unaligned EEPROM write page")?;
+                cycle.validate(now)
+            }
+            Programming::Status { cycle, value } => {
+                require(value & !PERSISTENT_MASK == 0, "invalid EEPROM status write")?;
+                cycle.validate(now)
+            }
+        }
     }
 }
 

@@ -3,7 +3,7 @@
 //! part model, not measured timing. See research/lcd-and-eeprom.md.
 use crate::time::{Duration, Time, TimeError};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct WriteCycle {
     pub started: Time,
     pub deadline: Time,
@@ -46,4 +46,13 @@ fn crossed(cell: u32, elapsed: u128, duration: u128) -> u8 {
         }
     }
     mask
+}
+
+impl WriteCycle {
+    pub(crate) fn validate(self, now: Time) -> Result<(), crate::Error> {
+        crate::state::require(
+            self.started <= now && self.deadline > self.started && self.deadline >= now,
+            "invalid nonvolatile write interval",
+        )
+    }
 }

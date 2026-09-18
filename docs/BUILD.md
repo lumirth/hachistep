@@ -2,45 +2,39 @@
 
 ## Requirements
 
-The source is edition-2021 Rust with a declared `rust-version = "1.74"` and no
-external crates. The declared floor was **not** separately tested on Rust 1.74.
-The tested compiler is recorded below. Python tools require Python 3.10+ and
-only the standard library. A system linker is needed by the native Rust build.
+The edition-2021 workspace requires Rust 1.95 or newer. The locked dependency
+graph is checked on Rust 1.95.0 and the normal local toolchain (Rust 1.98.1), on
+macOS arm64. A native linker, rustfmt and Clippy are needed. Python tools use
+Python 3.10+ and its standard library.
+
+Fetch the locked crates once before working offline:
 
 ```sh
+cargo fetch --locked
 cargo build --workspace --release --locked --offline
 cargo test --workspace --locked --offline
 cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings
 ```
 
-`--offline` does not install Rust, a linker, Clippy or rustfmt. Install your normal
-Rust toolchain independently when those tools are absent. This project contains
-no installer, downloader, hidden build-time network request or cloud CI workflow.
+The core uses Borsh 1.8.1 (`std`, `derive`) for explicit saved hardware records
+and SHA-256 for firmware identities and state checksums. SHA-2 0.10.9 is selected
+with `force-soft`, keeping portable backend selection in the library dependency
+rather than requiring downstream compiler flags. Hashing and serialization run
+only during construction, inspection and explicit save/load. Ordinary execution
+still allocates nothing. The CLI shares SHA-256 and uses Clap for argument
+relationships, validation and generated help. See `Cargo.lock` for the complete
+runtime/build dependency graph; proc macros run at build time.
 
-## Tested environment
+The 1.74 declaration in the starter was untested and has been replaced by a
+verified compiler floor. No architecture-specific execution optimizations or
+extra backend are selected. Other hosts remain portability targets; local
+verification does not imply every host was tested. The older compiler receipts
+under `evidence/` describe their own historical runs.
 
-The execution sandbox initially had no Rust installation and no ordinary outbound
-download access. An existing public CI artifact supplied a host compiler:
-
-```
-rustc 1.97.0-dev (e638c6cfe 2026-07-15)
-cargo 1.97.0-dev (c980f4866 2026-06-30)
-rustfmt 1.9.0-dev (e638c6cfea 2026-07-15)
-Host: x86_64-unknown-linux-gnu
-Compiler repository: risc0/rust
-Commit: e638c6cfea1eff5fbbb24a27e60538e3760d21b8
-```
-
-This is the RISC Zero fork's host Rust toolchain, not a claim about the latest
-upstream stable release. The emulator was compiled for ordinary Linux x86-64,
-not the RISC Zero guest. The source does not depend on that fork or target.
-Neither macOS/ARM64 execution nor the declared minimum compiler was tested here.
-The compiler distribution is not in the delivery ZIP.
-
-That artifact names rustdoc `rustdoc_tool_binary` and has rustfmt but no
-`cargo-fmt` wrapper. The check scripts detect the rustdoc name and invoke
-rustfmt directly. With a conventional toolchain, ordinary `cargo fmt --check`
-also works. The archive's recorded tool versions are in `evidence/`.
+`--offline` does not install the toolchain or dependencies. No network service,
+hidden build download, GitHub Actions workflow or emulator runtime service is
+required. Standard `cargo fmt --all --check` works; the check script also invokes
+rustfmt directly so it can inspect all source and fixture helper files.
 
 ## Single-command gates
 
@@ -75,7 +69,8 @@ files. On a model fault it reports the failing state and can export that stopped
 state to the newly created output directory. Trace I/O failures fail the run
 rather than silently certifying a complete trace.
 
-Output files are separate domains, not a transactional save container. Files are
+The native `state.bin` captures all hardware domains together. The surrounding
+output directory is not a transactional multi-file container. Files are
 synced, and the run report is written last, but interruption can leave a partial
 output directory. Keep original inputs and treat a directory missing its complete
 report as an interrupted export. The core does not write files.

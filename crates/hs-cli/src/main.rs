@@ -1,91 +1,86 @@
-//! Dependency-free deterministic frontend. Input files are never overwritten.
+//! Deterministic frontend. Input files are never overwritten.
+mod args;
 mod digest;
 mod output;
 mod timeline;
 use hs_core::{Conditions, Duration, Images, Machine, Time};
-use std::{env, fs, io, path::PathBuf, process::ExitCode, time::Instant};
-const HELP:&str="HachiStep runnable development core\n\n  hachistep inspect --firmware FILE --eeprom FILE\n  hachistep run --firmware FILE --eeprom FILE [OPTIONS]\n\nOptions:\n  --milliseconds N   Exclusive emulated horizon (default 1000)\n  --input FILE       Physical input CSV; see docs/INPUTS.md\n  --out DIRECTORY    NEW directory: frame, persistent images, report\n  --frame FILE       NEW binary PGM screenshot\n  --trace FILE       NEW product event trace\n  --bus-trace        Include bus events (build with --features trace)\n  --trace-limit N    Bound trace records (default 100000)\n  --sensor-nv FILE   Optional 19-byte sensor nonvolatile image\n  --status BYTE      EEPROM status, decimal or 0x hex (default 0)\n  --supply-mv N      Board supply (default 3000)\n  --avcc-mv N        External AVCC fixture (default: board supply)\n  --battery-drop-mv N  Effective battery-sense drop (default 600)\n  --chunk-us N       Host-call partition (default 1000)\n  --peek HEX         Side-effect-free final register inspection; repeatable\n\nThis is a runnable starter, not a completed silicon-accurate emulator.\nSee docs/STATUS.md. All outputs are separate from input files.\n";
+use std::{fs, io, process::ExitCode, time::Instant};
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = env::args().skip(1);
-    let command = args.next().unwrap_or_else(|| "help".into());
-    if matches!(command.as_str(), "help" | "--help" | "-h") {
-        print!("{HELP}");
-        return Ok(());
-    }
-    if !matches!(command.as_str(), "run" | "inspect") {
-        return Err(format!("unknown command {command}").into());
-    }
-    let (mut firmware, mut eeprom, mut frame, mut trace, mut inputs, mut out_dir) =
-        (None, None, None, None, None, None);
-    let (mut milliseconds, mut chunk, mut trace_limit) = (1000u64, 1000u64, 100000u64);
-    let mut sensor_nv = None;
-    let mut status = 0u8;
-    let mut conditions = Conditions::default();
-    let mut peeks = Vec::new();
-    let mut bus_trace = false;
-    while let Some(key) = args.next() {
-        if key == "--bus-trace" {
-            bus_trace = true;
-            continue;
-        }
-        let value = args
-            .next()
-            .ok_or_else(|| format!("missing value for {key}"))?;
-        match key.as_str() {
-            "--firmware" => firmware = Some(PathBuf::from(value)),
-            "--eeprom" => eeprom = Some(PathBuf::from(value)),
-            "--sensor-nv" => sensor_nv = Some(PathBuf::from(value)),
-            "--milliseconds" => milliseconds = value.parse()?,
-            "--frame" => frame = Some(PathBuf::from(value)),
-            "--input" => inputs = Some(PathBuf::from(value)),
-            "--out" => out_dir = Some(PathBuf::from(value)),
-            "--trace" => trace = Some(PathBuf::from(value)),
-            "--trace-limit" => trace_limit = value.parse()?,
-            "--status" => {
-                status = if let Some(v) = value.strip_prefix("0x") {
-                    u8::from_str_radix(v, 16)?
-                } else {
-                    value.parse()?
-                }
-            }
-            "--supply-mv" => conditions.supply_millivolts = value.parse()?,
-            "--avcc-mv" => conditions.avcc_override_millivolts = Some(value.parse()?),
-            "--battery-drop-mv" => conditions.battery_sense_drop_millivolts = value.parse()?,
-            "--chunk-us" => chunk = value.parse()?,
-            "--peek" => peeks.push(u16::from_str_radix(value.trim_start_matches("0x"), 16)?),
-            _ => return Err(format!("unknown argument {key}").into()),
-        }
-    }
-    if chunk == 0 {
-        return Err("--chunk-us must be positive".into());
-    }
+    use clap::Parser;
+    use std::io::Read;
+    let (options, inspect) = match args::Cli::parse().command {
+        args::Command::Inspect(options) => (options, true),
+        args::Command::Run(options) => (options, false),
+    };
+    let args::Options {
+        firmware,
+        eeprom,
+        load_state,
+        save_state,
+        milliseconds,
+        input: inputs,
+        out: out_dir,
+        frame,
+        trace,
+        bus_trace,
+        trace_limit,
+        sensor_nv,
+        status,
+        supply_mv,
+        avcc_mv,
+        battery_drop_mv,
+        chunk_us: chunk,
+        peek: peeks,
+    } = options;
     if bus_trace && !cfg!(feature = "trace") {
         return Err("--bus-trace requires cargo build -p hs-cli --features trace".into());
     }
-    let firmware = fs::read(firmware.ok_or("--firmware is required")?)?;
-    let eeprom = fs::read(eeprom.ok_or("--eeprom is required")?)?;
-    let firmware_hash = digest::sha256(&firmware);
-    let eeprom_hash = digest::sha256(&eeprom);
-    let sensor_nv = sensor_nv.map(fs::read).transpose()?;
-    let mut m = Machine::with_persistent_state(
-        Images {
-            firmware: &firmware,
-            eeprom: &eeprom,
-            eeprom_status: status,
-        },
-        conditions,
-        sensor_nv.as_deref(),
-    )?;
+    let mut m = if let Some(path) = load_state {
+        let mut bytes = Vec::new();
+        fs::File::open(path)?
+            .take((hs_core::Snapshot::MAX_ENCODED_SIZE + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        Machine::from_snapshot(&hs_core::Snapshot::decode(&bytes)?)
+    } else {
+        let firmware = fs::read(firmware.ok_or("--firmware is required")?)?;
+        let eeprom = fs::read(eeprom.ok_or("--eeprom is required")?)?;
+        let sensor_nv = sensor_nv.map(fs::read).transpose()?;
+        Machine::with_persistent_state(
+            Images {
+                firmware: &firmware,
+                eeprom: &eeprom,
+                eeprom_status: status,
+            },
+            Conditions {
+                supply_millivolts: supply_mv,
+                avcc_override_millivolts: avcc_mv,
+                battery_sense_drop_millivolts: battery_drop_mv,
+                ..Conditions::default()
+            },
+            sensor_nv.as_deref(),
+        )?
+    };
+    let conditions = m.conditions();
+    let status = m.eeprom_status();
+    let firmware_hash = m
+        .firmware_origin()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<String>();
+    let eeprom_hash = digest::sha256(&m.eeprom());
     let sensor_hash = digest::sha256(&m.sensor_nonvolatile());
     println!(
-        "firmware_bytes={} eeprom_bytes={} reset_pc={:04x}",
-        firmware.len(),
-        eeprom.len(),
-        u16::from_be_bytes([firmware[0], firmware[1]]) & !1
+        "firmware_sha256={firmware_hash}\neeprom_sha256={eeprom_hash}\ntime={:?}",
+        m.now()
     );
-    println!("firmware_sha256={firmware_hash}\neeprom_sha256={eeprom_hash}");
-    if command == "inspect" {
+    if inspect {
         return Ok(());
+    }
+    let end = Time::ZERO
+        .checked_add(Duration::from_millis(milliseconds))
+        .ok_or("time overflow")?;
+    if end < m.now() {
+        return Err("requested horizon precedes the loaded state".into());
     }
     let timeline_text = inputs.map(fs::read_to_string).transpose()?;
     let input_hash = timeline_text
@@ -114,12 +109,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         bus_trace,
         ..Default::default()
     };
-    let end = Time::ZERO
-        .checked_add(Duration::from_millis(milliseconds))
-        .ok_or("time overflow")?;
     let wall = Instant::now();
     let mut failure = None;
-    let mut cursor = 0;
+    let mut cursor = changes.partition_point(|input| input.at < m.now());
     while m.now() < end {
         let to = m
             .now()
@@ -158,6 +150,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         },
         failure_message.as_deref(),
     );
+    if let Some(path) = save_state {
+        output::write_new(&path, &m.snapshot().encode()?)?;
+    }
     if let Some(path) = frame {
         output::write_new(&path, &output::frame(&m))?;
     }

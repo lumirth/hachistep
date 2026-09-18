@@ -5,13 +5,15 @@ use crate::{
     time::{Duration, Time, TimeError},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum State {
-    Stopped,
-    Starting(Time),
-    Ready,
+    Stopped = 0,
+    Starting(Time) = 1,
+    Ready = 2,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Startup {
     rail: u16,
     sources: [State; 3], // main crystal, ROSC, watch crystal
@@ -94,5 +96,11 @@ impl Startup {
             request.crystal
         };
         Ok(request)
+    }
+}
+
+impl Startup {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::future(self.deadline(), now)
     }
 }

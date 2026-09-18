@@ -1,11 +1,13 @@
 //! Incremental H8/300H normal-mode decoder. Only words already fetched by
 //! the CPU are supplied. A prefix never peeks ahead into host backing memory.
 //! Reference: ADE-602-053A tables 2-3 through 2-6; H8/38602R target restrictions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Size {
-    Byte,
-    Word,
-    Long,
+    Byte = 0,
+    Word = 1,
+    Long = 2,
 }
 impl Size {
     pub const fn bits(self) -> u32 {
@@ -83,17 +85,19 @@ pub enum Target {
     Reg(u8),
     Memory(Address),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Bit {
-    Set,
-    Clear,
-    Not,
-    Test,
-    Store(bool),
-    Load(bool),
-    And(bool),
-    Or(bool),
-    Xor(bool),
+    Set = 0,
+    Clear = 1,
+    Not = 2,
+    Test = 3,
+    Store(bool) = 4,
+    Load(bool) = 5,
+    And(bool) = 6,
+    Or(bool) = 7,
+    Xor(bool) = 8,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Jump {

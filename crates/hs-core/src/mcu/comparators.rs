@@ -8,7 +8,7 @@ use crate::{
     time::{Duration, Time, TimeError},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq, Default)]
 struct Channel {
     control: u8,
     result: bool,
@@ -23,7 +23,7 @@ struct Channel {
     event_at: Option<Time>,
     flag_before_event: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Comparators {
     channels: [Channel; 2],
     gate: bool,
@@ -276,5 +276,20 @@ impl Comparators {
             }
         }
         Ok(())
+    }
+}
+
+impl Comparators {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::require(
+            self.synchronized_at <= now
+                && self.unpowered_since.is_none_or(|at| at <= now)
+                && self.response != Duration::ZERO
+                && self
+                    .channels
+                    .iter()
+                    .all(|c| c.event_at.is_none_or(|at| at <= now)),
+            "invalid comparator timing",
+        )
     }
 }

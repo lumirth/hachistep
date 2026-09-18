@@ -2,10 +2,12 @@
 //! emitted edge; no completed-byte route into an attached device exists.
 use super::clocks::{ClockWait, Clocks, Tap};
 use crate::{error::Error, signals::Drive, time::Time};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Phase {
-    Load,
-    Edge,
+    Load = 0,
+    Edge = 1,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Edge {
@@ -20,7 +22,7 @@ pub struct Pins {
     /// SOOS also applies to GPIO use of SSO/SSI, independently of TE/RE.
     pub data_open_drain: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Ssu {
     high: u8,
     low: u8,
@@ -48,7 +50,9 @@ pub struct Ssu {
     next: Option<ClockWait>,
     phase: Phase,
     gate: bool,
+    #[borsh(skip)]
     pub transmitted: u64,
+    #[borsh(skip)]
     pub received: u64,
 }
 impl Default for Ssu {
@@ -501,9 +505,48 @@ impl Ssu {
         Ok(())
     }
 }
+
+impl Ssu {
+    pub(crate) fn validate(&self, faulted: bool) -> Result<(), Error> {
+        crate::state::require(
+            self.edges <= 16
+                && self.high & 0x18 == 8
+                && self.status & !0x4f == 0
+                && self.seen & !0x4f == 0
+                && self.shifted <= 8
+                && self.sampled <= 8
+                && (faulted || !self.active || self.edges < 16)
+                && (self.next.is_none() || self.phase != Phase::Edge || self.edges < 16)
+                && self.low & !0x58 == 0
+                && self.mode & !0xe7 == 0
+                && self.enable & !0xef == 0,
+            "invalid SSU shift progress",
+        )?;
+        if let Some(w) = self.next {
+            w.validate()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_external_frame_cannot_load_as_an_active_shifter() {
+        let mut s = Ssu {
+            active: true,
+            phase: Phase::Edge,
+            edges: 16,
+            next: None,
+            ..Ssu::default()
+        };
+        assert!(s.validate(false).is_err());
+        // A fault may stop board resolution before the final edge is retired.
+        s.validate(true).unwrap();
+        s.active = false;
+        s.validate(false).unwrap();
+    }
     #[test]
     fn holding_shift_and_receive_are_distinct() {
         let c = Clocks::new(Time::ZERO, Default::default()).unwrap();

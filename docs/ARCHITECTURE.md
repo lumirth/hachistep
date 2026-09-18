@@ -56,11 +56,11 @@ Effects at `T` remain pending. An input at the exclusive endpoint is not consume
 The return value includes `inputs_consumed`, which the caller must use when
 continuing a timeline. The complete supplied slice is validated before mutation.
 
-CPU waits, SSU half-edge waits and ADC aperture/result waits retain a `ClockWait`
+CPU waits, serial edge waits and ADC aperture/result waits retain a `ClockWait`
 with remaining source edges and a revision-tagged derived deadline. Downstream
-gating pauses the obligation; a source change recomputes its appointment. SCI
-and stabilization still have older absolute appointments, and source switching
-still rephases fractional timing; these remain explicit fidelity work.
+gating pauses the obligation; a source change recomputes its appointment.
+Independent startup appointments belong to their oscillator or external chip.
+Source and prescaler phases survive downstream gate changes.
 
 The implementation compares the pending CPU completion, the cached next-device
 appointment, the next input, any wake delay and the requested horizon. It does
@@ -87,8 +87,10 @@ Deselect can discard a partial serial byte without losing the parameter expected
 by a previous completed command. EEPROM selection and programming lifetime are
 also separate: programming continues after the accepted command's deselection.
 
-Some mux/pull/electrical cases and other serial modes are unsupported. The fixed
-wiring model does not infer recipient intent from a firmware PC or a command byte.
+SSU master/slave and SCI asynchronous/synchronous modes use their same shifters.
+GPIO, open-drain and alternate-function selection determine the actual package
+levels. Analog contention strength and subcycle sampling remain physical-model
+work; STATUS lists those boundaries.
 
 ## Persistent domains
 
@@ -98,8 +100,10 @@ working image. Their commits emit `NvByte` changes followed by `NvCommit` at the
 modeled completion time. The CLI writes only explicit new output files after the
 run. Original files are not silently synchronized.
 
-Internal flash is an authoritative image but not yet a functional programming
-owner. Reads and execution work; program/erase requests stop explicitly.
+Internal flash owns its array, page latch, control qualification, pulse exposure
+and verify sense state. Guest software executes the documented programming
+sequence, including RAM execution while flash is busy. Each bit retains charge
+through interrupted pulses. Flash byte/commit callbacks remain to be connected.
 
 `Machine::with_persistent_state` can restore the external EEPROM/status and the
 sensor's 19-byte nonvolatile image without restoring volatile session state.
@@ -107,18 +111,22 @@ A session checkpoint is a different operation.
 
 ## Snapshot and lifecycle
 
-`Snapshot` owns a full typed copy of causal machine state. Restoring one preserves
-partial instruction fetch/access, serial shifts, timer/clock state, device
-histories and in-flight programming. It is an in-memory Rust type, not a portable
-binary file format. Construction, snapshot creation and diagnostic projection can
-allocate; the hot run loop does not.
+`Snapshot` owns a typed capture of causal machine state. It retains partial
+instruction/access progress, serial shifts, timers/clocks, device histories and
+in-flight programming. Its native Borsh file explicitly maps CPU continuations
+to hardware progress, excludes profiler totals and derived caches, and validates
+bounded records before restoring a candidate. Loading rebuilds appointments
+without resolving board signals again. See SAVE_STATES for the wire contract.
+Construction, capture and diagnostic projection can allocate; the run loop does
+not.
 
-MCU reset aborts CPU work while retaining RAM and external device lifetimes as
-modeled. Whole-product power removal stops the powered machine; power restoration
-creates the documented canonical cold volatile state and preserves nonvolatile
-images. Power loss during programming is rejected before mutation rather than
-inventing a partial-programming outcome. These operations are explicit and have
-regression tests. Analog supply input does not currently generate brownout/reset.
+MCU reset aborts CPU work while retaining RAM, RTC and external device lifetimes.
+Power behavior follows the retained rail and RES capacitor: short dips can
+resume logic, while longer low-voltage exposure loses volatile contents. Each
+oscillator has its own readiness interval. External RES release requires eight
+reference edges; a watchdog hold takes 512 ROSC edges. Programming exposure is
+settled before supply loss disables the devices, preserving partially changed
+cells. Power operations and physical supply input use the same owners.
 
 ## Failure contract
 

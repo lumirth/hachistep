@@ -24,7 +24,7 @@ impl LcdDrive {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Scan {
     clock: Option<Clock>,
     rate: (u64, u64),
@@ -244,6 +244,30 @@ impl Nt7508 {
             segments: scan.segments,
             inverted: scan.inverted,
         })
+    }
+}
+
+impl Scan {
+    pub(super) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::require(
+            self.rate.0 > 0
+                && self.rate.1 > 0
+                && (16..=128).contains(&self.duty)
+                && self.initial_com < 128
+                && self.start_line < 128
+                && matches!(self.pwm, 9 | 12 | 15)
+                && self.step < self.pwm
+                && matches!(self.frc_count, 3 | 4)
+                && self.frc < self.frc_count
+                && u16::from(self.row) < u16::from(self.duty) + u16::from(self.icon)
+                && self.inversion_lines <= 31
+                && (self.inversion_lines == 0 || self.inversion_count < self.inversion_lines),
+            "invalid LCD scan",
+        )?;
+        if let Some(clock) = self.clock {
+            clock.validate(now)?;
+        }
+        Ok(())
     }
 }
 

@@ -15,7 +15,7 @@ use crate::{
     time::{Time, TimeError},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Aec {
     period: u16,
     duty: u16,
@@ -451,5 +451,21 @@ impl Aec {
             }
         }
         Ok(next)
+    }
+}
+
+impl Aec {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::require(
+            self.at <= now
+                && self.requests & !3 == 0
+                && self.seen & !0xc0 == 0
+                && self
+                    .last
+                    .iter()
+                    .chain([&self.pwm_last])
+                    .all(|n| n.checked_add(65536).is_some()),
+            "invalid AEC progress",
+        )
     }
 }

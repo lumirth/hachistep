@@ -37,7 +37,7 @@ pub const FLASH_SIZE: usize = 49_152;
 pub const RAM_START: u16 = 0xf780;
 pub const RAM_SIZE: usize = 2048;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Mcu {
     pub(crate) flash: Flash,
     pub(crate) ram: [u8; RAM_SIZE],
@@ -725,5 +725,26 @@ impl Mcu {
     }
     pub fn delay(&self, now: Time, states: u64) -> Result<Time, Error> {
         self.clocks.after(now, states, Tap::system(1))
+    }
+}
+
+impl Mcu {
+    pub(crate) fn validate(&mut self, now: Time, faulted: bool) -> Result<(), Error> {
+        self.clocks.validate(now)?;
+        self.flash.validate(now)?;
+        self.control.validate()?;
+        self.gpio.validate()?;
+        self.rtc.validate()?;
+        self.ssu.validate(faulted)?;
+        self.sci.validate(now)?;
+        self.iic.validate(now)?;
+        self.timer_b1.validate()?;
+        self.timer_w.validate(now)?;
+        self.watchdog.validate(now, &self.clocks)?;
+        self.adc.validate()?;
+        self.aec.validate(now)?;
+        self.comparators.validate(now)?;
+        self.startup.validate(now)?;
+        crate::state::future(self.deadline()?, now)
     }
 }

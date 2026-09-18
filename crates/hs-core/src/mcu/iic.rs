@@ -15,7 +15,7 @@ const AL: u8 = 4;
 const AAS: u8 = 2;
 const ADZ: u8 = 1;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct HalfWait {
     count: u64,
     paused: bool,
@@ -54,13 +54,15 @@ impl HalfWait {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Phase {
-    Data,
-    Ack,
-    Done,
+    Data = 0,
+    Ack = 1,
+    Done = 2,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct Frame {
     shift: u8,
     remaining: u8,
@@ -70,23 +72,27 @@ struct Frame {
     loaded: bool,
     last: bool,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Condition {
-    StartRelease,
-    StartHigh,
-    StartHold,
-    StopLow,
-    StopHigh,
-    StopRelease,
-    StopDetect,
+    StartRelease = 0,
+    StartHigh = 1,
+    StartHold = 2,
+    StopLow = 3,
+    StopHigh = 4,
+    StopRelease = 5,
+    StopDetect = 6,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Hold {
-    Transmit,
-    Receive,
+    Transmit = 0,
+    Receive = 1,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Iic {
     control: u8,
     mode: u8,
@@ -859,6 +865,34 @@ impl Iic {
                 }
             }
             None => {}
+        }
+        Ok(())
+    }
+}
+
+impl Iic {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        use crate::state::require;
+        require(
+            self.count <= 7
+                && self.mode & !0xc0 == 0
+                && self.eighth_fall.is_none_or(|at| at <= now),
+            "invalid IIC control",
+        )?;
+        if let Some(f) = self.frame {
+            require(
+                match f.phase {
+                    Phase::Data => (1..=8).contains(&f.remaining),
+                    _ => f.remaining == 0,
+                },
+                "invalid IIC frame progress",
+            )?;
+        }
+        for w in [self.filter_wait, self.setup_wait].into_iter().flatten() {
+            w.validate()?;
+        }
+        for w in [self.clock_wait, self.monitor_wait].into_iter().flatten() {
+            require(w.count.checked_add(1024).is_some(), "invalid IIC interval")?;
         }
         Ok(())
     }

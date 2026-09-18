@@ -3,9 +3,30 @@
 //! change its phase or cumulative frequency.
 use core::fmt;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    borsh::BorshSerialize,
+    borsh::BorshDeserialize,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+)]
 pub struct Time(pub(crate) u128);
-#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    borsh::BorshSerialize,
+    borsh::BorshDeserialize,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+)]
 pub struct Duration(pub(crate) u128);
 
 impl Time {
@@ -67,7 +88,7 @@ impl fmt::Debug for Duration {
 /// A running rational clock. `at` is the time of the last advanced edge, not
 /// the host's latest observation time. Gate owners decide whether to retain or
 /// reset phase; merely reading a clock never rephases it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clock {
     pub(crate) at: Time,
     pub(crate) whole: u128,
@@ -158,6 +179,31 @@ impl Clock {
     }
     pub const fn ordinal(&self) -> u64 {
         self.ordinal
+    }
+}
+
+impl Clock {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), crate::Error> {
+        crate::state::require(
+            self.whole > 0
+                && self.denominator > 0
+                && self.remainder < self.denominator
+                && self.fraction < self.denominator
+                && self
+                    .whole
+                    .checked_mul(u128::from(self.denominator))
+                    .and_then(|v| v.checked_add(u128::from(self.remainder)))
+                    .is_some()
+                && self.at <= now,
+            "invalid rational clock",
+        )?;
+        crate::state::require(
+            self.ordinal
+                .checked_add(self.edges_before(now))
+                .and_then(|v| v.checked_add(65536))
+                .is_some(),
+            "clock ordinal overflow",
+        )
     }
 }
 

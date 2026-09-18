@@ -1,4 +1,6 @@
 //! Target §3.8.4: enable clearing retains one admission opportunity; I still masks it.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Machine, Time};
 
 #[test]
@@ -57,7 +59,7 @@ fn disabled_enable_expires_at_its_instruction_boundary_and_survives_snapshot_bef
                     &mut b,
                 )
                 .unwrap();
-            split = Machine::from_snapshot(&split.snapshot());
+            split = state::restore_file(&split.snapshot());
         }
         assert_eq!(whole.interrupt_entries(), u64::from(!masked));
         assert_eq!(
@@ -67,7 +69,7 @@ fn disabled_enable_expires_at_its_instruction_boundary_and_survives_snapshot_bef
         if !masked {
             assert_eq!(&whole.ram()[0x7ee..0x7f0], &return_pc.to_be_bytes());
         }
-        assert_eq!(whole, split);
+        state::assert_same_state(&whole, &split);
         assert_eq!(a, b);
     }
 }

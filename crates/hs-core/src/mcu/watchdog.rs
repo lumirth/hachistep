@@ -3,7 +3,7 @@
 use super::clocks::{Clocks, Source, Tap};
 use crate::{cpu::WriteOrigin, error::Error, time::Time};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Watchdog {
     mode: u8,
     control1: u8,
@@ -205,9 +205,50 @@ impl Watchdog {
     }
 }
 
+impl Watchdog {
+    pub(crate) fn validate(&self, now: Time, clocks: &Clocks) -> Result<(), Error> {
+        let raw = clocks.ticks(now, Tap::on_chip(1));
+        crate::state::require(
+            self.rosc_phase < 2048
+                && self.control1 & 0xaa == 0xaa
+                && self.control2 & 0x57 == 0x57
+                && self.mode & 0xf0 == 0xf0
+                // The private divider can count only source edges that have
+                // actually occurred, including across stopped clock intervals.
+                && self.rosc_last <= raw
+                && self.rosc_ticks <= self.rosc_last / 2048
+                && raw
+                    .saturating_sub(self.rosc_last)
+                    .checked_add(u64::from(self.rosc_phase))
+                    .and_then(|n| self.rosc_ticks.checked_add(n / 2048))
+                    .is_some()
+                && self.rosc_last.checked_add(524288).is_some()
+                && self.last.checked_add(256).is_some()
+                && self.rosc_ticks.checked_add(65536).is_some(),
+            "invalid watchdog divider",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn disabled_counter_cannot_hide_an_overflowing_saved_private_divider() {
+        let c = Clocks::new(Time::ZERO, Default::default()).unwrap();
+        let now = Time::from_micros(200_000_000);
+        let mut w = Watchdog {
+            control1: 0xaa,
+            ..Watchdog::default()
+        };
+        assert_eq!(w.deadline(&c).unwrap(), None);
+        w.validate(now, &c).unwrap();
+        let mut corrupt = w.clone();
+        corrupt.rosc_ticks = u64::MAX - 65536;
+        assert!(corrupt.validate(now, &c).is_err());
+        assert!(!w.sync(now, &c));
+        w.validate(now, &c).unwrap();
+    }
     #[test]
     fn qualified_writes_use_the_old_latch_and_erratum_does_not_discard_ovf_clear() {
         let c = Clocks::new(Time::ZERO, Default::default()).unwrap();

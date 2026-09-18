@@ -10,7 +10,7 @@ mod scan;
 pub use scan::LcdDrive;
 pub const LCD_WIDTH: usize = 96;
 pub const LCD_HEIGHT: usize = 64;
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Nt7508 {
     ram: [u8; 4096],
     icons: [u8; 256],
@@ -356,6 +356,29 @@ impl Nt7508 {
         }
     }
 }
+
+impl Nt7508 {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::require(
+            self.bits < 8
+                && self.page <= 16
+                && self.column_byte < 256
+                && self.saved_column.is_none_or(|v| v < 256)
+                && self.start_line < 128
+                && self.initial_com < 128
+                && (16..=128).contains(&self.duty)
+                && self.inversion_lines <= 31
+                && self.oscillator_frequency <= 31
+                && self.gray_mode <= 7
+                && self.contrast <= 63
+                && self.oscillator_control <= 3,
+            "invalid LCD controller",
+        )?;
+        self.scan.validate(now)?;
+        crate::state::future(self.ready, now)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

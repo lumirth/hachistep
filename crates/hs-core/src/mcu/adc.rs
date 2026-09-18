@@ -2,12 +2,14 @@
 //! and a clocked ADTRG synchronizer. No conversion is completed by a host read.
 use super::clocks::{ClockWait, Clocks, Tap};
 use crate::{error::Error, time::Time};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Phase {
-    Sample,
-    Convert,
+    Sample = 0,
+    Convert = 1,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Adc {
     mode: u8,
     control: u8,
@@ -231,6 +233,31 @@ impl Adc {
         }
     }
 }
+
+impl Adc {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::state::require(
+            self.mode & 0x80 == 0
+                && self.control & 0x3f == 0x3f
+                && self.result & 63 == 0
+                && self.sample <= 1023,
+            "invalid ADC latches",
+        )?;
+        for wait in [self.next, self.settling, self.trigger_next]
+            .into_iter()
+            .flatten()
+        {
+            wait.validate()?;
+        }
+        crate::state::require(
+            self.next.is_none_or(|w| w.uses(self.tap()))
+                && self.settling.is_none_or(|w| w.uses(Tap::cpu()))
+                && self.trigger_next.is_none_or(|w| w.uses(Tap::cpu())),
+            "invalid ADC clock source",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

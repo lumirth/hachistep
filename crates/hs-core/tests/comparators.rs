@@ -1,5 +1,7 @@
 //! Register/latch expectations from REJ09B0152-0300 §18. Response times below
 //! are explicit simulation parameters, not new physical captures.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{
     cpu::WriteOrigin,
     mcu::{comparators::Comparators, Mcu},
@@ -180,12 +182,12 @@ fn guest_program_wakes_on_real_comparator_vector_and_replays_exactly() {
             .unwrap()
             .inputs_consumed;
         if us == 208 {
-            b = Machine::from_snapshot(&b.snapshot());
+            b = state::restore_file(&b.snapshot());
         }
     }
     assert_eq!(a.peek(0xf780).unwrap(), 1);
     assert_eq!(a.interrupt_entries(), 1);
-    assert_eq!(a, b);
+    state::assert_same_state(&a, &b);
     assert_eq!(x, y);
 }
 #[test]

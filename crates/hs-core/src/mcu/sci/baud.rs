@@ -7,7 +7,7 @@ use crate::{
     time::{Time, TimeError},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Baud {
     tap: Tap,
     consumed: u64,
@@ -79,7 +79,7 @@ impl Baud {
         self.half + if self.high { 1 } else { 2 }
     }
     pub fn boundary(&self, span: u64, now: Time) -> u64 {
-        if self.half % span == 0 && self.last == now {
+        if self.half.is_multiple_of(span) && self.last == now {
             self.half
         } else {
             self.half + span - self.half % span
@@ -99,5 +99,28 @@ impl Baud {
             .and_then(|n| n.checked_add(self.consumed))
             .ok_or(TimeError::Overflow)?;
         Ok(Some(clocks.edge(count, self.tap)?))
+    }
+}
+
+impl Baud {
+    pub(super) fn validate(&self, now: Time) -> Result<(), Error> {
+        self.tap.validate()?;
+        crate::state::require(
+            [
+                Tap::system(1),
+                Tap::system(16),
+                Tap::system(64),
+                Tap::watch(1),
+            ]
+            .contains(&self.tap),
+            "invalid baud clock",
+        )?;
+        crate::state::require(
+            (1..=256).contains(&self.remaining)
+                && self.last <= now
+                && self.half.checked_add(1024).is_some()
+                && self.consumed.checked_add(65536).is_some(),
+            "invalid baud counter",
+        )
     }
 }

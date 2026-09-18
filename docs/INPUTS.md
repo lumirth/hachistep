@@ -9,7 +9,11 @@ loads the sensor's separate 19-byte nonvolatile configuration/calibration image.
 All original files are read-only host inputs.
 
 An exported EEPROM/status/sensor image set starts a new cold session. It does not
-resume partial CPU or device operations. Use the in-memory snapshot API for that.
+resume partial CPU or device operations. Use `--load-state FILE` or the snapshot
+API to resume those. `--out` includes a native `state.bin`; `--save-state FILE`
+can save one separately. Run endpoints and CSV timestamps remain absolute after
+a load. Records earlier than the saved instant are skipped; an input exactly
+at that instant remains pending.
 Exports project persistent cells at the current time. During programming they
 can contain a partially erased/programmed value; exporting does not complete or
 cancel the operation. A snapshot also retains the operation needed to continue.

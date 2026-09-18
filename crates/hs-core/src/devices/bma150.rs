@@ -10,13 +10,15 @@ use crate::{
     time::{Clock, Duration, Time},
 };
 const COUNT: usize = 0x3e;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Serial {
-    Address,
-    Read(u8),
-    Write(u8),
+    Address = 0,
+    Read(u8) = 1,
+    Write(u8) = 2,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Bma150 {
     registers: [u8; COUNT],
     nonvolatile: [u8; 0x13],
@@ -307,8 +309,8 @@ impl Bma150 {
         if self.next_sample() == Some(now) {
             self.sample_clock.advance(1)?;
             self.sample_phase();
-            cycle_ended = self.sample_clock.ordinal() % 4 == 0;
-            if self.sample_clock.ordinal() % 12 == 0
+            cycle_ended = self.sample_clock.ordinal().is_multiple_of(4);
+            if self.sample_clock.ordinal().is_multiple_of(12)
                 && (!self.automatic() || usize::from(self.auto_cycles) >= 2 * self.window())
             {
                 self.interrupts.millisecond(&self.registers);
@@ -576,6 +578,47 @@ impl Bma150 {
         Ok(())
     }
 }
+
+impl Bma150 {
+    pub(crate) fn validate(&mut self, now: Time) -> Result<(), Error> {
+        use crate::state::{future, require};
+        self.filter.rebuild()?;
+        self.interrupts.validate()?;
+        self.sample_clock.validate(now)?;
+        require(
+            self.rx_bits < 8
+                && self.tx_bit <= 8
+                && match self.serial {
+                    Serial::Address => true,
+                    Serial::Read(a) | Serial::Write(a) => a < 128,
+                }
+                && self.filtered.iter().all(|v| (-512..=511).contains(v))
+                && self.unpowered_since.is_none_or(|t| t <= now),
+            "invalid sensor state",
+        )?;
+        if let Some((cycle, address, _)) = self.nv_operation {
+            cycle.validate(now)?;
+            require(
+                (0x2b..=0x3d).contains(&address),
+                "invalid sensor nonvolatile address",
+            )?;
+        }
+        if self.unpowered_since.is_none() {
+            for at in [
+                self.wake_deadline,
+                self.pause_deadline,
+                self.quiet_deadline,
+                self.irq_hold,
+                self.image_deadline,
+                self.serial_ready,
+            ] {
+                future(at, now)?;
+            }
+        }
+        future(self.deadline(), now)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

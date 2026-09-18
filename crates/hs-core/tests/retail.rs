@@ -1,5 +1,7 @@
 //! Private-input regression, explicitly opt-in. Expected outcomes here are
 //! recorded emulator observations, not independent hardware certification.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{Buttons, Images, Input, Machine, Time, TimedInput};
 #[test]
 #[ignore = "requires HS_FIRMWARE and HS_EEPROM; run tools/verify_retail.py"]
@@ -54,7 +56,7 @@ fn retail_boot_and_button_replay_are_partition_invariant() {
     a.display(&mut pixels);
     assert!(pixels.iter().any(|v| *v != 0));
     let snapshot = a.snapshot();
-    let mut c = Machine::from_snapshot(&snapshot);
+    let mut c = state::restore_file(&snapshot);
     x.clear();
     y.clear();
     a.run_until(Time::from_micros(6_000_000), &[], &mut x)
@@ -62,5 +64,5 @@ fn retail_boot_and_button_replay_are_partition_invariant() {
     c.run_until(Time::from_micros(6_000_000), &[], &mut y)
         .unwrap();
     assert_eq!(x, y);
-    assert_eq!(a, c);
+    state::assert_same_state(&a, &c);
 }

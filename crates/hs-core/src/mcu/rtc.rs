@@ -3,7 +3,7 @@
 //! duration with an explicitly unmeasured phase witness (see STATUS.md).
 use super::clocks::{Clocks, Tap};
 use crate::{error::Error, time::Time};
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Rtc {
     pub flags: u8,
     data: [u8; 4],
@@ -15,7 +15,7 @@ pub struct Rtc {
     enabled: bool,
     pending: Option<CalendarUpdate>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct CalendarUpdate {
     data: [u8; 4],
     pm: u8,
@@ -106,9 +106,9 @@ impl Rtc {
                 }
                 self.pending = Some(pending);
             }
-            if self.phase % 2048 == 0 {
+            if self.phase.is_multiple_of(2048) {
                 self.flags |= self.control2 & 1;
-                if self.phase % 4096 == 0 {
+                if self.phase.is_multiple_of(4096) {
                     self.flags |= self.control2 & 2;
                 }
             }
@@ -248,6 +248,30 @@ impl Rtc {
         (p != 0).then(|| 23 + p.trailing_zeros() as u8)
     }
 }
+
+impl Rtc {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::state::require(
+            self.phase < 8192
+                && self.data[1] & !0x7f == 0
+                && self.data[2] & !0x3f == 0
+                && self.data[3] < 8
+                && self.pending.is_none_or(|p| {
+                    p.data[0] < 128
+                        && p.data[1] < 128
+                        && p.data[2] < 64
+                        && p.data[3] < 8
+                        && p.pm & !0x20 == 0
+                        && p.flags & !0x7c == 0
+                })
+                && self.control1 & 7 == 0
+                && self.source & !0x7f == 0
+                && self.last.checked_add(8192).is_some(),
+            "invalid RTC progress",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

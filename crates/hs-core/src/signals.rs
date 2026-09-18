@@ -1,17 +1,21 @@
 use crate::time::Time;
 
 /// A pin is not a byte. High impedance is resolved by board pulls/drivers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Drive {
-    Floating,
-    Low,
-    High,
+    Floating = 0,
+    Low = 1,
+    High = 2,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Piezo {
-    Negative,
-    Neutral,
-    Positive,
+    Negative = 0,
+    Neutral = 1,
+    Positive = 2,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NvDomain {
@@ -93,7 +97,7 @@ impl Output for Vec<Event> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Acceleration {
     pub x: i32,
     pub y: i32,
@@ -107,7 +111,9 @@ impl Acceleration {
         z: 1_000_000,
     };
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, Default, PartialEq, Eq,
+)]
 pub struct Buttons {
     pub left: bool,
     pub center: bool,

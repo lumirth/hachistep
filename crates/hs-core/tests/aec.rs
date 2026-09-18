@@ -1,6 +1,8 @@
 //! Independently expressed register/count/PWM expectations from MCU §13.
 //! Tests establish documented digital rules and the explicitly chosen
 //! reference-edge interpretation, not new physical measurements.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{
     cpu::WriteOrigin,
     mcu::{
@@ -433,12 +435,12 @@ fn guest_external_count_overflow_vectors_32_and_replays() {
             .unwrap()
             .inputs_consumed;
         if us == 1337 {
-            b = Machine::from_snapshot(&b.snapshot());
+            b = state::restore_file(&b.snapshot());
         }
     }
     assert_eq!(a.peek(0xf780).unwrap(), 1);
     assert_eq!(a.interrupt_entries(), 1);
-    assert_eq!(a, b);
+    state::assert_same_state(&a, &b);
     assert_eq!(x, y);
 }
 #[test]

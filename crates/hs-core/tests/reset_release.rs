@@ -1,4 +1,6 @@
 //! REJ09B0152-0300 §19: the three-bit RES counter counts eight phi edges.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Input, Machine, Time, TimedInput};
 fn ns(n: u64) -> Time {
     Time::from_raw((u128::from(n) << 64) / 1_000_000_000)
@@ -52,12 +54,12 @@ fn reset_release_counts_edges_and_reassertion_discards_partial_qualification() {
                 .run_until(ns(n), &changes[consumed..], &mut b)
                 .unwrap()
                 .inputs_consumed;
-            split = Machine::from_snapshot(&split.snapshot());
+            split = state::restore_file(&split.snapshot());
         }
         split
             .run_until(first_read, &changes[consumed..], &mut b)
             .unwrap();
-        assert_eq!(m, split);
+        state::assert_same_state(&m, &split);
         assert_eq!(a, b);
         m.run_until(Time::from_raw(first_read.raw() + 1), &[], &mut a)
             .unwrap();

@@ -36,13 +36,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         events.len()
     );
     let saved = machine.snapshot();
+    let bytes = saved.encode()?;
+    let saved = hs_core::Snapshot::decode(&bytes)?;
     let mut restored = Machine::from_snapshot(&saved);
     let mut original_future = Vec::new();
     let mut restored_future = Vec::new();
     machine.run_until(Time::from_micros(6_000_000), &[], &mut original_future)?;
     restored.run_until(Time::from_micros(6_000_000), &[], &mut restored_future)?;
     assert_eq!(original_future, restored_future);
-    assert_eq!(machine, restored);
+    assert!(machine.snapshot().encode()? == restored.snapshot().encode()?);
     println!("Restored execution and complete product events agree.");
     Ok(())
 }

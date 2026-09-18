@@ -3,16 +3,18 @@
 //! shortcut based on a button name or retail firmware address.
 use super::clocks::{ClockWait, Clocks, Source, Tap};
 use crate::{error::Error, time::Time};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 pub enum Mode {
-    Active,
-    Subactive,
-    Sleep,
-    Subsleep,
-    Watch,
-    Standby,
+    Active = 0,
+    Subactive = 1,
+    Sleep = 2,
+    Subsleep = 3,
+    Watch = 4,
+    Standby = 5,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Control {
     pub sys1: u8,
     pub sys2: u8,
@@ -236,5 +238,23 @@ impl Control {
     pub fn synchronize_clock(&self, now: Time, c: &mut Clocks) -> Result<(), Error> {
         c.select_subclock(now, [8, 4, 2, 1][usize::from(self.sys2 & 3)])?;
         self.select_clock(now, c)
+    }
+}
+
+impl Control {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::state::require(
+            self.sys2 & 0xe0 == 0xe0
+                && self.osc & !0xe2 == 0
+                && self.gate1 & !0x57 == 0
+                && self.gate2 & !0x7e == 0
+                && self.iegr & !0xa3 == 0
+                && self.ien1 & !0x87 == 0
+                && self.ien2 & !0x45 == 0
+                && self.irr1 & !7 == 0
+                && self.irr2 & !0x45 == 0
+                && self.irq_clear_delay.iter().all(|d| *d <= 2),
+            "invalid MCU control latches",
+        )
     }
 }

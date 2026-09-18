@@ -24,6 +24,7 @@ pub mod error;
 pub mod mcu;
 mod power;
 pub mod signals;
+mod state;
 pub mod time;
 pub use error::Error;
 pub use signals::{Acceleration, AnalogPin, Buttons, DigitalPin, Event, Input, Output, TimedInput};

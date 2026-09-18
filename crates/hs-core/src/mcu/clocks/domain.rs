@@ -5,7 +5,7 @@ use crate::{
     time::{Clock, Time},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Domain {
     pub clock: Clock,
     pub running: bool,
@@ -56,5 +56,15 @@ impl Domain {
             self.stop(now)?;
         }
         Ok(true)
+    }
+}
+
+impl Domain {
+    pub(super) fn validate(&self, now: Time) -> Result<(), Error> {
+        self.clock.validate(now)?;
+        crate::state::require(
+            self.held_at <= now && (self.running || self.held_at >= self.clock.at),
+            "invalid held clock phase",
+        )
     }
 }

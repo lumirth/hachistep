@@ -1,6 +1,6 @@
 //! Bosch §3.2: hysteretic criteria, millisecond debounce, and motion history.
 //! Register values remain owned by the sensor; alert adjusts working durations.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, Default, PartialEq, Eq)]
 struct Threshold {
     axes: [bool; 3],
     count: u16,
@@ -58,7 +58,7 @@ impl Threshold {
         false
     }
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Interrupts {
     thresholds: [Threshold; 2], // Low-g, high-g.
     history: [[i16; 3]; 3],
@@ -201,6 +201,24 @@ impl Interrupts {
             || self.alert
     }
 }
+
+impl Interrupts {
+    pub(super) fn validate(&self) -> Result<(), crate::Error> {
+        crate::state::require(
+            self.thresholds.iter().all(|t| t.count <= 255)
+                && self.cursor < 3
+                && self.observations <= 4
+                && self.divider < 64
+                && self
+                    .history
+                    .iter()
+                    .flatten()
+                    .all(|v| (-512..=511).contains(v)),
+            "invalid sensor interrupt history",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

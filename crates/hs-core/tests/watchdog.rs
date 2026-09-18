@@ -1,5 +1,7 @@
 //! Reset timing at the embedding boundary, including an interrupted CPU and
 //! external RES overlap. Register expectations are exercised by hachiware.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{
     mcu::clocks::Frequencies, Conditions, Event, Images, Input, Machine, Time, TimedInput,
 };
@@ -42,7 +44,7 @@ fn watchdog_holds_reset_for_512_rosc_edges_and_restores_mid_hold() {
     assert_eq!(m.peek(0xffb3).unwrap(), 0);
     assert_eq!(m.retired(), 0);
     let reads = m.statistics().bus_reads;
-    let mut restored = Machine::from_snapshot(&m.snapshot());
+    let mut restored = state::restore_file(&m.snapshot());
     let mut a = Vec::new();
     let mut b = Vec::new();
     m.run_until(Time::from_micros(2560), &[], &mut a).unwrap();
@@ -55,7 +57,7 @@ fn watchdog_holds_reset_for_512_rosc_edges_and_restores_mid_hold() {
             .unwrap();
     }
     assert_eq!(a, b);
-    assert_eq!(m, restored);
+    state::assert_same_state(&m, &restored);
     assert!(m.statistics().bus_reads > reads);
     assert!(m.retired() > 0);
 }

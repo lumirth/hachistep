@@ -1,6 +1,6 @@
 //! Character interpretation is latched at TSR load or receive start. Clock
 //! selection remains live independently of that interpretation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Format {
     pub synchronous: bool,
     pub data: u8,
@@ -46,5 +46,17 @@ impl Format {
             word |= u16::from((value.count_ones() & 1 != 0) ^ self.odd) << (self.data + 1);
         }
         word | (((1 << self.stops) - 1) << self.stop())
+    }
+}
+
+impl Format {
+    pub(super) fn validate(self) -> Result<(), crate::Error> {
+        crate::state::require(
+            matches!(self.data, 5 | 7 | 8)
+                && matches!(self.stops, 1 | 2)
+                && matches!(self.half_bit, 16 | 32)
+                && (!self.synchronous || (self.data == 8 && !self.parity)),
+            "invalid serial frame format",
+        )
     }
 }

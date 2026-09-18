@@ -8,7 +8,7 @@ use crate::{
     error::Error,
     time::{Time, TimeError},
 };
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TimerW {
     mode: u8,
     control: u8,
@@ -435,6 +435,34 @@ impl TimerW {
         Ok(count.into_iter().chain(input).min())
     }
 }
+
+impl TimerW {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::require(
+            self.at <= now
+                && self.clear_at.is_none_or(|at| at <= now)
+                && self.output < 16
+                && self.mode & 0x48 == 0x48
+                && self.enable & 0x70 == 0x70
+                && self.status & 0x70 == 0x70
+                && self.io.iter().all(|v| v & 0x88 == 0x88)
+                && self.seen & !0x8f == 0
+                && self.last.checked_add(65536).is_some(),
+            "invalid Timer W progress",
+        )?;
+        for w in self
+            .capture_visible
+            .into_iter()
+            .chain([self.input_next])
+            .flatten()
+        {
+            w.validate()?;
+            crate::state::require(w.uses(Tap::cpu()), "invalid capture or input clock")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

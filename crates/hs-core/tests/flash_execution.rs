@@ -1,5 +1,7 @@
 #[path = "support/flash.rs"]
 mod guest;
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{Input, Machine, Time, TimedInput};
 
 #[test]
@@ -22,11 +24,11 @@ fn ram_programming_and_verify_survive_partition_and_mid_pulse_restoration() {
             split.snapshot(),
             "projection cannot complete or protect a pulse"
         );
-        split = Machine::from_snapshot(&before);
+        split = state::restore_file(&before);
     }
     assert_eq!(whole.firmware()[0x9000], 0);
     assert_ne!(&whole.ram()[0x180..0x182], &[0xff, 0xff]);
-    assert_eq!(whole, split);
+    state::assert_same_state(&whole, &split);
     assert_eq!(a, b);
 }
 
@@ -49,6 +51,6 @@ fn power_loss_and_mcu_reset_retain_partial_programming() {
         replay
             .run_until(Time::from_micros(12000), &[event], &mut ())
             .unwrap();
-        assert_eq!(m, replay);
+        state::assert_same_state(&m, &replay);
     }
 }

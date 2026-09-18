@@ -10,3 +10,5 @@ default = []
 trace = []
 
 [dependencies]
+borsh.workspace = true
+sha2.workspace = true

@@ -6,7 +6,7 @@ use crate::{
     signals::{Buttons, DigitalPin, Drive},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct Gpio {
     pub pfcr: u8,
     pmr: [u8; 3],
@@ -26,7 +26,7 @@ pub struct Gpio {
     incident_light: bool,
     pub levels: [u8; 5],
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SerialLevels {
     pub lcd_selected: bool,
     pub data: bool,
@@ -428,6 +428,27 @@ impl Gpio {
         self.levels[2] & 16 != 0 && (timer_drive || self.direction[2] & 16 != 0)
     }
 }
+
+impl Gpio {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        crate::state::require(
+            self.pfcr & !31 == 0
+                && self.open_drain9 & !15 == 0
+                && self
+                    .pmr
+                    .iter()
+                    .zip([0x3f, 1, 0x0b])
+                    .all(|(v, mask)| v & !mask == 0)
+                && [self.direction, self.pull].iter().all(|a| {
+                    a.iter()
+                        .zip([7, 7, 0x1c, 15])
+                        .all(|(v, mask)| v & !mask == 0)
+                }),
+            "invalid GPIO storage bits",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

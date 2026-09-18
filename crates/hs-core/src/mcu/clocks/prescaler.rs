@@ -2,7 +2,7 @@
 //! divider changes its phase without rewinding an owner's consumed-edge count.
 use crate::{error::Error, time::TimeError};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Prescaler<const N: usize> {
     anchor: u64,
     phase: u16,
@@ -77,5 +77,21 @@ impl<const N: usize> Prescaler<N> {
             self.phase = 0;
         }
         true
+    }
+}
+
+impl<const N: usize> Prescaler<N> {
+    pub(super) fn validate(&self, parent: u64) -> Result<(), Error> {
+        crate::state::require(
+            self.phase < (1 << N)
+                && self.anchor <= parent
+                && self.anchor >= u64::from(self.phase)
+                && self
+                    .emitted
+                    .iter()
+                    .enumerate()
+                    .all(|(i, n)| *n <= self.anchor >> (i + 1)),
+            "invalid divider phase",
+        )
     }
 }

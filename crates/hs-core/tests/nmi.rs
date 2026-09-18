@@ -1,6 +1,8 @@
 //! REJ09B0152-0300 §§3.4.1, 3.5.1, 3.8.6, 5.2 and 6.3.
 //! Electrical fixture pulses below are much longer than the two-clock minimum.
 //! No subcycle input synchronizer or maskable-enable race certification claimed.
+#[path = "support/state.rs"]
+mod state;
 use hs_core::{mcu::control::Control, Images, Input, Machine, Time, TimedInput};
 fn t(us: u64) -> Time {
     Time::from_micros(us)
@@ -113,10 +115,10 @@ fn nmi_wake_respects_standby_stabilization_and_partitioning() {
             .unwrap()
             .inputs_consumed;
         if us == 120 {
-            short = Machine::from_snapshot(&short.snapshot());
+            short = state::restore_file(&short.snapshot());
         }
     }
-    assert_eq!(long, short);
+    state::assert_same_state(&long, &short);
     assert_eq!(a, b);
     assert_eq!(long.ram()[0], 1);
 }

@@ -166,6 +166,8 @@ pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
     ] {
         write_new(&dir.join(name), data)?;
     }
+    let saved = m.snapshot().encode().map_err(io::Error::other)?;
+    write_new(&dir.join("state.bin"), &saved)?;
     write_new(&dir.join("frame.pgm"), &frame(m))?;
     write_new(&dir.join("report.json"), report.as_bytes())
 }

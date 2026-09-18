@@ -8,7 +8,7 @@ use crate::{
 const RETENTION: u128 = 15u128 << 64; // 15,000 mV ms
 const Q: u64 = 1 << 32; // capacitor voltage in Q32 millivolts
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Power {
     pub rail: u16,
     capacitor: u64,
@@ -170,6 +170,20 @@ fn decay(elapsed: u128) -> u64 {
         value = (value * value) >> 62;
     }
     value as u64
+}
+
+impl Power {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::require(
+            self.capacitor <= u64::from(u16::MAX) * Q
+                && self.at <= now
+                && self.dose_at <= now
+                && self.dose <= RETENTION,
+            "invalid rail progress",
+        )?;
+        crate::state::future(self.crossing, now)?;
+        crate::state::future(self.loss, now)
+    }
 }
 
 #[cfg(test)]

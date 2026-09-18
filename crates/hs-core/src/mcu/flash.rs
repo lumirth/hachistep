@@ -18,7 +18,7 @@ const P: u8 = 1;
 // 7 ms of programming or 100 ms of erasing traverses the nominal charge range.
 const FULL: u64 = (100 * ((7u128 << 64) / 1000)) as u64;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 struct ChargePage {
     address: u16,
     cells: [u64; PAGE * 8],
@@ -83,15 +83,18 @@ impl Charges {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Supply {
-    Normal,
-    Reduced,
-    Stopped,
+    Normal = 0,
+    Reduced = 1,
+    Stopped = 2,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Flash {
+    #[borsh(deserialize_with = "crate::state::read_bytes")]
     bytes: Box<[u8; FLASH_SIZE]>,
     charges: Charges,
     control: u8,
@@ -460,5 +463,51 @@ impl Flash {
     }
     pub(crate) fn settled_byte(&self, address: u16) -> u8 {
         self.bytes[usize::from(address)]
+    }
+}
+
+// Only touched physical pages are explicit. Allocation is bounded before any
+// file-supplied count can reserve memory; the index is rebuilt, never trusted.
+impl borsh::BorshSerialize for Charges {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        self.pages.serialize(writer)
+    }
+}
+impl borsh::BorshDeserialize for Charges {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let count = u32::deserialize_reader(reader)?;
+        if count > PAGES as u32 {
+            return Err(std::io::Error::other("too many flash pages"));
+        }
+        let mut charges = Self::new();
+        for i in 0..count {
+            let page = ChargePage::deserialize_reader(reader)?;
+            let address = usize::from(page.address);
+            if address >= FLASH_SIZE
+                || address % PAGE != 0
+                || charges.indices[address / PAGE] != u16::MAX
+                || page.cells.iter().any(|q| *q > FULL)
+            {
+                return Err(std::io::Error::other("invalid flash charge page"));
+            }
+            charges.indices[address / PAGE] = i as u16;
+            charges.pages.push(page);
+        }
+        Ok(charges)
+    }
+}
+impl Flash {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        crate::state::require(
+            self.control & !0x7f == 0
+                && self.erase & !0x3f == 0
+                && usize::from(self.page) < FLASH_SIZE
+                && self.page & 127 == 0
+                && self.pulse_since <= now
+                && self.verify_pending.is_none_or(|(address, _)| {
+                    usize::from(address) < FLASH_SIZE && address & 3 == 0
+                }),
+            "invalid flash progress",
+        )
     }
 }

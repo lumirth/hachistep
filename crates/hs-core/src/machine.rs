@@ -3,6 +3,7 @@
 //! The starter retains partial CPU and serial work. Its hardware coverage and
 //! timing witnesses are enumerated in docs/STATUS.md; successful execution is
 //! not a claim of complete silicon conformance.
+mod state;
 use crate::{
     cpu::{alu::I, Action, Cpu, Registers, Width},
     devices::{bma150::Bma150, m95512::M95512, nt7508::Nt7508},
@@ -16,6 +17,7 @@ use crate::{
     signals::{Drive, Event, Input, Output, Piezo, TimedInput},
     time::{Time, TimeError},
 };
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Images<'a> {
@@ -23,7 +25,7 @@ pub struct Images<'a> {
     pub eeprom: &'a [u8],
     pub eeprom_status: u8,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Conditions {
     pub clocks: Frequencies,
     pub supply_millivolts: u16,
@@ -57,7 +59,7 @@ pub struct Statistics {
     pub resets: u64,
     pub peripheral_boundaries: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct Pending {
     action: Action,
     wait: ClockWait,
@@ -66,10 +68,12 @@ struct Pending {
     lane: u8,
     high: u8,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Resume {
-    Sleep(ClockWait),
-    Wake { wait: ClockWait, direct: bool },
+    Sleep(ClockWait) = 0,
+    Wake { wait: ClockWait, direct: bool } = 1,
 }
 impl Resume {
     fn wait(self) -> ClockWait {
@@ -85,6 +89,7 @@ pub struct Snapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Machine {
+    firmware_origin: [u8; 32],
     now: Time,
     last_effect: Time,
     cpu: Cpu,
@@ -130,6 +135,7 @@ impl Machine {
         let mcu = Mcu::new(images.firmware, conditions.clocks)?;
         let cpu = Cpu::reset();
         let mut m = Self {
+            firmware_origin: Sha256::digest(images.firmware).into(),
             now: Time::ZERO,
             last_effect: Time::ZERO,
             cpu,
@@ -166,6 +172,10 @@ impl Machine {
         m.resolve_board(&mut ())?;
         m.refresh_deadline()?;
         Ok(m)
+    }
+    /// Identity of the original image, unchanged by guest flash programming.
+    pub fn firmware_origin(&self) -> [u8; 32] {
+        self.firmware_origin
     }
     pub fn conditions(&self) -> Conditions {
         self.conditions
@@ -252,15 +262,27 @@ impl Machine {
         Time::from_raw(self.now.raw().saturating_sub(1)).max(self.last_effect)
     }
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            state: self.clone(),
-        }
+        let mut state = self.clone();
+        state.cpu.retired = 0;
+        state.cpu.interrupt_entries = 0;
+        state.stats = Statistics::default();
+        state.mcu.ssu.transmitted = 0;
+        state.mcu.ssu.received = 0;
+        state.mcu.sci.transmitted = 0;
+        state.mcu.sci.received = 0;
+        Snapshot { state }
     }
-    pub fn restore(&mut self, snapshot: &Snapshot) {
+    /// Atomically restore the same firmware lineage, including all saved NV cells.
+    pub fn restore(&mut self, snapshot: &Snapshot) -> Result<(), Error> {
+        crate::state::require(
+            self.firmware_origin == snapshot.state.firmware_origin,
+            "save state belongs to different firmware",
+        )?;
         *self = snapshot.state.clone();
+        Ok(())
     }
-    /// Typed in-memory snapshots include in-flight work; this is not a portable
-    /// serialization promise. The caller may use equality for same-run snapshots.
+    /// Construct from captured state, including its firmware identity.
+    /// Diagnostic counters start at zero after either typed or file restoration.
     pub fn from_snapshot(snapshot: &Snapshot) -> Self {
         snapshot.state.clone()
     }

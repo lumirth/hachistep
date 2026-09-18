@@ -1,10 +1,11 @@
 //! Power-of-two moving averages over actual ADC samples. Retaining 64 samples
 //! allows a bandwidth change to select a new window without inventing history.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub(super) struct Filter {
     history: [[i16; 64]; 3],
     next: [u8; 3],
     count: [u8; 3],
+    #[borsh(skip)]
     sum: [i32; 3],
     shift: u8,
 }
@@ -52,6 +53,31 @@ impl Filter {
         }
     }
 }
+
+impl Filter {
+    pub(super) fn rebuild(&mut self) -> Result<(), crate::Error> {
+        crate::state::require(
+            self.shift <= 6
+                && self.next.iter().all(|n| *n < 64)
+                && self.count.iter().all(|n| *n <= 64)
+                && self
+                    .history
+                    .iter()
+                    .flatten()
+                    .all(|v| (-512..=511).contains(v)),
+            "invalid sensor filter history",
+        )?;
+        for axis in 0..3 {
+            self.sum[axis] = (0..self.window().min(usize::from(self.count[axis])))
+                .map(|n| {
+                    i32::from(self.history[axis][(usize::from(self.next[axis]) + 63 - n) & 63])
+                })
+                .sum();
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

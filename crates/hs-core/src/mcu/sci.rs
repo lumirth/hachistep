@@ -15,40 +15,44 @@ use crate::{
 use baud::Baud;
 use frame::Format;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(
+    borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, Default, PartialEq, Eq,
+)]
 pub struct Pins {
     pub clock: Option<Drive>,
     pub transmit: Option<bool>,
     pub receive: bool,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct Character {
     format: Format,
     word: u16,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum Tx {
     Blocked {
         character: Character,
-    },
+    } = 0,
     Mark {
         next: u64,
-    },
+    } = 1,
     Start {
         character: Character,
         next: u64,
-    },
+    } = 2,
     Data {
         character: Character,
         cell: u8,
         next: Option<u64>,
-    },
+    } = 3,
     /// TSR can already hold the next character while the old stop/D7 remains
     /// on TXD. A later TDR write must not overwrite that preloaded character.
     Tail {
         loaded: Option<Character>,
         next: Option<u64>,
-    },
+    } = 4,
 }
 impl Tx {
     fn next(self) -> Option<u64> {
@@ -65,7 +69,7 @@ impl Tx {
         )
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 struct Rx {
     format: Format,
     value: u8,
@@ -74,13 +78,15 @@ struct Rx {
     error: u8,
     next: Option<u64>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[borsh(use_discriminant = true)]
 enum PulseEnd {
-    Basic(u64),
-    Phi(ClockWait),
+    Basic(u64) = 0,
+    Phi(ClockWait) = 1,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Sci {
     spcr: u8,
     smr: u8,
@@ -111,7 +117,9 @@ pub struct Sci {
     sck: bool,
     sync_next: Option<u64>,
     mux_glitch: Option<Time>,
+    #[borsh(skip)]
     pub transmitted: u64,
+    #[borsh(skip)]
     pub received: u64,
 }
 impl Default for Sci {
@@ -782,5 +790,100 @@ impl Sci {
         }
         self.refresh_sync_clock();
         Ok(())
+    }
+}
+
+impl Sci {
+    pub(crate) fn validate(&self, now: Time) -> Result<(), Error> {
+        use crate::state::require;
+        self.baud.validate(now)?;
+        require(
+            self.spcr & 0xc0 == 0xc0
+                && self.spcr & !0xd3 == 0
+                && self.scr & !0xf7 == 0
+                && self.semr & !8 == 0
+                && self.ircr & !0xf0 == 0
+                && self.ssr & !0xfc == 0
+                && self.seen & !0xfc == 0,
+            "invalid SCI storage bits",
+        )?;
+        if let Some(tx) = self.tx {
+            let ch = match tx {
+                Tx::Blocked { character }
+                | Tx::Start { character, .. }
+                | Tx::Data { character, .. } => Some(character),
+                Tx::Tail { loaded, .. } => loaded,
+                Tx::Mark { .. } => None,
+            };
+            if let Some(ch) = ch {
+                ch.format.validate()?;
+                require(
+                    ch.word
+                        >> if ch.format.synchronous {
+                            8
+                        } else {
+                            ch.format.cells()
+                        }
+                        == 0,
+                    "invalid transmit word",
+                )?;
+            }
+            if let Tx::Data {
+                character,
+                cell,
+                next,
+            } = tx
+            {
+                require(
+                    if character.format.synchronous {
+                        cell < 8 && next.is_none()
+                    } else {
+                        cell < character.format.stop() && next.is_some()
+                    },
+                    "invalid transmit position",
+                )?;
+            }
+            require(
+                tx.next().is_none_or(|n| n.checked_add(1024).is_some()),
+                "invalid transmit interval",
+            )?;
+        }
+        if let Some(rx) = self.rx {
+            rx.format.validate()?;
+            require(rx.error & !0x18 == 0, "invalid receiver error latch")?;
+            require(
+                if rx.format.synchronous {
+                    (0..8).contains(&rx.position) && rx.next.is_none()
+                } else {
+                    (-2..=(rx.format.data + u8::from(rx.format.parity)) as i8)
+                        .contains(&rx.position)
+                        && rx.next.is_some()
+                },
+                "invalid receive position",
+            )?;
+            require(
+                rx.next.is_none_or(|n| n.checked_add(1024).is_some()),
+                "invalid receive interval",
+            )?;
+        }
+        if let Some(PulseEnd::Phi(w)) = self.pulse_end {
+            w.validate()?;
+        }
+        require(
+            self.bit_start.checked_add(1024).is_some()
+                && [
+                    self.pulse_start,
+                    self.receive_pulse,
+                    self.sync_next,
+                    match self.pulse_end {
+                        Some(PulseEnd::Basic(n)) => Some(n),
+                        _ => None,
+                    },
+                ]
+                .into_iter()
+                .flatten()
+                .all(|n| n.checked_add(1024).is_some()),
+            "invalid serial edge ordinal",
+        )
     }
 }
