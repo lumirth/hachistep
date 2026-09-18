@@ -129,22 +129,66 @@ def versions() -> dict:
     return result
 
 
-def source_identity() -> dict:
-    """A revision is evidence only when the corresponding worktree is recorded."""
+def source_identity(directory: Path = ROOT) -> dict:
+    """Identify tracked and nonignored untracked content, including dirty files."""
     try:
-        revision = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
-        ).strip()
-        changes = subprocess.check_output(
-            ["git", "status", "--porcelain"], cwd=ROOT, text=True
-        )
+        command = ["git", "--no-optional-locks", "-C", str(directory)]
+
+        def git(*args: str) -> bytes:
+            return subprocess.check_output([*command, *args], stderr=subprocess.DEVNULL)
+
+        root = Path(os.fsdecode(git("rev-parse", "--show-toplevel")).strip())
+        command = ["git", "--no-optional-locks", "-C", str(root)]
+        revision = git("rev-parse", "HEAD").decode().strip()
+        changes = git("status", "--porcelain", "--untracked-files=all").decode()
+        names = git("ls-files", "--cached", "--others", "--exclude-standard", "-z")
+        tree = hashlib.sha256()
+        for name in sorted(set(names.split(b"\0")) - {b""}):
+            path = root / os.fsdecode(name)
+            if path.is_symlink():
+                kind, value = (
+                    "symlink",
+                    hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest(),
+                )
+            elif path.is_file():
+                kind, value = (
+                    "executable" if path.stat().st_mode & 0o111 else "file",
+                    digest(path),
+                )
+            elif not path.exists():
+                kind, value = "missing", ""
+            else:
+                raise OSError(f"cannot fingerprint {path}")
+            tree.update(json.dumps([os.fsdecode(name), kind, value]).encode() + b"\n")
         return {
             "commit": revision,
             "dirty": bool(changes),
             "changes": changes.splitlines(),
+            "tree_sha256": tree.hexdigest(),
         }
-    except (OSError, subprocess.SubprocessError):
-        return {"commit": None, "dirty": None}
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"commit": None, "dirty": None, "tree_sha256": None, "error": str(error)}
+
+
+def write_summary(path: Path, value: dict, source_before: dict) -> None:
+    """Retain both source identities and reject a run whose checkout changed."""
+    after = source_identity()
+    unchanged = (
+        source_before["tree_sha256"] == after["tree_sha256"]
+        if source_before["tree_sha256"] and after["tree_sha256"]
+        else None
+    )
+    write_json(
+        path,
+        {
+            **value,
+            "source": source_before,
+            "source_after": after,
+            "source_unchanged": unchanged,
+        },
+    )
+    if unchanged is False:
+        raise RuntimeError(f"source changed during execution; see {path}")
 
 
 def release_executable() -> Path:

@@ -11,7 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-from _support import ROOT, binary, create_directory, environment, source_identity, versions, write_json
+from _support import ROOT, binary, create_directory, environment, source_identity, versions, write_summary
 
 ADDRESS = '                let (mut address, post) = self.target_address(address, size);\n'
 VALUE = '''                let value = if ccr {
@@ -50,6 +50,7 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--out', type=Path, default=ROOT/'out/mutations')
     args = p.parse_args()
+    source = source_identity()
     out = create_directory(args.out)
     cargo = binary('cargo')
     records = []
@@ -81,8 +82,8 @@ def main() -> None:
                 print(f'{ident}: control passes; compiled mutant fails the named test', flush=True)
             finally:
                 file.write_text(original)
-    write_json(out/'summary.json', {'schema': 1, 'source': source_identity(), 'toolchain': versions(),
-                                   'kind': 'test sensitivity, not hardware observations', 'profile': 'debug with overflow checks', 'cases': records})
+    write_summary(out/'summary.json', {'schema': 1, 'toolchain': versions(),
+                                      'kind': 'test sensitivity, not hardware observations', 'profile': 'debug with overflow checks', 'cases': records}, source)
 
 if __name__ == '__main__':
     try:

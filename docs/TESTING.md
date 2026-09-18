@@ -12,9 +12,21 @@ uv run tools/mutation_check.py --out out/mutations
 uv run tools/verify_retail.py --out out/retail --menu-trace
 ```
 
-All destinations must be new. Check outputs record the source revision, commands,
-toolchain, and results under ignored `out/`. Keep a reviewed expectation or supporting
-hardware capture with the test that uses it. Individual run reports stay local.
+All destinations must be new. Reports record the source revision, commands, toolchain
+and results under ignored `out/`. Keep a reviewed expectation or supporting hardware
+capture with the test that uses it. Individual run reports stay local.
+
+Check, retail, benchmark and mutation summaries fingerprint the checkout before and after
+execution. `tree_sha256` covers tracked and nonignored untracked file contents, names,
+executable bits and symlink targets; ignored outputs and private inputs are excluded.
+A changed fingerprint fails the run after saving its summary. An unavailable fingerprint
+leaves `source_unchanged` null. Keep outputs in an ignored directory so they do not change
+the fingerprint themselves.
+
+These fingerprints identify content but do not preserve it or detect edits reverted
+between the two observations. A supplied executable's hash identifies that file; it does
+not establish which source built it. Preserve the corresponding source and build record
+when retaining a comparison.
 
 Choose additional checks for the affected contract. Native/Wasm comparisons belong with
 changes that could behave differently by target, such as arithmetic representation,

@@ -24,6 +24,7 @@ from _support import (
     source_identity,
     versions,
     write_json,
+    write_summary,
 )
 from compare_runs import compare
 
@@ -74,6 +75,7 @@ def main() -> None:
         raise ValueError(
             "repeats must be >=2; duration, chunk and preflight trace limit must be positive"
         )
+    source = source_identity()
     out = create_directory(a.out)
     variants = {"left": a.left.resolve()}
     if a.right:
@@ -195,11 +197,10 @@ def main() -> None:
             "min_seconds": min(timings),
             "max_seconds": max(timings),
         }
-    write_json(
+    write_summary(
         out / "summary.json",
         {
             "schema": 1,
-            "source": source_identity(),
             "inputs": inputs,
             "toolchain": versions(),
             "chunk_us": a.chunk_us,
@@ -211,6 +212,7 @@ def main() -> None:
             "untimed_equivalence": equivalence,
             "limitation": "Untimed preflight compares native causal state, exported observations and complete product history. It is not physical-hardware conformance. Measured runs compare endpoints/counts without tracing.",
         },
+        source,
     )
 
 

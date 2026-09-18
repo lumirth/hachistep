@@ -1,30 +1,28 @@
 # Domain docs
 
-## Layout
-
 Use a single context for this workspace:
 
 - `CONTEXT.md` at the repository root holds the domain glossary.
-- `docs/adr/` holds architecture decision records.
+- `docs/DESIGN.md` holds the current design contract.
+- `docs/adr/` holds rationale for consequential architecture decisions when needed.
 
 ## Before exploring the codebase
 
 Read root `CONTEXT.md` and any ADRs relevant to the area being explored.
 
-If these files do not exist, proceed silently. Do not flag their absence or suggest
-creating them upfront. `/domain-modeling`, including when reached through
-`/grill-with-docs` or `/improve-codebase-architecture`, creates them lazily when terms
-or decisions are resolved.
+Create glossary entries and ADRs only when terms or consequential tradeoffs are resolved.
+An absent ADR directory is not a documentation defect.
 
 ## Use the glossary's vocabulary
 
 Use the terms defined in `CONTEXT.md` when naming domain concepts in issues, proposals,
 hypotheses, code, and tests. Respect any explicitly avoided synonyms.
 
-If a needed concept is missing, reconsider whether it belongs in the project; record an
-actual vocabulary gap for `/domain-modeling`.
+Add missing terms when they clarify a real hardware or product distinction. Keep
+implementation details in the design or code, not the glossary.
 
 ## Flag ADR conflicts
 
 If a proposal contradicts an existing ADR, identify the ADR and explain why the decision
-should be reopened before overriding it.
+should be reopened before overriding it. Update the affected design contract with the
+decision so an ADR and `docs/DESIGN.md` do not become competing authorities.

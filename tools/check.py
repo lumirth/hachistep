@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from _support import ROOT, binary, create_directory, run, versions, write_json, source_identity, release_executable
+from _support import ROOT, binary, create_directory, run, versions, write_summary, source_identity, release_executable
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
@@ -16,6 +16,7 @@ def main() -> None:
     if not (suite / 'build.py').is_file() or not (suite / 'run.py').is_file():
         raise RuntimeError('hachiware checkout required: gh repo clone lumirth/hachiware ../hachiware; or pass --hachiware PATH')
     cargo, rustfmt = binary('cargo'), binary('rustfmt')
+    source = source_identity()
     out = create_directory(a.out)
     records = []
     sources = sorted(str(f.relative_to(ROOT)) for f in (ROOT / 'crates').rglob('*.rs'))
@@ -35,8 +36,8 @@ def main() -> None:
     exe = release_executable()
     records.append(run([sys.executable, str(suite / 'run.py'), '--adapter', str(ROOT / 'tools/hachiware_adapter.py'), '--runner', str(exe),
                         '--fixtures', str(out / 'fixtures'), '--out', str(out / 'conformance')], out, 'conformance'))
-    write_json(out / 'summary.json', {'schema': 1, 'source': source_identity(), 'toolchain': versions(), 'steps': records,
-                                    'hardware_captures': False, 'private_retail_test': 'not run by this command'})
+    write_summary(out / 'summary.json', {'schema': 1, 'toolchain': versions(), 'steps': records,
+                                       'hardware_captures': False, 'private_retail_test': 'not run by this command'}, source)
     print(f'Checks passed. Reports: {out}')
 if __name__ == '__main__':
     try:

@@ -18,7 +18,7 @@ from _support import (
     run,
     source_identity,
     versions,
-    write_json,
+    write_summary,
 )
 from compare_runs import compare_resume
 from retail_expectations import check as check_expectations
@@ -83,6 +83,7 @@ def main() -> None:
                 f"{name}: {case['milliseconds']} ms; {case['timeline'] or 'no external input'}"
             )
         return
+    source = source_identity()
     out = create_directory(a.out)
     cargo = binary("cargo")
     env = environment()
@@ -206,12 +207,11 @@ def main() -> None:
     after = {"firmware": digest(firmware), "eeprom": digest(eeprom)}
     if before != after:
         raise RuntimeError("source input changed")
-    write_json(
+    write_summary(
         out / "summary.json",
         {
             "schema": 1,
             "kind": "emulator observations, not hardware conformance",
-            "source": source_identity(),
             "toolchain": versions(),
             "runner_sha256": digest(exe),
             "inputs": before,
@@ -223,6 +223,7 @@ def main() -> None:
             "workloads": summaries,
             "commands": records,
         },
+        source,
     )
     if mismatches:
         raise RuntimeError(

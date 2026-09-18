@@ -20,30 +20,25 @@ Keep durable contracts, usage instructions, references to primary sources, and n
 rationale in the repository. Keep progress, handoffs, completed audit reports, and
 individual validation summaries in the task, commits, or issues.
 
-As you add or revise documentation, consider where readers will look for it. Prefer
-updating existing material; split distinct topics when that improves navigation,
-consolidate overlap, and remove superseded material after preserving useful reasoning.
-Resolve contradictions and update affected references as part of the change. Keep this
-upkeep proportional to the work.
+Update the existing owner of a topic; consolidate overlap and remove superseded material
+after preserving useful reasoning. Split topics when it improves navigation. Resolve
+contradictions and affected references as part of the change, proportional to the work.
 
-Apply the same prose standards to documentation and code comments. State the main point
-directly, use familiar words and active voice, and keep paragraphs focused. Use lists
-when they make the content easier to scan or compare. Comments should explain behavior,
-constraints, or nonobvious reasoning. Cut filler, stock conclusions, unprompted contrasts,
-and invented or needlessly hyphenated labels. Keep technical caveats specific and useful.
+Write for the reader: state the point directly, explain what matters, and preserve precise
+hardware terms and notation. Use lists when they help comparison or navigation. Comments
+should explain behavior, constraints or nonobvious reasoning. Cut filler, stock conclusions,
+rhetorical contrasts and invented labels. Use `writing-for-agents` for agent instructions,
+not general documentation.
 
-## Agent skills
+## Evidence and completion
 
-### Issue tracker
+Use `docs/TESTING.md` for validation and evidence limits. At substantive milestones,
+explain the results and remaining gaps for the affected goals: hardware fidelity, one
+execution path, realistic performance and compact implementation. Keep this in the task
+or issue.
 
-Use GitHub Issues through `gh`. Before ticket work, read `docs/agents/issue-tracker.md`.
+## Project references
 
-### Triage labels
-
-Use the five default triage labels. Before triaging or changing labels, read
-`docs/agents/triage-labels.md`.
-
-### Domain docs
-
-Use a single context: root `CONTEXT.md` and `docs/adr/`. Before exploring the codebase,
-read `docs/agents/domain.md` for the consumer rules.
+- Before ticket work, read `docs/agents/issue-tracker.md`; use GitHub Issues through `gh`.
+- Before triaging or changing labels, read `docs/agents/triage-labels.md`.
+- Before exploring the codebase, read `docs/agents/domain.md` and root `CONTEXT.md`.
