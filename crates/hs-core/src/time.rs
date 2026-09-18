@@ -129,10 +129,15 @@ impl Clock {
     }
     pub fn after(&self, edges: u64) -> Result<Time, TimeError> {
         let fractions = u128::from(self.fraction) + u128::from(edges) * u128::from(self.remainder);
+        let carry = if let Ok(fractions) = u64::try_from(fractions) {
+            u128::from(fractions / self.denominator)
+        } else {
+            fractions / u128::from(self.denominator)
+        };
         let delta = self
             .whole
             .checked_mul(u128::from(edges))
-            .and_then(|v| v.checked_add(fractions / u128::from(self.denominator)))
+            .and_then(|v| v.checked_add(carry))
             .ok_or(TimeError::Overflow)?;
         self.at
             .0
@@ -234,6 +239,19 @@ mod tests {
         let e = c.after(12).unwrap();
         assert_eq!(c.edges_before(e), 11);
         assert_eq!(c.edges_before(Time(e.0 + 1)), 12);
+    }
+    #[test]
+    fn fractional_projection_matches_the_rational_period_across_integer_widths() {
+        for (numerator, denominator) in [(7, 3), (3_686_400, 1), ((1 << 63) + 1, 1), (u64::MAX, 1)]
+        {
+            let mut clock = Clock::new(Time::from_raw(12345), numerator, denominator).unwrap();
+            clock.advance(29).unwrap();
+            for edges in [0, 1, 3, 1024] {
+                let elapsed = (u128::from(edges) + 29) * (u128::from(denominator) << 64)
+                    / u128::from(numerator);
+                assert_eq!(clock.after(edges).unwrap(), Time::from_raw(12345 + elapsed));
+            }
+        }
     }
     #[test]
     fn rejects_bad_time_and_checks_overflow() {
