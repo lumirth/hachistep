@@ -59,7 +59,8 @@ identify the supplied copies.
 https://github.com/lumirth/pw/tree/6dc7bc09950078fa3fe0dffa4dae34e9549a99da
 
 Relevant files include `src/application/pw_accel_bma150.c`, `pw_nt7508.c`,
-`pw_eeprom_m95512.c`, `pw_battery.c`, `pw_player_input.c`, `pw_power.c`, `pw_rtc.c`,
+`pw_eeprom_m95512_bus.c`, `pw_eeprom_m95512_io.c`, `pw_battery.c`,
+`pw_player_input.c`, `pw_power.c`, `pw_rtc.c`,
 `src/support/lib_common.c`, serial/IR setup, and startup/register headers. These
 establish reached accesses and software intent. Read the executed sequences when source
 comments differ from the hardware evidence.
