@@ -43,6 +43,9 @@ impl TimerB1 {
         if !self.enabled || self.mode & 0x40 == 0 || n == 0 {
             return false;
         }
+        self.advance(n)
+    }
+    fn advance(&mut self, n: u64) -> bool {
         let first = 256 - u64::from(self.count);
         if n < first {
             self.count = (u64::from(self.count) + n) as u8;
@@ -70,32 +73,27 @@ impl TimerB1 {
         value: u8,
         now: Time,
         clocks: &Clocks,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        let mut overflow = self.sync(now, clocks);
         if address == 0xf0d0 {
-            if self.mode & 0x40 != 0 && (value ^ self.mode) & 0x87 != 0 {
-                return Err(Error::Unsupported {
-                    component: "Timer B1",
-                    detail: "running mode/clock reconfiguration is not hardware-characterized",
-                    address,
-                });
-            }
+            let was_running = self.enabled && self.mode & 0x40 != 0;
+            let old = clocks.high(now, self.tap());
             self.mode = value | 0x38;
-        } else {
-            if self.mode & 0x40 != 0 {
-                return Err(Error::Unsupported {
-                    component: "Timer B1",
-                    detail: "load while counting is not hardware-characterized",
-                    address,
-                });
+            // A live mux change can itself supply a rising counter edge.
+            if was_running && self.mode & 0x40 != 0 && !old && clocks.high(now, self.tap()) {
+                overflow |= self.advance(1);
             }
+        } else {
+            // TLB feeds both latches. Stopping before a write is programming
+            // guidance, rather than a hardware write-protection mechanism.
             self.load = value;
             self.count = value;
         }
         self.last = clocks.ticks(now, self.tap());
-        Ok(())
+        Ok(overflow)
     }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
-        if !self.enabled || self.mode & 0x40 == 0 {
+        if !self.enabled || self.mode & 0x40 == 0 || !clocks.available(self.tap()) {
             return Ok(None);
         }
         Ok(Some(clocks.edge(
@@ -124,5 +122,30 @@ mod tests {
         let mut t = TimerB1::default();
         t.write(0xf0d1, 254, Time::ZERO, &c).unwrap();
         assert_eq!(t.count, 254);
+    }
+    #[test]
+    fn live_load_and_clock_mux_use_the_same_overflow_path() {
+        let c = Clocks::new(
+            Time::ZERO,
+            super::super::clocks::Frequencies {
+                main_hz: 1_000_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut t = TimerB1::default();
+        t.set_gate(true, Time::ZERO, &c);
+        t.write(0xf0d0, 0x7d, Time::ZERO, &c).unwrap();
+        t.write(0xf0d1, 254, Time::from_micros(5), &c).unwrap();
+        // phi/4 is low and phi/16 high at 6 us: selecting it adds one edge.
+        assert!(!t.write(0xf0d0, 0x7c, Time::from_micros(6), &c).unwrap());
+        assert_eq!(t.read(0xf0d1), 255);
+        t.write(0xf0d1, 255, Time::from_micros(7), &c).unwrap();
+        t.write(0xf0d0, 0xfc, Time::from_micros(7), &c).unwrap();
+        assert!(t.sync(Time::from_micros(16), &c));
+        assert_eq!(t.read(0xf0d1), 255);
+        t.write(0xf0d0, 0x7c, Time::from_micros(17), &c).unwrap();
+        assert!(t.sync(Time::from_micros(32), &c));
+        assert_eq!(t.read(0xf0d1), 0);
     }
 }

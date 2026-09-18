@@ -34,6 +34,13 @@ impl<const N: usize> Prescaler<N> {
     pub fn high(&self, parent: u64, shift: u32) -> bool {
         u64::from(self.phase).wrapping_add(self.elapsed(parent)) & (1 << (shift - 1)) == 0
     }
+    pub fn next_transition(&self, parent: u64, shift: u32) -> Result<u64, Error> {
+        let half = 1 << (shift - 1);
+        let phase = u64::from(self.phase).wrapping_add(self.elapsed(parent));
+        parent
+            .checked_add(half - (phase & (half - 1)))
+            .ok_or_else(|| TimeError::Overflow.into())
+    }
     pub fn parent_edge(&self, tick: u64, shift: u32) -> Result<u64, Error> {
         let count = tick
             .checked_sub(self.emitted[shift as usize - 1])

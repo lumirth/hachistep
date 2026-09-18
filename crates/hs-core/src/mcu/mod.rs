@@ -267,6 +267,49 @@ impl Mcu {
         self.reset_held = held;
         self.apply_gates(now, out)
     }
+    fn pin_clock(&self) -> Option<(Tap, bool)> {
+        let tap = match self.gpio.clock_selection() {
+            2 | 3 => self.rtc.output_tap(),
+            selection @ 4..=6 => Tap {
+                source: clocks::Source::Oscillator,
+                divide: 1 << (selection - 4),
+            },
+            _ => return None,
+        };
+        let running = match tap.source {
+            clocks::Source::Oscillator => true,
+            clocks::Source::System => self.control.gate1 & 1 != 0 && self.control.main_running(),
+            _ => {
+                self.control.gate1 & 1 != 0
+                    && self.control.mode != Mode::Standby
+                    && self.control.stabilizing_from != Some(Mode::Standby)
+            }
+        } && self.clocks.available(tap);
+        Some((tap, running))
+    }
+    pub fn update_clock_output(&mut self, now: Time) {
+        if self.gpio.clock_selection() < 2 {
+            return;
+        }
+        let floating = self.control.mode == Mode::Standby
+            || self.control.stabilizing_from == Some(Mode::Standby)
+            || self.gpio.clock_selection() == 7;
+        let level = self
+            .pin_clock()
+            .and_then(|(tap, running)| (running && !floating).then(|| self.clocks.high(now, tap)));
+        self.gpio.set_clock_output(level, floating);
+    }
+    pub fn clock_output_deadline(&self, now: Time) -> Result<Option<Time>, Error> {
+        if self.control.mode == Mode::Standby
+            || self.control.stabilizing_from == Some(Mode::Standby)
+        {
+            return Ok(None);
+        }
+        match self.pin_clock() {
+            Some((tap, true)) => self.clocks.next_transition(now, tap),
+            _ => Ok(None),
+        }
+    }
     pub fn deadline(&self) -> Result<Option<Time>, Error> {
         Ok([
             self.rtc.deadline(&self.clocks)?,
@@ -458,11 +501,16 @@ impl Mcu {
                 }
             }
             0xf0dc..=0xf0de => self.comparators.write(a, v, now),
-            0xf0d0 => {
-                self.timer_b1.write(a, v, now, &self.clocks)?;
-                self.apply_gates(now, out)
+            0xf0d0..=0xf0d1 => {
+                if self.timer_b1.write(a, v, now, &self.clocks)? {
+                    self.control.irr2 |= 4;
+                }
+                if a == 0xf0d0 {
+                    self.apply_gates(now, out)
+                } else {
+                    Ok(())
+                }
             }
-            0xf0d1 => self.timer_b1.write(a, v, now, &self.clocks),
             0xf0e0..=0xf0e4 | 0xf0e9 | 0xf0eb => {
                 self.ssu.write(a, v, origin.is_mov(), now, &self.clocks)?;
                 if a == 0xf0e2 {

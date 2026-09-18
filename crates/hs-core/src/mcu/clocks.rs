@@ -178,6 +178,37 @@ impl Clocks {
         let delta = target.checked_sub(c.ordinal()).ok_or(TimeError::Reversed)?;
         Ok(c.after(delta)?)
     }
+    /// Next physical level change of a routed clock. Falling edges matter
+    /// when a divider drives a board pin even if no counter uses that pin.
+    pub fn next_transition(&self, now: Time, tap: Tap) -> Result<Option<Time>, Error> {
+        if !self.available(tap) {
+            return Ok(None);
+        }
+        let raw = self.raw_ticks(now, tap.source);
+        let c = &self.source(tap.source).clock;
+        if tap.divide == 1 {
+            let edge = c.after(raw - c.ordinal())?;
+            let next = c.after(raw - c.ordinal() + 1)?;
+            let middle = Time::from_raw(edge.raw() + (next.raw() - edge.raw()) / 2);
+            return Ok(Some(if middle > now { middle } else { next }));
+        }
+        let target = match (tap.source, tap.divide) {
+            (Source::System, 2..=8192) if tap.divide.is_power_of_two() => self
+                .prescaler_s
+                .next_transition(raw, tap.divide.trailing_zeros())?,
+            (Source::Watch, 8..=1024) if tap.divide.is_power_of_two() => self
+                .prescaler_w
+                .next_transition(raw / 4, tap.divide.trailing_zeros() - 2)?
+                .checked_mul(4)
+                .ok_or(TimeError::Overflow)?,
+            _ => {
+                let half = u64::from(tap.divide / 2);
+                raw.checked_add(half - raw % half)
+                    .ok_or(TimeError::Overflow)?
+            }
+        };
+        Ok(Some(c.after(target - c.ordinal())?))
+    }
     /// Divider outputs use a high first half-cycle; source muxes and downstream
     /// gates observe this physical phase, not parity of lifetime edge counts.
     pub fn high(&self, now: Time, tap: Tap) -> bool {

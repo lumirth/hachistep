@@ -103,6 +103,33 @@ Concrete replacements for the remaining RTC errors:
   inference, not a reason to advertise those settings as supported hardware
   programming practice. ([ADC application note p. 12][adc-app])
 
+### Timer and RTC implementation checkpoint, 2026-09-18
+
+Timer B1 now accepts live load/mode/source writes. TLB reaches both latches;
+source selection retains count and a low-to-high mux transition uses the same
+increment/reload/overflow arithmetic as ordinary clock edges.
+
+The RTC retains one pending calendar update, including resulting digits, PM and
+carry conditions. Writes during BSY affect visible fields; the pending update
+wins when its remaining divider work completes. Stopping retains that work.
+Raw malformed digits and source aliases follow the rules above. Calendar reads
+mask a previous binary counter's high bit before inserting BSY.
+
+TMOW and CLKOUT are routed through the P10 pin mux, independently of RTC RUN.
+The scheduler visits their actual high/low transitions only while that alternate
+output is selected. This matters because P10 is the board's LCD select. CLKOUT
+uses φOSC, /2 or /4; selector 111 releases the output as the local rule. Standby
+releases the output, while stopped sources otherwise retain the last level.
+([Manual §8.1.4 and pin table, pp. 122–123][gpio-clock])
+
+`out/timer-rtc-check` passed all workspace checks and 80 Hachiware diagnostics.
+`out/timer-rtc-retail` passed home, menu, walking, 120-second idle and snapshot/
+partition replay against unchanged software expectations. Component and machine
+checks cover busy writes/stops, raw digits, live loads/mux edges, and clock output
+with RUN clear.
+
+[gpio-clock]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=156
+
 ## Watchdog implementation plan, 2026-09-17
 
 Rechecked `mcu/watchdog.rs`, MCU gate/reset routing, CPU access provenance, and

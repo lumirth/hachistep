@@ -327,6 +327,49 @@ fn adc_trigger_and_held_sample_survive_partition_and_restore() {
     assert_eq!(a, b);
 }
 #[test]
+fn rtc_clock_output_is_a_physical_pin_even_with_the_counter_stopped() {
+    let mut code = vec![];
+    for (a, v) in [(0xf06f_u16, 0x18), (0xffc0, 2)] {
+        code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+    }
+    code.extend([0x40, 0xfe]);
+    let base = machine(&code);
+    let mut whole = Machine::with_conditions(
+        Images {
+            firmware: base.firmware(),
+            eeprom: &base.eeprom(),
+            eeprom_status: 0,
+        },
+        hs_core::Conditions {
+            clocks: hs_core::mcu::clocks::Frequencies {
+                main_hz: 1_000_000,
+                watch_hz: 1000,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut split = whole.clone();
+    for (us, level) in [(499, 1), (501, 0), (1001, 1), (1501, 0)] {
+        whole
+            .run_until(Time::from_micros(us), &[], &mut ())
+            .unwrap();
+        assert_eq!(whole.peek(0xffd4).unwrap() & 1, level);
+        assert_eq!(whole.peek(0xf06c).unwrap() & 0x80, 0);
+    }
+    whole
+        .run_until(Time::from_micros(2001), &[], &mut ())
+        .unwrap();
+    for us in (1..2001).step_by(37).chain([2001]) {
+        split
+            .run_until(Time::from_micros(us), &[], &mut ())
+            .unwrap();
+        split = Machine::from_snapshot(&split.snapshot());
+    }
+    assert_eq!(whole, split);
+}
+#[test]
 fn invalid_timeline_is_rejected_before_mutation() {
     let mut m = machine(LOOP);
     let before = m.snapshot();

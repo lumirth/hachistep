@@ -20,6 +20,8 @@ pub struct Gpio {
     digital_levels: [Option<bool>; 11],
     aec_pwm: Option<bool>,
     aec_pwm_enabled: bool,
+    clock_output: bool,
+    clock_output_floating: bool,
     sci: super::sci::Pins,
     incident_light: bool,
     pub levels: [u8; 5],
@@ -46,6 +48,15 @@ impl Default for SerialLevels {
     }
 }
 impl Gpio {
+    pub fn clock_selection(&self) -> u8 {
+        self.pmr[0] & 7
+    }
+    pub fn set_clock_output(&mut self, level: Option<bool>, floating: bool) {
+        if let Some(level) = level {
+            self.clock_output = level;
+        }
+        self.clock_output_floating = floating;
+    }
     pub fn set_buttons(&mut self, buttons: Buttons) {
         self.buttons = buttons;
     }
@@ -245,6 +256,14 @@ impl Gpio {
                 };
                 self.levels[0] = (self.levels[0] & !(1 << i)) | (u8::from(high) << i);
             }
+        }
+        if self.clock_selection() >= 2 {
+            let high = if self.clock_output_floating {
+                self.digital_levels[0].unwrap_or(self.pull[0] & 1 != 0)
+            } else {
+                self.clock_output
+            };
+            self.levels[0] = (self.levels[0] & !1) | u8::from(high);
         }
         // P30: IRQ0, then VCref, then SCI clock, then GPIO. P31's SCI
         // input selection overrides PCR31. P32's SPC3 selects the peripheral

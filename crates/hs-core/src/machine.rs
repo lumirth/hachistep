@@ -332,6 +332,7 @@ impl Machine {
         }
         self.next_devices = [
             self.mcu.deadline()?,
+            self.mcu.clock_output_deadline(self.now)?,
             self.eeprom.deadline(),
             self.sensor.deadline(),
             self.watchdog_reset
@@ -367,6 +368,7 @@ impl Machine {
         Ok([mosi, miso])
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<[bool; 4], Error> {
+        self.mcu.update_clock_output(self.now);
         let sci_pins = self.mcu.sci.pins();
         self.mcu.gpio.set_sci_pins(sci_pins, self.incident_light);
         self.mcu

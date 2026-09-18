@@ -13,8 +13,13 @@ pub struct Rtc {
     phase: u16,
     last: u64,
     enabled: bool,
-    busy: bool,
-    pending: u8,
+    pending: Option<CalendarUpdate>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CalendarUpdate {
+    data: [u8; 4],
+    pm: u8,
+    flags: u8,
 }
 impl Default for Rtc {
     fn default() -> Self {
@@ -27,8 +32,7 @@ impl Default for Rtc {
             phase: 0,
             last: 0,
             enabled: true,
-            busy: false,
-            pending: 0,
+            pending: None,
         }
     }
 }
@@ -41,6 +45,13 @@ impl Rtc {
     }
     pub fn uses_watch(&self) -> bool {
         self.tap().source == super::clocks::Source::Watch
+    }
+    pub fn output_tap(&self) -> Tap {
+        if self.source & 0x10 != 0 {
+            Tap::watch(1)
+        } else {
+            Tap::system(4 << ((self.source >> 5) & 3))
+        }
     }
     fn tap(&self) -> Tap {
         match self.source & 15 {
@@ -59,7 +70,7 @@ impl Rtc {
         self.enabled && self.control1 & 0x90 == 0x80
     }
     fn distance(&self) -> u64 {
-        if self.source & 15 != 8 {
+        if self.source & 8 == 0 {
             return 256 - u64::from(self.data[0]);
         }
         let p = u64::from(self.phase);
@@ -73,7 +84,7 @@ impl Rtc {
         if !self.running() {
             return Ok(());
         }
-        if self.source & 15 != 8 {
+        if self.source & 8 == 0 {
             if n >= 256 - u64::from(self.data[0]) {
                 self.flags |= self.control2 & 0x80;
             }
@@ -89,11 +100,11 @@ impl Rtc {
                 continue;
             }
             if self.phase == 7680 {
-                self.busy = true;
-                self.pending = self.rollover_flags();
+                let pending = self.next_calendar();
                 if self.control1 & 8 == 0 {
-                    self.flags |= self.pending & self.control2;
+                    self.flags |= pending.flags & self.control2;
                 }
+                self.pending = Some(pending);
             }
             if self.phase % 2048 == 0 {
                 self.flags |= self.control2 & 1;
@@ -103,72 +114,64 @@ impl Rtc {
             }
             if self.phase == 8192 {
                 self.phase = 0;
-                self.advance_second()?;
-                if self.control1 & 8 != 0 {
-                    self.flags |= self.pending & self.control2;
-                }
-                self.pending = 0;
-                self.busy = false;
-            }
-        }
-        Ok(())
-    }
-    fn rollover_flags(&self) -> u8 {
-        let mut flags = 4;
-        if self.data[0] == 0x59 {
-            flags |= 8;
-            if self.data[1] == 0x59 {
-                flags |= 0x10;
-                if (self.control1 & 0x40 != 0 && self.data[2] == 0x23)
-                    || (self.control1 & 0x40 == 0
-                        && self.data[2] == 0x11
-                        && self.control1 & 0x20 != 0)
-                {
-                    flags |= 0x20;
-                    if self.data[3] == 6 {
-                        flags |= 0x40;
+                if let Some(pending) = self.pending.take() {
+                    self.data = pending.data;
+                    self.control1 = (self.control1 & !0x20) | pending.pm;
+                    if self.control1 & 8 != 0 {
+                        self.flags |= pending.flags & self.control2;
                     }
                 }
             }
         }
-        flags
+        Ok(())
     }
-    fn advance_second(&mut self) -> Result<(), Error> {
-        let limits = [
-            0x59,
-            0x59,
-            if self.control1 & 0x40 != 0 {
-                0x23
-            } else {
-                0x11
-            },
-        ];
-        for (i, limit) in limits.into_iter().enumerate() {
-            if self.data[i] > limit || self.data[i] & 15 > 9 {
-                return Err(Error::Unsupported {
-                    component: "RTC",
-                    detail: "invalid BCD rollover is not characterized",
-                    address: 0xf068 + i as u16,
-                });
+    fn next_calendar(&self) -> CalendarUpdate {
+        let mut update = CalendarUpdate {
+            data: self.data,
+            pm: self.control1 & 0x20,
+            flags: 4,
+        };
+        // Each digit has a terminal comparator and its physical field width.
+        // Values outside normal BCD follow those counters, not normalization.
+        for i in 0..2 {
+            let value = update.data[i] & 0x7f;
+            let units = value & 15;
+            let tens = value >> 4;
+            if units != 9 {
+                update.data[i] = (tens << 4) | ((units + 1) & 15);
+                return update;
             }
-            if self.data[i] == limit {
-                self.data[i] = 0;
-                if i == 2 && self.control1 & 0x40 == 0 {
-                    self.control1 ^= 0x20;
-                    if self.control1 & 0x20 != 0 {
-                        return Ok(());
-                    }
-                }
+            if tens != 5 {
+                update.data[i] = ((tens + 1) & 7) << 4;
+                return update;
+            }
+            update.data[i] = 0;
+            update.flags |= 8 << i;
+        }
+        let hours = update.data[2] & 0x3f;
+        let full_day = self.control1 & 0x40 != 0;
+        if hours != if full_day { 0x23 } else { 0x11 } {
+            update.data[2] = if hours & 15 == 9 {
+                hours.wrapping_add(7) & 0x3f
             } else {
-                self.data[i] += 1;
-                if self.data[i] & 15 == 10 {
-                    self.data[i] += 6;
-                }
-                return Ok(());
+                (hours & 0x30) | ((hours + 1) & 15)
+            };
+            return update;
+        }
+        update.data[2] = 0;
+        if !full_day {
+            update.pm ^= 0x20;
+            if update.pm != 0 {
+                return update;
             }
         }
-        self.data[3] = (self.data[3] + 1) % 7;
-        Ok(())
+        update.flags |= 0x20;
+        let day = update.data[3] & 7;
+        update.data[3] = if day == 6 { 0 } else { (day + 1) & 7 };
+        if update.data[3] == 0 {
+            update.flags |= 0x40;
+        }
+        update
     }
     pub fn set_gate(&mut self, enabled: bool, now: Time, clocks: &Clocks) {
         self.enabled = enabled;
@@ -178,12 +181,12 @@ impl Rtc {
         match address {
             0xf067 => self.flags,
             0xf068..=0xf06b => {
-                self.data[usize::from(address - 0xf068)]
-                    | if self.source & 15 == 8 && self.busy {
-                        0x80
-                    } else {
-                        0
-                    }
+                let value = self.data[usize::from(address - 0xf068)];
+                if self.source & 8 != 0 {
+                    (value & 0x7f) | if self.pending.is_some() { 0x80 } else { 0 }
+                } else {
+                    value
+                }
             }
             0xf06c => self.control1,
             0xf06d => self.control2,
@@ -198,16 +201,10 @@ impl Rtc {
         now: Time,
         clocks: &Clocks,
     ) -> Result<(), Error> {
+        self.sync(now, clocks)?;
         match address {
             0xf067 => self.flags &= value,
             0xf068..=0xf06b => {
-                if self.control1 & 0x80 != 0 {
-                    return Err(Error::Unsupported {
-                        component: "RTC",
-                        detail: "time write while RUN is set",
-                        address,
-                    });
-                }
                 let i = usize::from(address - 0xf068);
                 self.data[i] = value & [0x7f, 0x7f, 0x3f, 7][i];
             }
@@ -218,23 +215,14 @@ impl Rtc {
                     self.flags = 0;
                     self.control2 = 0;
                     self.control1 = 0x10;
-                    self.busy = false;
-                    self.pending = 0;
+                    self.pending = None;
                 } else {
                     self.control1 = value & 0xf8;
                 }
             }
             0xf06d => self.control2 = value,
-            0xf06f => {
-                if value & 15 > 8 {
-                    return Err(Error::Unsupported {
-                        component: "RTC",
-                        detail: "prohibited clock source",
-                        address,
-                    });
-                }
-                self.source = value & 0x7f;
-            }
+            // The application-note decoder is 1xxx: calendar source.
+            0xf06f => self.source = value & 0x7f,
             _ => {
                 return Err(Error::Unmapped {
                     address,
@@ -247,7 +235,7 @@ impl Rtc {
         Ok(())
     }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
-        if !self.running() {
+        if !self.running() || !clocks.available(self.tap()) {
             return Ok(None);
         }
         Ok(Some(clocks.edge(self.last + self.distance(), self.tap())?))
@@ -289,5 +277,72 @@ mod tests {
         }
         b.sync(Time::from_micros(3_234_567), &c).unwrap();
         assert_eq!(a, b);
+    }
+    #[test]
+    fn busy_update_retains_its_values_across_writes_and_stop() {
+        let (mut r, c) = running();
+        for (i, v) in [0x59, 0x59, 0x23, 6].into_iter().enumerate() {
+            r.write(0xf068 + i as u16, v, Time::from_micros(900_000), &c)
+                .unwrap();
+        }
+        r.sync(Time::from_micros(937_500), &c).unwrap();
+        r.write(0xf068, 0x12, Time::from_micros(950_000), &c)
+            .unwrap();
+        assert_eq!(r.read(0xf068), 0x92);
+        r.write(0xf06c, 0x48, Time::from_micros(960_000), &c)
+            .unwrap();
+        r.sync(Time::from_micros(2_000_000), &c).unwrap();
+        assert_eq!(r.read(0xf068), 0x92);
+        r.write(0xf06c, 0xc8, Time::from_micros(2_000_000), &c)
+            .unwrap();
+        r.sync(r.deadline(&c).unwrap().unwrap(), &c).unwrap();
+        for a in 0xf068..=0xf06b {
+            assert_eq!(r.read(a), 0);
+        }
+        assert_eq!(r.read(0xf067), 0x7f);
+    }
+    #[test]
+    fn raw_digits_follow_field_widths_and_terminal_comparators() {
+        for (before, after) in [
+            ([0x1a, 0, 0, 0], [0x1b, 0, 0, 0]),
+            ([0x1f, 0, 0, 0], [0x10, 0, 0, 0]),
+            ([0x69, 0, 0, 0], [0x70, 0, 0, 0]),
+            ([0x59, 0x59, 0x2f, 7], [0, 0, 0x20, 7]),
+            ([0x59, 0x59, 0x23, 7], [0, 0, 0, 0]),
+        ] {
+            let (mut r, c) = running();
+            for (i, v) in before.into_iter().enumerate() {
+                r.write(0xf068 + i as u16, v, Time::ZERO, &c).unwrap();
+            }
+            r.sync(Time::from_micros(1_000_000), &c).unwrap();
+            for (i, v) in after.into_iter().enumerate() {
+                assert_eq!(r.read(0xf068 + i as u16), v);
+            }
+        }
+    }
+    #[test]
+    fn calendar_aliases_do_not_leak_the_binary_counter_high_bit_into_busy() {
+        for source in 8..16 {
+            let (mut r, c) = running();
+            r.write(0xf06f, source, Time::ZERO, &c).unwrap();
+            r.sync(Time::from_micros(1_000_000), &c).unwrap();
+            assert_eq!(r.read(0xf068), 1);
+            assert_eq!(r.read(0xf06f), source);
+        }
+        let c = Clocks::new(
+            Time::ZERO,
+            super::super::clocks::Frequencies {
+                main_hz: 1_000_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut r = Rtc::default();
+        r.write(0xf06f, 0, Time::ZERO, &c).unwrap();
+        r.write(0xf06c, 0x80, Time::ZERO, &c).unwrap();
+        r.sync(Time::from_micros(1200), &c).unwrap();
+        assert_eq!(r.read(0xf068), 0x96);
+        r.write(0xf06f, 0xf, Time::from_micros(1200), &c).unwrap();
+        assert_eq!(r.read(0xf068), 0x16);
     }
 }
