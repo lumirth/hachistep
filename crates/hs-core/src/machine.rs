@@ -424,15 +424,10 @@ impl Machine {
         }
         Ok(())
     }
-    fn serial_data(&self) -> Result<[Option<bool>; 2], Error> {
+    fn serial_data(&self) -> [Option<bool>; 2] {
         let miso = match (self.eeprom.output(), self.sensor.output()) {
-            (Drive::Low, Drive::High) | (Drive::High, Drive::Low) => {
-                return Err(Error::Unsupported {
-                    component: "board serial net",
-                    detail: "opposing external push-pull drivers",
-                    address: 0xffdc,
-                });
-            }
+            // Opposing external drivers resolve low in the nominal circuit.
+            // The electrical basis is in research/h8-registers-and-gpio.md.
             (Drive::Low, _) | (_, Drive::Low) => Some(false),
             (Drive::High, _) | (_, Drive::High) => Some(true),
             _ => None,
@@ -442,7 +437,7 @@ impl Machine {
             Drive::High => Some(true),
             Drive::Floating => None,
         };
-        Ok([mosi, miso])
+        [mosi, miso]
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<[bool; 4], Error> {
         self.mcu.update_clock_output(self.now);
@@ -456,7 +451,7 @@ impl Machine {
         let timer_mask = self.mcu.timer_w.drives() << 1;
         let iic_pins = self.mcu.iic.pins();
         self.mcu.gpio.set_iic_pins(iic_pins);
-        let data = self.serial_data()?;
+        let data = self.serial_data();
         let levels = if self.power.mcu() {
             self.mcu.gpio.resolve(pins, timer, timer_mask, data)
         } else {
@@ -491,7 +486,7 @@ impl Machine {
                 self.sensor.falling();
             }
         }
-        let settled_data = self.serial_data()?;
+        let settled_data = self.serial_data();
         // Only the external serial drivers can have changed since the first
         // resolution. Preserve it when the electrical inputs are identical.
         self.serial = if settled_data == data {

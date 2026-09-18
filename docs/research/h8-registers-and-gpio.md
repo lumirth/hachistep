@@ -145,6 +145,21 @@ The board model gives the P10/P12/P90 chip-select nets pull-ups. Other released 
 nets follow connected drivers and enabled MCU pulls, then default low. These defaults
 describe the selected digital circuit.
 
+EEPROM Q and the BMA150's four-wire SDO share P93. If both devices drive opposite
+levels, the nominal digital model resolves low and continues both serial transfers.
+The electrical basis is their stronger specified sink loads: [Bosch table 9][bma-drive]
+specifies 0.4 V at 3 mA sinking and a 0.4-V drop at 1 mA sourcing; [ST tables
+16–18][eeprom-drive] specify 0.4 V at 1.5 mA sinking and 0.8 Vcc at 0.4 mA sourcing
+at the 2.5-V test point. This supports a small deterministic default for conflicting
+outputs. Those limits are not current/voltage curves, so this rule does not establish
+the actual contention voltage or model heating and supply droop. Keep the choice local
+to the shared external data net and revise it from measured loaded outputs. Deselecting
+a device releases its driver immediately; neither parser loses progress merely because
+the other device also drives the net.
+
+[bma-drive]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=27
+[eeprom-drive]: https://www.mouser.com/datasheet/2/389/m95512-w-955061.pdf#page=35
+
 Analog fixture voltages project to digital input levels at Vcc/2. This is a selected
 threshold for the digital fixture interface, without a pad-loading or input-hysteresis
 model.
