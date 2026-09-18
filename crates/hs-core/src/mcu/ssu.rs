@@ -413,7 +413,11 @@ impl Ssu {
                 self.clock_high = !self.clock_high;
                 let edge = self.shift_edge();
                 self.next = if self.edges < 16 {
-                    Some(ClockWait::after(now, 1, self.half_period(), clocks)?)
+                    Some(
+                        self.next
+                            .ok_or(Error::Internal("SSU edge without clock obligation"))?
+                            .following_edge(clocks)?,
+                    )
                 } else {
                     None
                 };

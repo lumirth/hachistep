@@ -73,8 +73,8 @@ uv run tools/verify_retail.py \
   --runner target/wasm32-wasip1/release/hachistep.wasm --out out/wasm-retail-1
 ```
 
-The retail verifier runs its native partition test, then uses the supplied module for
-the workloads and their saved continuations. The hachiware adapter's `--runner` and
+The retail verifier runs its native partition and peer tests, then uses the supplied
+module for the workloads and their saved continuations. The hachiware adapter's `--runner` and
 the benchmark's `--left` and `--right` also accept this module. The tools invoke
 Wasmtime with access to the directories containing the supplied inputs and outputs.
 

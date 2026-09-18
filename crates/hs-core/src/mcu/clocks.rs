@@ -522,6 +522,29 @@ impl ClockWait {
             WaitState::Ready(at) => Ok(Some(at)),
         }
     }
+    /// Continue a completed periodic wait on the same divider. Its ordinal
+    /// identifies the consumed edge without converting its timestamp back to a count.
+    pub(crate) fn following_edge(self, clocks: &Clocks) -> Result<Self, Error> {
+        let target = match self.state {
+            WaitState::Running { target, .. } => {
+                target.checked_add(1).ok_or(TimeError::Overflow)?
+            }
+            WaitState::Ready(at) => return Self::after(at, 1, self.tap, clocks),
+            WaitState::Paused { .. } => return Err(Error::Internal("unfinished periodic wait")),
+        };
+        Ok(Self {
+            tap: self.tap,
+            state: WaitState::Running {
+                target,
+                cached: if clocks.available(self.tap) {
+                    clocks.edge(target, self.tap)?
+                } else {
+                    Time::MAX
+                },
+                revision: clocks.revision,
+            },
+        })
+    }
     pub fn pause(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.deadline(clocks)?.is_some_and(|at| at < now) {
             return Err(TimeError::Reversed.into());
@@ -607,6 +630,25 @@ impl Clocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn periodic_edges_retain_phase_across_clock_and_divider_changes() {
+        for tap in [Tap::cpu(), Tap::system(2), Tap::system(128), Tap::watch(16)] {
+            let mut clocks = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();
+            let mut wait = ClockWait::after(Time::from_micros(13), 1, tap, &clocks).unwrap();
+            for step in 0..32 {
+                let now = wait.deadline(&clocks).unwrap().unwrap();
+                if step == 8 {
+                    clocks.select_system(now, Source::Watch, 2).unwrap();
+                }
+                if step == 16 {
+                    clocks.reset_prescalers(now).unwrap();
+                }
+                let expected = ClockWait::after(now, 1, tap, &clocks).unwrap();
+                wait = wait.following_edge(&clocks).unwrap();
+                assert_eq!(wait, expected);
+            }
+        }
+    }
     #[test]
     fn shared_dividers_reset_and_hold_without_rephasing_watch_input() {
         let mut c = Clocks::new(

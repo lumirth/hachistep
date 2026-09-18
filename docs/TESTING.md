@@ -33,7 +33,7 @@ changes that could behave differently by target, such as arithmetic representati
 encoded layouts, target support or host integration, and with release validation. Reuse
 completed checks until a change, failure or unresolved concern warrants another run.
 
-The private Rust test compares the complete typed machine state and complete
+The private replay test compares the complete typed machine state and complete
 product-event vectors across randomized run partitions, then a further interval after
 snapshot restoration. The peripheral integration tests add clock/gate, analog-input,
 capture, AEC and NMI partition/snapshot cases. These establish representation/replay
@@ -99,6 +99,11 @@ The infrared timeout exercises an attempt without a peer. Their capture points a
 check restoration during ongoing operations: complete traces before and after loading
 must concatenate to the continuous history, and final native state and exports must
 match. Captured traces are stored as `events.txt` in each scenario's output directory.
+
+The peer exchange test runs independent machines through the public optical interface
+and checks the encounter records committed by both firmwares. Its input preparation and
+simulated channel are described in [INPUTS](INPUTS.md#physical-csv). It runs alongside
+the partition test for every retail verification, including `--quick` and `--case`.
 
 The day-rollover workload runs for an emulated day, including idle sleep, hourly saves,
 diary rotation and midnight maintenance. Its capture falls inside the RTC busy interval

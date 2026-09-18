@@ -80,7 +80,8 @@ uv run tools/verify_retail.py --out out/retail-1
 Each destination must be new. Standard checks include debug/release/trace Rust tests,
 formatting, Clippy, host tools and independent guest diagnostics. Retail verification
 additionally needs private images and checks boot, menus, walking, idle, persistent saves,
-power interruption and infrared timeout, including event histories and restoration.
+power interruption, infrared timeout and completed peer exchanges, including event
+histories and restoration.
 Expected hardware behavior
 comes from documented independent cases; retail hashes are software regression evidence.
 [TESTING](docs/TESTING.md) explains the coverage and [BUILD](docs/BUILD.md) lists
