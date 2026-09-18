@@ -76,7 +76,7 @@ fn external_reset_clears_cause_without_rephasing_the_internal_hold() {
                 input: Input::ResetPin(true),
             },
         ];
-        let end = release.max(2560);
+        let end = (release + 8).max(2560);
         let consumed = m
             .run_until(Time::from_micros(end), &inputs, &mut ())
             .unwrap()
@@ -84,7 +84,8 @@ fn external_reset_clears_cause_without_rephasing_the_internal_hold() {
         assert_eq!(m.peek(0xffb1).unwrap(), 0xae);
         assert_eq!(m.statistics().bus_reads, reads);
         // Reset vector fetch is the first bus effect, two phi edges after
-        // the final reset contribution releases. It precedes all guest code.
+        // the final reset contribution releases. RES takes eight phi edges;
+        // WDT does not acquire another eight-edge hold. It precedes all guest code.
         m.run_until(Time::from_micros(end + 2), &inputs[consumed..], &mut ())
             .unwrap();
         assert_eq!(m.statistics().bus_reads, reads);

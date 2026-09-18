@@ -92,7 +92,9 @@ snapshot the machine, and record the corresponding input position together.
 
 ## Reset and power
 
-`Input::ResetPin(false)` asserts active-low MCU reset; `true` releases it.
+`Input::ResetPin(false)` asserts active-low MCU reset; `true` raises the pin.
+The internal reset releases after eight actual reference-clock edges. A new low
+level restarts qualification. WDT's separate 512-ROSC hold remains independent.
 External component lifetimes are not erased just because the MCU resets.
 `power_off(output)` and `power_on(output)` are whole-product lifecycle calls at
 the current boundary. Power removal stops activity and preserves partial nonvolatile

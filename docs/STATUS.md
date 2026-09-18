@@ -130,7 +130,10 @@ to the unbonded three-wire interface and does not consume a parameter here.
 
 ### Power
 
-`Input::ResetPin` is an MCU reset assertion/release; `Machine::power_off/on`
+`Input::ResetPin` is a package-level MCU reset drive. Its low assertion is
+asynchronous; raising it starts the documented eight-phi release counter.
+Reassertion discards partial qualification, and WDT's independent 512-ROSC hold
+does not gain a second release count. `Machine::power_off/on`
 acts on the whole product. Input supply voltage affects the modeled battery measurement; a zero-voltage
 interval also invokes board power loss/restoration. Nonzero voltage changes do
 not invent a clean brownout reset.
@@ -141,6 +144,10 @@ uses zero as its erased state (documented for ST; inferred for Bosch), fixed
 thresholds and equal erase/program phases. RES-capacitor discharge, chip-specific
 undervoltage availability and cold-start readiness still need integration; a
 minimum rated operating voltage is not treated as a clean reset threshold.
+The new flash wake window also exposes a power-on integration gap: a caller
+must currently hold RES through flash startup before raising it, or the early
+reset-vector read sees unavailable data. The board startup/reset owner is the
+next integration task; see the [flash audit](research/h8-flash-owner-audit.md).
 
 ## Performance boundary
 

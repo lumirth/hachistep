@@ -101,6 +101,7 @@ pub struct Machine {
     incident_light: bool,
     emitting: bool,
     reset_asserted: bool,
+    reset_release: Option<ClockWait>,
     watchdog_reset: Option<ClockWait>,
     powered: bool,
     fault: Option<Error>,
@@ -147,6 +148,7 @@ impl Machine {
             incident_light: false,
             emitting: false,
             reset_asserted: false,
+            reset_release: None,
             watchdog_reset: None,
             powered: conditions.supply_millivolts != 0,
             fault: None,
@@ -300,6 +302,7 @@ impl Machine {
             });
         }
         self.powered = false;
+        self.reset_release = None;
         self.watchdog_reset = None;
         self.pending = None;
         self.resume_after = None;
@@ -346,6 +349,9 @@ impl Machine {
             self.eeprom.deadline(),
             self.sensor.deadline(),
             self.watchdog_reset
+                .as_ref()
+                .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?,
+            self.reset_release
                 .as_ref()
                 .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?,
         ]
@@ -491,7 +497,7 @@ impl Machine {
             )?);
         }
         self.mcu.hold_reset(
-            self.reset_asserted || self.watchdog_reset.is_some(),
+            self.reset_asserted || self.reset_release.is_some() || self.watchdog_reset.is_some(),
             self.now,
             out,
         )?;
@@ -580,7 +586,27 @@ impl Machine {
             == Some(self.now)
         {
             self.watchdog_reset = None;
-            self.mcu.hold_reset(self.reset_asserted, self.now, out)?;
+            self.mcu.hold_reset(
+                self.reset_asserted || self.reset_release.is_some(),
+                self.now,
+                out,
+            )?;
+        }
+        if self
+            .reset_release
+            .as_ref()
+            .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?
+            == Some(self.now)
+        {
+            if !self.mcu.control.nmi_level() {
+                return Err(Self::boot_strap_error());
+            }
+            self.reset_release = None;
+            self.mcu.hold_reset(
+                self.reset_asserted || self.watchdog_reset.is_some(),
+                self.now,
+                out,
+            )?;
         }
         if self.mcu.adc.deadline(&self.mcu.clocks)? == Some(self.now)
             && self
@@ -717,6 +743,7 @@ impl Machine {
                     && power != Some(false)
                     && !was_reset
                     && !will_reset
+                    && self.reset_release.is_none()
                     && self.watchdog_reset.is_none(),
             );
         }
@@ -724,15 +751,21 @@ impl Machine {
             self.power_off(out)?;
         }
         if let Some(asserted) = reset {
-            if self.powered && !asserted && was_reset && !self.mcu.control.nmi_level() {
-                return Err(Self::boot_strap_error());
-            }
             self.reset_asserted = asserted;
+            if asserted {
+                self.reset_release = None;
+            }
             if self.powered && asserted && !was_reset {
                 self.reset_mcu(false, out)?;
             } else if self.powered && !asserted && was_reset {
-                self.mcu
-                    .hold_reset(self.watchdog_reset.is_some(), self.now, out)?;
+                // Section 19's three-bit counter qualifies release over eight
+                // actual phi edges. WDT's independent hold does not restart it.
+                self.reset_release = Some(ClockWait::after(
+                    self.now,
+                    8,
+                    Tap::system(1),
+                    &self.mcu.clocks,
+                )?);
             }
         }
         if power == Some(true) {
@@ -783,6 +816,7 @@ impl Machine {
     fn queue_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         if self.pending.is_some()
             || self.reset_asserted
+            || self.reset_release.is_some()
             || self.watchdog_reset.is_some()
             || !self.powered
         {
