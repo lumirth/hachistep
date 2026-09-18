@@ -811,7 +811,7 @@ impl Machine {
             match change.input {
                 Input::Power(on) => power = Some(on),
                 Input::Buttons(b) => self.mcu.gpio.set_buttons(b),
-                Input::Acceleration(a) => self.sensor.set_input(a)?,
+                Input::Acceleration(a) => self.sensor.set_input(a, self.now)?,
                 Input::SupplyMillivolts(v) => self.conditions.supply_millivolts = v,
                 Input::TemperatureMillicelsius(v) => {
                     self.conditions.temperature_millicelsius = v;

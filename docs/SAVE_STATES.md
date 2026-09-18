@@ -74,7 +74,9 @@ active appointment at the exact exclusive horizon is still pending.
 
 Flash/EEPROM/sensor programming retains original cells and its unfinished
 operation, rather than replacing them with a projected persistent image. Sensor
-filter sums are rebuilt from retained samples. LCD scan/output latches and GPIO
+filter sums are rebuilt from retained samples. Its pre-ADC analog output,
+normalized derivative and last evolution time remain causal state, including
+between input changes and conversions and across warm sleep. LCD scan/output latches and GPIO
 last-resolved levels remain causal: resolving the board on load would deliver
 edges twice. No load callback or guest access occurs. A saved core fault remains
 stopped, with a generic restored-fault diagnostic rather than the original text.

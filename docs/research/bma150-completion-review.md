@@ -122,6 +122,86 @@ over an absent analogue stage and keeps physical behavior in one execution path.
    Compare partitioned execution and capture/restore, then use a separate
    frequency sweep to discriminate damping rather than fitting to this pulse.
 
+## Analogue stage across power states
+
+Follow-up source review, 2026-09-18. Bosch specifies about 200 µA in normal
+operation versus 1 µA in sleep, fresh acquisition on wake, 1 ms nominal wake
+readiness (1.5 ms maximum), and 3 ms cold readiness. Sleep retains control/image
+registers; soft reset has power-on-reset register effects, with about 1.3 ms to
+available data when awake or up to 30 ms when reset asleep. These facts support
+an inactive measurement path during sleep, but do not specify capacitor leakage
+or the two-pole stage's initial voltage. [Table 1, pp.5–6][ds5], [§3.1.4][ds12],
+[§§3.3.6–7][ds21], [§7.2, p.46][ds46]
+
+Choose this compact realization for the proposed filter. Let `d = v/k`, so both
+saved state values have acceleration units. The physical input continues to
+change while the electronic stage is inactive.
+
+| Transition | Selected analogue behavior |
+| --- | --- |
+| Cold construction/full power return | Initialize `y=d=0` at the valid-supply instant, retain the current physical input, and integrate through the existing 3 ms startup. This is a canonical initial voltage, not a Bosch zero-state guarantee. |
+| Retained nonzero undervoltage dip | Settle the old powered interval at supply loss, then freeze `y,d`. Changes of acceleration update the physical input only. At valid return, rebase the integration time without integrating the absent interval; resume through the existing 1 ms reacquisition. |
+| Ordinary or automatic sleep/wake | Settle at sleep entry and freeze. On wake retain `y,d`, rebase time to wake, and resume through the entire existing 1 ms interval. Do not track sleep-time motion through a nominally powered filter or force its output to the new input at wake. |
+| Soft reset | Choose the same zero analogue state as cold reset at the command boundary; integrate through the existing 1.3/30 ms readiness. Keep the documented register, quiet-time, and digital-filter reset effects distinct. |
+
+Freezing warm state is an explicit retained-charge inference. It avoids adding
+an unsupported leakage constant or a sleep-time acquisition path; it does not
+claim the unpowered MEMS structure stops moving. Cold and soft-reset zeroing are
+also selected initial conditions. The existing readiness intervals allow the
+new input to settle before conversion without inventing another delay.
+
+The analogue stage is active whenever supply is valid and the sensor is awake,
+**including while `wake_deadline` is pending**. Current `acquisition_delay`
+places X/Y/Z at 5/6, 11/12, and 1 ms after an ordinary wake. Starting analogue
+evolution only when the conversion clock starts at 2/3 ms would wrongly reduce
+the first X settling interval to 1/6 ms. For a constant step from a previously
+settled input, the proposed filter's remaining errors at those apertures are
+0.03056%, 0.18039%, and 0.16586% of the step. Those are independently evaluated
+model consequences, not measured Bosch responses. [Current acquisition and
+reset transitions][control-current], [conversion apertures][bma-current]
+
+Physical input changes must carry their timestamp: integrate the old input
+before replacing it. Integrate at power/sleep/reset boundaries and real axis
+apertures, never at arbitrary run ends, inspections, or capture. A pulse wholly
+inside sleep that returns to the old input leaves no acquired pulse response;
+a pulse during wake settling does affect the first conversion. Do not snap to
+steady state at readiness. Even a tiny residual can change a truncated ADC code
+at a threshold: cold +1 g leaves only 0.002749 µg of error at 3 ms under the
+zero-state choice. Specify fixed-point and final ADC rounding separately, and
+use inputs away from quantizer boundaries for filter/readiness fixtures.
+
+### Numeric bounds for the proposed state
+
+For `|u| <= U = 1_000_000_000 µg`, the ideal filter's bounded-input gains are
+`||h_y||1 = coth(π/2) = 1.090331411` and
+`||h_d||1 = 2√2 exp(-π/4)/(1-exp(-π)) = 1.347832909`.
+Thus overshoot is legitimate; do not clamp the analogue state to the selected
+±2/4/8 g ADC range. Apply trim/range and ADC saturation afterwards.
+
+A simple conservative validation domain follows directly from the proposed
+ODE. With `q=y+d` and `r²=y²+q²`, it gives
+`dr/dt <= -k*r + 2*k*U`. A radius **4U** therefore contains nominal cold/steady
+trajectories with ample rounding margin and is invariant under the exact
+equations, including frozen intervals. Q16 acceleration in signed `i64` and
+signed `i128` coefficient products are sufficient: `|y|,|q|<=4U`, hence
+`|d|<=4√2U`. For saved-state validation, widen before forming `q`, reject either
+component outside the radius before squaring, then check the squared radius
+in `i128`. Keep coefficient rounding deterministic and check that it preserves
+stability; this bound must not become a runtime signal clamp.
+
+Also validate input bounds and `analogue_at <= machine.now`; a frozen
+unpowered stage cannot have advanced past its supply-loss instant. Check long
+elapsed intervals before multiplying full-width timestamps by fixed-point
+rates. At 10 ms the maximum allowed residual is far below one Q16 unit, so
+the rounded steady limit can be used without evaluating an enormous argument.
+These bounds derive from the chosen transfer equations above, not a claimed
+Bosch numeric implementation.
+
+[ds5]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=5
+[ds21]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=21
+[ds46]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=46
+[control-current]: ../../crates/hs-core/src/devices/bma150/control.rs
+[bma-current]: ../../crates/hs-core/src/devices/bma150.rs
 [ds12]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=12
 [ds13]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=13
 [ds19]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=19

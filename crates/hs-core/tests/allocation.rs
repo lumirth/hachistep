@@ -37,8 +37,16 @@ fn ordinary_run_has_no_heap_allocation() {
         eeprom_status: 0,
     })
     .unwrap();
+    let motion = [(3200, 1_000_000), (3250, 0)].map(|(us, x)| hs_core::TimedInput {
+        at: hs_core::Time::from_micros(us),
+        input: hs_core::Input::Acceleration(hs_core::Acceleration {
+            x,
+            y: 0,
+            z: 1_000_000,
+        }),
+    });
     ENABLED.store(true, Ordering::SeqCst);
-    let result = m.run_until(hs_core::Time::from_micros(10000), &[], &mut ());
+    let result = m.run_until(hs_core::Time::from_micros(10000), &motion, &mut ());
     ENABLED.store(false, Ordering::SeqCst);
     result.unwrap();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);

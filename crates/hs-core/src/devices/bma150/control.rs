@@ -11,6 +11,9 @@ impl Bma150 {
         self.registers[0x15] & 1 != 0
     }
     pub(super) fn start_acquisition(&mut self, now: Time, ready: Duration) -> Result<(), Error> {
+        for axis in &mut self.analog {
+            axis.resume(now);
+        }
         self.asleep = false;
         self.pause_deadline = None;
         self.wake_deadline = Some(
@@ -24,6 +27,9 @@ impl Bma150 {
         Ok(())
     }
     fn pause(&mut self, now: Time) -> Result<(), Error> {
+        if !self.asleep {
+            self.hold_analog(now)?;
+        }
         self.asleep = true;
         self.wake_deadline = None;
         self.pause_deadline = if self.automatic() {
@@ -83,6 +89,7 @@ impl Bma150 {
         } else {
             Duration::from_micros(1300)
         };
+        self.analog = [analog::Axis::new(now, 0); 3];
         self.registers.fill(0);
         self.registers[0] = 2;
         self.registers[1] = 0x10;
@@ -215,11 +222,14 @@ mod tests {
         run(&mut b, t(3000));
         assert_eq!(b.peek(7), Some(32));
         write(&mut b, 3000, 0x0a, 1);
-        b.set_input(Acceleration {
-            x: 0,
-            y: 0,
-            z: -1_000_000,
-        })
+        b.set_input(
+            Acceleration {
+                x: 0,
+                y: 0,
+                z: -1_000_000,
+            },
+            t(3000),
+        )
         .unwrap();
         write(&mut b, 3100, 0x14, 6); // Sleeping writes cannot change the range.
         assert_eq!(b.peek(0), None);
@@ -247,6 +257,30 @@ mod tests {
         run(&mut b, t(37600));
         assert_eq!(b.peek(7), Some(224));
         assert!(!b.sleeping());
+    }
+    #[test]
+    fn motion_between_axis_conversions_leaves_an_analog_response() {
+        let mut b = Bma150::new(Time::ZERO);
+        write(&mut b, 0, 0x14, 6); // +/-2 g, no digital averaging.
+        run(&mut b, t(3200));
+        assert_eq!(b.peek(3), Some(0));
+        b.set_input(
+            Acceleration {
+                x: 1_000_000,
+                y: 0,
+                z: 1_000_000,
+            },
+            t(3200),
+        )
+        .unwrap();
+        run(&mut b, t(3250));
+        b.set_input(Acceleration::STILL, t(3250)).unwrap();
+        run(&mut b, t(3500));
+        // Both pulse edges lie between X apertures at 3166 2/3 and 3500 us.
+        // Independent continuous step subtraction at 300 and 250 us gives
+        // 103.2 mg, which quantizes to code 26 at +/-2 g.
+        let code = u16::from(b.peek(2).unwrap() >> 6) | (u16::from(b.peek(3).unwrap()) << 2);
+        assert_eq!(code, 26);
     }
     #[test]
     fn image_update_blocks_image_access_until_completion() {
@@ -318,7 +352,8 @@ mod tests {
     }
     fn freefall(latched: bool) -> Bma150 {
         let mut b = Bma150::new(Time::ZERO);
-        b.set_input(Acceleration { x: 0, y: 0, z: 0 }).unwrap();
+        b.set_input(Acceleration { x: 0, y: 0, z: 0 }, Time::ZERO)
+            .unwrap();
         for (a, v) in [
             (0x0b, 1),
             (0x0c, 50),
@@ -337,7 +372,7 @@ mod tests {
         run(&mut b, t(30000));
         assert!(b.interrupt());
         assert!(!b.sleeping());
-        b.set_input(Acceleration::STILL).unwrap();
+        b.set_input(Acceleration::STILL, t(30000)).unwrap();
         run(&mut b, t(31000));
         assert_eq!(b.peek(9), Some(8));
         assert!(b.interrupt());
@@ -356,11 +391,14 @@ mod tests {
             }
             assert!(at < t(23000));
         };
-        b.set_input(Acceleration {
-            x: 1_000_000,
-            y: 0,
-            z: 0,
-        })
+        b.set_input(
+            Acceleration {
+                x: 1_000_000,
+                y: 0,
+                z: 0,
+            },
+            edge,
+        )
         .unwrap();
         run(
             &mut b,

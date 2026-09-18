@@ -80,13 +80,20 @@ proptest::proptest! {
         let mut short = long.clone();
         let mut a = Vec::new();
         let mut b = Vec::new();
-        long.run_until(Time::from_micros(5000), &[], &mut a).unwrap();
-        horizons.extend([checkpoint, 5000]);
+        let inputs = [(3200, 1_000_000), (3250, 0), (3500, 0), (4000, -1_000_000)]
+            .map(|(us, x)| TimedInput {
+                at: Time::from_micros(us),
+                input: Input::Acceleration(hs_core::Acceleration { x, y: 0, z: 1_000_000 }),
+            });
+        long.run_until(Time::from_micros(5000), &inputs, &mut a).unwrap();
+        horizons.extend([checkpoint, 3225, 5000]);
         horizons.sort_unstable();
         horizons.dedup();
+        let mut cursor = 0;
         for us in horizons {
-            short.run_until(Time::from_micros(us), &[], &mut b).unwrap();
-            if us == checkpoint {
+            cursor += short.run_until(Time::from_micros(us), &inputs[cursor..], &mut b)
+                .unwrap().inputs_consumed;
+            if us == checkpoint || us == 3225 {
                 short = state::restore_file(&short.snapshot());
             }
         }

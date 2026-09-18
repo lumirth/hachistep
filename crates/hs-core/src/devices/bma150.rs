@@ -1,5 +1,6 @@
 //! BMA150 conversion, filtering, register and serial state. Physical inputs
 //! pass through calibrated ADC codes and the same filter used by interrupts.
+mod analog;
 mod control;
 mod filter;
 mod interrupts;
@@ -35,6 +36,7 @@ pub struct Bma150 {
     tx_shadow: bool,
     turnaround: bool,
     input: Acceleration,
+    analog: [analog::Axis; 3],
     temperature_millicelsius: i32,
     filter: filter::Filter,
     filtered: [i16; 3],
@@ -83,6 +85,7 @@ impl Bma150 {
             tx_shadow: false,
             turnaround: false,
             input: Acceleration::STILL,
+            analog: [analog::Axis::new(now, 0); 3],
             temperature_millicelsius: 20_000,
             filter: filter::Filter::new(6),
             filtered: [0; 3],
@@ -123,7 +126,10 @@ impl Bma150 {
     pub fn nonvolatile_busy(&self) -> bool {
         self.nv_operation.is_some()
     }
-    pub fn power_off(&mut self, now: Time, output: &mut dyn Output) {
+    pub fn power_off(&mut self, now: Time, output: &mut dyn Output) -> Result<(), Error> {
+        if self.unpowered_since.is_none() && !self.asleep {
+            self.hold_analog(now)?;
+        }
         if let Some((cycle, address, value)) = self.nv_operation.take() {
             let index = usize::from(address - 0x2b);
             let value = cycle.byte(
@@ -149,6 +155,7 @@ impl Bma150 {
         self.set_selected(false);
         self.unpowered_since.get_or_insert(now);
         self.cold = true;
+        Ok(())
     }
     pub fn power_on(&mut self, now: Time) {
         let image = self.nonvolatile;
@@ -172,7 +179,7 @@ impl Bma150 {
     ) -> Result<(), Error> {
         if rail < 2400 {
             if self.unpowered_since.is_none() {
-                self.power_off(now, output);
+                self.power_off(now, output)?;
                 self.cold = rail == 0;
             } else if rail == 0 {
                 self.cold = true;
@@ -206,7 +213,7 @@ impl Bma150 {
         }
         Ok(())
     }
-    pub fn set_input(&mut self, input: Acceleration) -> Result<(), Error> {
+    pub fn set_input(&mut self, input: Acceleration, now: Time) -> Result<(), Error> {
         if [input.x, input.y, input.z]
             .iter()
             .any(|v| v.unsigned_abs() > 1_000_000_000)
@@ -215,7 +222,28 @@ impl Bma150 {
                 "acceleration exceeds the model's safe numerical input range",
             ));
         }
+        if self.unpowered_since.is_none() && !self.asleep {
+            for (axis, (old, new)) in self.analog.iter_mut().zip(
+                [self.input.x, self.input.y, self.input.z]
+                    .into_iter()
+                    .zip([input.x, input.y, input.z]),
+            ) {
+                if old != new {
+                    axis.advance(now, old)?;
+                }
+            }
+        }
         self.input = input;
+        Ok(())
+    }
+    fn hold_analog(&mut self, now: Time) -> Result<(), Error> {
+        for (axis, input) in self
+            .analog
+            .iter_mut()
+            .zip([self.input.x, self.input.y, self.input.z])
+        {
+            axis.advance(now, input)?;
+        }
         Ok(())
     }
     pub fn set_temperature(&mut self, millicelsius: i32) {
@@ -308,7 +336,7 @@ impl Bma150 {
         let mut cycle_ended = false;
         if self.next_sample() == Some(now) {
             self.sample_clock.advance(1)?;
-            self.sample_phase();
+            self.sample_phase(now)?;
             cycle_ended = self.sample_clock.ordinal().is_multiple_of(4);
             if self.sample_clock.ordinal().is_multiple_of(12)
                 && (!self.automatic() || usize::from(self.auto_cycles) >= 2 * self.window())
@@ -336,7 +364,7 @@ impl Bma150 {
     fn window(&self) -> usize {
         self.filter.window()
     }
-    fn sample_phase(&mut self) {
+    fn sample_phase(&mut self, now: Time) -> Result<(), Error> {
         let phase = (self.sample_clock.ordinal() - 1) & 3;
         if let Some(left) = &mut self.test_phases {
             *left = left.saturating_sub(1);
@@ -344,7 +372,7 @@ impl Bma150 {
         if phase == 0 {
             self.registers[8] =
                 ((i64::from(self.temperature_millicelsius) + 30_000) / 500).clamp(0, 255) as u8;
-            return;
+            return Ok(());
         }
         if let Some(left) = self.test_phases {
             if phase == 3 && left == 0 {
@@ -352,14 +380,15 @@ impl Bma150 {
                 self.registers[0x0a] &= !4;
                 self.registers[9] |= 0x80;
             }
-            return;
+            return Ok(());
         }
         let axis = phase as usize - 1;
         let range = self.range_g();
         let input = [self.input.x, self.input.y, self.input.z];
         let offset = (u16::from(self.registers[0x1a + axis]) << 2)
             | u16::from(self.registers[0x16 + axis] >> 6);
-        let acceleration = i64::from(input[axis]) + (i64::from(offset) - 512) * 31_250;
+        let acceleration =
+            self.analog[axis].advance(now, input[axis])? + (i64::from(offset) - 512) * 31_250;
         let code = if self.registers[0x0a] & 8 != 0 {
             0
         } else {
@@ -372,7 +401,7 @@ impl Bma150 {
         self.interrupts
             .axis(axis, self.filtered[axis], &self.registers);
         if axis != 2 {
-            return;
+            return Ok(());
         }
         if self.registers[0x15] & 0x20 != 0
             && [2, 4, 6].iter().all(|&lo| self.registers[lo] & 1 != 0)
@@ -390,6 +419,7 @@ impl Bma150 {
             self.interrupts
                 .cycle(self.filtered, interval, &self.registers);
         }
+        Ok(())
     }
     /// Fixture inspection does not release shadow latches or data-ready state.
     pub fn peek(&self, address: u8) -> Option<u8> {
@@ -586,6 +616,9 @@ impl Bma150 {
         use crate::state::{future, require};
         self.filter.rebuild()?;
         self.interrupts.validate()?;
+        for axis in &self.analog {
+            axis.validate(self.unpowered_since.unwrap_or(now))?;
+        }
         require(
             self.sample_clock.at <= now,
             "sensor clock is ahead of saved time",
@@ -600,6 +633,9 @@ impl Bma150 {
         require(
             self.rx_bits < 8
                 && self.tx_bit <= 8
+                && [self.input.x, self.input.y, self.input.z]
+                    .iter()
+                    .all(|v| v.unsigned_abs() <= 1_000_000_000)
                 && match self.serial {
                     Serial::Address => true,
                     Serial::Read(a) | Serial::Write(a) => a < 128,
@@ -716,13 +752,18 @@ mod tests {
         sample_cycle(&mut b);
         assert_eq!(b.peek(7), Some(64));
         let lo = read(&mut b, 6);
-        b.set_input(Acceleration {
-            x: 0,
-            y: 0,
-            z: -1_000_000,
-        })
+        b.set_input(
+            Acceleration {
+                x: 0,
+                y: 0,
+                z: -1_000_000,
+            },
+            b.sample_clock.at,
+        )
         .unwrap();
-        sample_cycle(&mut b);
+        for _ in 0..8 {
+            sample_cycle(&mut b);
+        }
         assert_eq!(lo & 0xc0, 0);
         assert_eq!(read(&mut b, 7), 64);
         read(&mut b, 6);
@@ -733,11 +774,14 @@ mod tests {
         let mut b = Bma150::new(Time::ZERO); // Factory ±4 g.
         sample_cycle(&mut b);
         assert_eq!(read(&mut b, 6), 1);
-        b.set_input(Acceleration {
-            x: 0,
-            y: 0,
-            z: -1_000_000,
-        })
+        b.set_input(
+            Acceleration {
+                x: 0,
+                y: 0,
+                z: -1_000_000,
+            },
+            b.sample_clock.at,
+        )
         .unwrap();
         write(&mut b, 0x0a, 0x20); // Reload the same factory configuration.
         while let Some(at) = b.deadline().filter(|at| *at <= Time::from_micros(5000)) {
@@ -854,7 +898,9 @@ mod tests {
         assert_eq!(b.peek(0x32), None);
         assert_eq!(b.peek(0x12), Some(0x11));
         let mut interrupted = b.clone();
-        interrupted.power_off(Time::from_micros(14000), &mut ());
+        interrupted
+            .power_off(Time::from_micros(14000), &mut ())
+            .unwrap();
         interrupted.power_on(Time::from_micros(50000));
         assert_eq!(interrupted.nonvolatile(Time::from_micros(50000))[7], 0);
         assert_eq!(interrupted.peek(0x12), Some(0));

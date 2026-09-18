@@ -32,6 +32,11 @@ Report serialization, generated capture/partition checks and dormant-clock
 validation pass `out/host-completion-check2`, all four retail workloads in
 `out/host-completion-retail`, and the Rust 1.95.0 workspace tests in
 `out/host-msrv-tests.log`.
+The continuous sensor response passes the full gates and 125 independent guests
+in `out/analog-check2`. All retail workloads and native replay pass in
+`out/analog-retail-reviewed`, with three reviewed walking expectations changed.
+The model, numerical checks and regression review are in
+[analog response](research/bma150-analog-implementation.md).
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their
@@ -70,7 +75,8 @@ in SAVE_STATES. The exact owner limitations remain in STATUS.
    cases beyond the current alias, displacement, divide, prefetch and admission
    diagnostics. Classification totality alone does not certify the ISA. Preserve
    stable issued actions and already-completed effects across every suspension.
-4. **Physical response.** Improve sensor filtering/calibration, LCD analog
+4. **Physical response.** The sensor now has its continuous two-pole pre-ADC
+   response as well as digital averaging. Improve calibration, LCD analog
    response, optical receiver behavior and supply parameters from primary
    sources, successful firmware sequences and discriminating observations.
    Document chosen physical parameters locally and keep the core operational.
