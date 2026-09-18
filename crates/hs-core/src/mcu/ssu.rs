@@ -231,10 +231,14 @@ impl Ssu {
         self.schedule_load(now, clocks)
     }
     pub fn interrupt(&self) -> bool {
-        (self.status & 8 != 0 && self.enable & 8 != 0)
-            || (self.status & 4 != 0 && self.enable & 4 != 0)
-            || (self.status & 0x42 != 0 && self.enable & 2 != 0)
-            || (self.status & 1 != 0 && self.enable & 1 != 0)
+        self.interrupt_with_enable(0)
+    }
+    pub(crate) fn interrupt_with_enable(&self, retained: u8) -> bool {
+        let enable = self.enable | retained;
+        (self.status & 8 != 0 && enable & 8 != 0)
+            || (self.status & 4 != 0 && enable & 4 != 0)
+            || (self.status & 0x42 != 0 && enable & 2 != 0)
+            || (self.status & 1 != 0 && enable & 1 != 0)
     }
     pub fn peek(&self, address: u16) -> u8 {
         match address {

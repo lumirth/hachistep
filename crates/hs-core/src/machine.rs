@@ -826,7 +826,11 @@ impl Machine {
             }
         }
         loop {
+            let boundary = self.cpu.boundary();
             let action = self.cpu.next(self.mcu.interrupt())?;
+            if boundary {
+                self.mcu.instruction_boundary();
+            }
             if self.cpu.take_accepted_vector() == Some(7) {
                 self.mcu.control.acknowledge_nmi();
             }

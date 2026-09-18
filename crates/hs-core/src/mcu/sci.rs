@@ -290,10 +290,14 @@ impl Sci {
         Ok([basic, pulse, self.mux_glitch].into_iter().flatten().min())
     }
     pub fn interrupt(&self) -> bool {
+        self.interrupt_with_enable(0)
+    }
+    pub(crate) fn interrupt_with_enable(&self, retained: u8) -> bool {
+        let enable = self.scr | retained;
         self.module
-            && ((self.ssr & 0x80 != 0 && self.scr & 0x80 != 0)
-                || (self.ssr & 0x78 != 0 && self.scr & 0x40 != 0)
-                || (self.ssr & 4 != 0 && self.scr & 4 != 0))
+            && ((self.ssr & 0x80 != 0 && enable & 0x80 != 0)
+                || (self.ssr & 0x78 != 0 && enable & 0x40 != 0)
+                || (self.ssr & 4 != 0 && enable & 4 != 0))
     }
     pub fn peek(&self, a: u16) -> u8 {
         match a {

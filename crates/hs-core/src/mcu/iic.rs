@@ -179,9 +179,13 @@ impl Iic {
         self.enabled().then_some(self.drive)
     }
     pub fn interrupt(&self) -> bool {
-        self.status & self.enable & 0xe0 != 0
-            || (!self.synchronous() && self.status & self.enable & STOP != 0)
-            || (self.enable & NACKF != 0
+        self.interrupt_with_enable(0)
+    }
+    pub(crate) fn interrupt_with_enable(&self, retained: u8) -> bool {
+        let enable = self.enable | retained;
+        self.status & enable & 0xe0 != 0
+            || (!self.synchronous() && self.status & enable & STOP != 0)
+            || (enable & NACKF != 0
                 && self.status & (AL | if self.synchronous() { 0 } else { NACKF }) != 0)
     }
     pub fn peek(&self, address: u16) -> u8 {

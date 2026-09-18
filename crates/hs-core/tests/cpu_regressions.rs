@@ -11,6 +11,24 @@ struct Bus {
     writes: Vec<(u16, Width, u16)>,
     cycles: Vec<(char, u16, u32)>,
 }
+
+#[test]
+fn trap_saves_both_ccr_bytes_without_changing_stc_word_semantics() {
+    let mut b = Bus::new(&[0x5700, 0x40fe]);
+    b.word(16, 0x200);
+    b.word(0x200, 0x40fe);
+    let mut c = Cpu::new(0x100);
+    c.registers.er[7] = 0xff70;
+    c.registers.ccr = 0x35;
+    for _ in 0..12 {
+        b.action(&mut c, None);
+    }
+    assert_eq!(&b.bytes[0xff6c..0xff70], &[0x35, 0x35, 1, 2]);
+    assert_eq!(
+        &b.writes[..2],
+        &[(0xff6e, Width::Word, 0x102), (0xff6c, Width::Word, 0x3535)]
+    );
+}
 impl Bus {
     fn new(words: &[u16]) -> Self {
         let mut b = Self {

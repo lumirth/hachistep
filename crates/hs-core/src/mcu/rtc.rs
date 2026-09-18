@@ -241,7 +241,10 @@ impl Rtc {
         Ok(Some(clocks.edge(self.last + self.distance(), self.tap())?))
     }
     pub fn interrupt(&self) -> Option<u8> {
-        let p = self.flags & self.control2;
+        self.interrupt_with_enable(0)
+    }
+    pub(crate) fn interrupt_with_enable(&self, retained: u8) -> Option<u8> {
+        let p = self.flags & (self.control2 | retained);
         (p != 0).then(|| 23 + p.trailing_zeros() as u8)
     }
 }

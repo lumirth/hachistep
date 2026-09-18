@@ -176,11 +176,15 @@ impl Comparators {
         Ok(())
     }
     pub fn interrupt(&self) -> bool {
+        self.interrupt_with_enable([0; 2])
+    }
+    pub(crate) fn interrupt_with_enable(&self, retained: [u8; 2]) -> bool {
         self.gate
             && self
                 .channels
                 .iter()
-                .any(|c| c.control & 0xc0 == 0xc0 && c.flag)
+                .zip(retained)
+                .any(|(c, old)| c.control & 0x80 != 0 && (c.control | old) & 0x40 != 0 && c.flag)
     }
     pub fn peek(&self, address: u16) -> u8 {
         match address {

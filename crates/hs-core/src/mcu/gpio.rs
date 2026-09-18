@@ -391,6 +391,22 @@ impl Gpio {
             },
         ]
     }
+    pub(crate) fn irq_routes(&self) -> [u8; 2] {
+        [
+            match self.pfcr & 3 {
+                0 if self.pmr[2] & 1 != 0 => 1, // PB0
+                1 => 2,                         // P92
+                2 => 3,                         // P30
+                _ => 0,
+            },
+            match (self.pfcr >> 2) & 3 {
+                0 if self.pmr[2] & 2 != 0 => 1, // PB1
+                1 => 2,                         // P93
+                2 => 3,                         // P11
+                _ => 0,
+            },
+        ]
+    }
     pub fn piezo_levels(&self) -> (bool, bool) {
         (self.levels[2] & 4 != 0, self.levels[2] & 8 != 0)
     }

@@ -240,6 +240,7 @@ impl Cpu {
     pub(crate) fn reset() -> Self {
         let mut cpu = Self::new(0);
         cpu.phase = Phase::ResetVector;
+        cpu.interrupt_delay = 1; // The first reset instruction runs even with NMI pending.
         cpu
     }
     pub fn sleeping(&self) -> bool {
@@ -550,7 +551,7 @@ impl Cpu {
                     return Ok(Action::Write {
                         address: self.registers.sp() & !1,
                         width: Width::Word,
-                        value: u16::from(ccr) << 8,
+                        value: u16::from(ccr) * 0x0101,
                         mov_byte: false,
                     })
                 }
@@ -1258,7 +1259,7 @@ mod tests {
             Action::Write {
                 address: 0xff78,
                 width: Width::Word,
-                value: 0x2100,
+                value: 0x2121,
                 mov_byte: false
             }
         );

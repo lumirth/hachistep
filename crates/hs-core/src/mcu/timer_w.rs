@@ -273,7 +273,10 @@ impl TimerW {
         })
     }
     pub fn interrupt(&self) -> bool {
-        self.status & self.enable & 0x8f != 0
+        self.interrupt_with_enable(0)
+    }
+    pub(crate) fn interrupt_with_enable(&self, retained: u8) -> bool {
+        self.status & (self.enable | retained) & 0x8f != 0
     }
     pub fn read(&mut self, address: u16) -> u8 {
         if address == 0xf0f3 {

@@ -28,6 +28,7 @@ pub struct Control {
     pub mode: Mode,
     pub stabilizing_from: Option<Mode>,
     irq_levels: [Option<bool>; 2],
+    irq_clear_delay: [u8; 3],
     nmi_level: bool,
     nmi_pending: bool,
 }
@@ -48,6 +49,7 @@ impl Default for Control {
             mode: Mode::Active,
             stabilizing_from: None,
             irq_levels: [None; 2],
+            irq_clear_delay: [0; 3],
             nmi_level: true,
             nmi_pending: false,
         }
@@ -101,7 +103,14 @@ impl Control {
             // OSCF is the latched E7_2 reset strap. The board selects the
             // main crystal; writing this status bit cannot select ROSC.
             0xfff5 => self.osc = (self.osc & 2) | (v & 0xe0),
-            0xfff6 => self.irr1 &= v & 7,
+            0xfff6 => {
+                let protected = self
+                    .irq_clear_delay
+                    .iter()
+                    .enumerate()
+                    .fold(0, |bits, (i, delay)| bits | (u8::from(*delay != 0) << i));
+                self.irr1 &= (v | protected) & 7;
+            }
             0xfff7 => self.irr2 &= v & 0x45,
             0xfffa => self.gate1 = v & 0x57,
             0xfffb => self.gate2 = v & 0x7e,
@@ -117,6 +126,9 @@ impl Control {
     }
     pub fn pins(&mut self, levels: [Option<bool>; 2]) {
         for (i, level) in levels.iter().enumerate() {
+            if self.irq_levels[i].is_none() && *level == Some(false) {
+                self.irq_switch(i, true);
+            }
             if let (Some(old), Some(new)) = (self.irq_levels[i], *level) {
                 let rising = self.iegr & (1 << i) != 0;
                 if old != new && new == rising {
@@ -125,6 +137,26 @@ impl Control {
             }
         }
         self.irq_levels = levels;
+    }
+    pub(crate) fn instruction_boundary(&mut self) {
+        for delay in &mut self.irq_clear_delay {
+            *delay = delay.saturating_sub(1);
+        }
+    }
+    pub(crate) fn irq_switch(&mut self, index: usize, low: bool) {
+        if low {
+            self.irr1 |= 1 << index;
+            // The selecting instruction's boundary, then one intervening instruction.
+            self.irq_clear_delay[index] = 2;
+        }
+    }
+    pub(crate) fn irq_routes_changed(&mut self, changed: [bool; 2]) {
+        for (i, changed) in changed.into_iter().enumerate() {
+            if changed {
+                self.irq_switch(i, self.irq_levels[i] == Some(false));
+                self.irq_levels[i] = None;
+            }
+        }
     }
     pub fn main_running(&self) -> bool {
         self.stabilizing_from.is_none() && matches!(self.mode, Mode::Active | Mode::Sleep)

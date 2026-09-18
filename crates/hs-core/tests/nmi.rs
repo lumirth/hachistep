@@ -29,6 +29,16 @@ fn input(us: u64, high: bool) -> TimedInput {
 }
 
 #[test]
+fn nmi_during_reset_fetch_waits_for_the_first_stack_initializing_instruction() {
+    let mut m = program(&[0x7a, 7, 0, 0, 0xff, 0x70, 0x40, 0xfe]);
+    m.run_until(t(50), &[input(1, false)], &mut ()).unwrap();
+    assert_eq!(m.interrupt_entries(), 1);
+    assert_eq!(m.registers().sp(), 0xff70);
+    assert_eq!(&m.ram()[0x7ec..0x7f0], &[0x80, 0x80, 1, 6]);
+    assert_eq!(m.ram()[0], 1);
+}
+
+#[test]
 fn dedicated_edge_latch_is_independent_of_ien_and_irr() {
     let mut c = Control::default();
     c.nmi_input(false, true);

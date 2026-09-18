@@ -180,7 +180,10 @@ impl Watchdog {
         self.rosc_last = clocks.ticks(now, Tap::on_chip(1));
     }
     pub fn interrupt(&self) -> bool {
-        !self.reset_held && self.control2 & 0xa8 == 0xa8
+        self.interrupt_with_enable(0)
+    }
+    pub(crate) fn interrupt_with_enable(&self, retained: u8) -> bool {
+        !self.reset_held && self.control2 & 0xa0 == 0xa0 && (self.control2 | retained) & 8 != 0
     }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
         if !self.running() || self.control2 & 0xa0 == 0xa0 {

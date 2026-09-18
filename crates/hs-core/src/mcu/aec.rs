@@ -92,7 +92,7 @@ impl Aec {
     fn enabled(&self, i: usize) -> bool {
         self.module && self.status & (8 >> i) != 0 && self.status & (2 >> i) != 0
     }
-    fn gate(&self) -> bool {
+    pub(crate) fn gate(&self) -> bool {
         if self.pwm_enabled() {
             self.pwm_high
         } else {

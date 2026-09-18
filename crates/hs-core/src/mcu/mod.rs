@@ -53,6 +53,8 @@ pub struct Mcu {
     pub aec: Aec,
     pub comparators: Comparators,
     reset_held: bool,
+    /// Cleared enables still qualify surviving sources at this instruction's admission point.
+    admission_enables: [u8; 10],
 }
 impl Mcu {
     pub fn new(firmware: &[u8], frequencies: Frequencies) -> Result<Self, Error> {
@@ -85,6 +87,7 @@ impl Mcu {
             aec: Aec::default(),
             comparators: Comparators::default(),
             reset_held: false,
+            admission_enables: [0; 10],
         };
         m.apply_gates(Time::ZERO, &mut ())?;
         Ok(m)
@@ -256,6 +259,7 @@ impl Mcu {
         }
         self.clocks.reset_prescalers(now)?;
         self.control.reset();
+        self.admission_enables = [0; 10];
         self.control.synchronize_clock(now, &mut self.clocks)?;
         self.gpio.reset();
         self.ssu = Ssu::default();
@@ -342,7 +346,8 @@ impl Mcu {
         let mut push = |v: u8| {
             best = Some(best.map_or(v, |old: u8| old.min(v)));
         };
-        let ext = self.control.irr1 & self.control.ien1;
+        let retained = self.admission_enables;
+        let ext = self.control.irr1 & (self.control.ien1 | retained[0]);
         if ext & 1 != 0 {
             push(16);
         }
@@ -352,37 +357,46 @@ impl Mcu {
         if ext & 4 != 0 {
             push(18);
         }
-        if self.control.ien1 & 0x80 != 0 {
-            if let Some(v) = self.rtc.interrupt() {
+        if (self.control.ien1 | retained[0]) & 0x80 != 0 {
+            if let Some(v) = self.rtc.interrupt_with_enable(retained[2]) {
                 push(v);
             }
         }
-        if self.watchdog.interrupt() {
+        if self.watchdog.interrupt_with_enable(retained[3]) {
             push(31);
         }
-        let request = self.control.irr2 & self.control.ien2;
+        let request = self.control.irr2 & (self.control.ien2 | retained[1]);
         if request & 1 != 0 {
             push(32);
         }
         if request & 4 != 0 {
             push(33);
         }
-        if self.ssu.interrupt() || self.iic.interrupt() {
+        if self.ssu.interrupt_with_enable(retained[4])
+            || self.iic.interrupt_with_enable(retained[5])
+        {
             push(34);
         }
-        if self.timer_w.interrupt() {
+        if self.timer_w.interrupt_with_enable(retained[6]) {
             push(35);
         }
-        if self.comparators.interrupt() {
+        if self
+            .comparators
+            .interrupt_with_enable([retained[7], retained[8]])
+        {
             push(36);
         }
-        if self.sci.interrupt() {
+        if self.sci.interrupt_with_enable(retained[9]) {
             push(37);
         }
         if request & 0x40 != 0 {
             push(38);
         }
         best
+    }
+    pub(crate) fn instruction_boundary(&mut self) {
+        self.admission_enables = [0; 10];
+        self.control.instruction_boundary();
     }
     pub fn is_memory(a: u16) -> bool {
         a < 0xc000 || (RAM_START..=0xff7f).contains(&a)
@@ -479,6 +493,36 @@ impl Mcu {
         now: Time,
         out: &mut dyn Output,
     ) -> Result<(), Error> {
+        let field = match a {
+            0xfff3 => Some((0, 0x87)),
+            0xfff4 => Some((1, 0x45)),
+            0xf06d => Some((2, 0x7f)),
+            0xffb2 => Some((3, 8)),
+            0xf0e3 => Some((4, 15)),
+            0xf07b => Some((5, 0xf8)),
+            0xf0f2 => Some((6, 0x8f)),
+            0xf0dc => Some((7, 0x40)),
+            0xf0dd => Some((8, 0x40)),
+            0xff9a => Some((9, 0xc4)),
+            _ => None,
+        };
+        if let Some((index, mask)) = field {
+            let before = self.peek8(a)?;
+            self.write_byte(a, v, origin, now, out)?;
+            self.admission_enables[index] |= before & !self.peek8(a)? & mask;
+            Ok(())
+        } else {
+            self.write_byte(a, v, origin, now, out)
+        }
+    }
+    fn write_byte(
+        &mut self,
+        a: u16,
+        v: u8,
+        origin: WriteOrigin,
+        now: Time,
+        out: &mut dyn Output,
+    ) -> Result<(), Error> {
         if (RAM_START..=0xff7f).contains(&a) {
             self.ram[usize::from(a - RAM_START)] = v;
             return Ok(());
@@ -496,7 +540,12 @@ impl Mcu {
             return Ok(());
         }
         if Gpio::handles(a) {
-            return self.gpio.write(a, v);
+            let before = self.gpio.irq_routes();
+            self.gpio.write(a, v)?;
+            let after = self.gpio.irq_routes();
+            self.control
+                .irq_routes_changed([before[0] != after[0], before[1] != after[1]]);
+            return Ok(());
         }
         if Control::handles(a) {
             self.control.write(a, v)?;
@@ -506,7 +555,12 @@ impl Mcu {
             return self.sci.write(a, v, now, &self.clocks);
         }
         if Aec::handles(a) {
+            let was_pwm = self.aec.pwm_enabled();
+            let old_gate = self.aec.gate();
             self.aec.write(a, v, now, &self.clocks)?;
+            if was_pwm != self.aec.pwm_enabled() {
+                self.control.irq_switch(2, !old_gate || !self.aec.gate());
+            }
             return self.aec_power(now);
         }
         match a {
