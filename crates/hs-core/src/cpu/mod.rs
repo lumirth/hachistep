@@ -548,7 +548,8 @@ impl Cpu {
             _ => None,
         }
     }
-    pub fn next(&mut self, interrupt: Option<u8>) -> Result<Action, Error> {
+    /// Sample pending requests only at a hardware admission point.
+    pub fn next(&mut self, mut interrupt: impl FnMut() -> Option<u8>) -> Result<Action, Error> {
         loop {
             if let Some(action) = self.issued_action() {
                 return Ok(action);
@@ -556,7 +557,7 @@ impl Cpu {
             match self.phase {
                 Phase::Boundary | Phase::Sleeping => {
                     if self.interrupt_delay == 0 {
-                        if let Some(v) = interrupt {
+                        if let Some(v) = interrupt() {
                             if v == 7 || self.registers.ccr & I == 0 {
                                 self.enter_exception(v, false);
                                 continue;
@@ -585,7 +586,7 @@ impl Cpu {
                     stage: 2,
                     value,
                 } => {
-                    if word_count && interrupt == Some(7) {
+                    if word_count && interrupt() == Some(7) {
                         // REJ09B0152-0300 §3.8.6: .W accepts NMI at a break
                         // between transfer cycles, saves the NEXT instruction,
                         // and leaves R4/ER5/ER6 describing the remaining copy.
@@ -1208,7 +1209,7 @@ mod tests {
         let code = [0x7907, 0xff80, 0x1b97, 0xf801, 0x8802, 0x0180];
         let mut cpu = Cpu::new(0);
         for _ in 0..20 {
-            match cpu.next(None).unwrap() {
+            match cpu.next(|| None).unwrap() {
                 Action::Read {
                     address,
                     fetch: true,
@@ -1231,7 +1232,7 @@ mod tests {
         cpu.registers.er[7] = 0xff7c;
         cpu.registers.ccr = 0x21;
         assert_eq!(
-            cpu.next(Some(25)).unwrap(),
+            cpu.next(|| Some(25)).unwrap(),
             Action::Read {
                 address: 0x1236,
                 width: Width::Word,
@@ -1239,10 +1240,10 @@ mod tests {
             }
         );
         cpu.complete(0).unwrap();
-        assert_eq!(cpu.next(None).unwrap(), Action::Idle(2));
+        assert_eq!(cpu.next(|| None).unwrap(), Action::Idle(2));
         cpu.complete(0).unwrap();
         assert_eq!(
-            cpu.next(None).unwrap(),
+            cpu.next(|| None).unwrap(),
             Action::Write {
                 address: 0xff7a,
                 width: Width::Word,
@@ -1252,7 +1253,7 @@ mod tests {
         );
         cpu.complete(0).unwrap();
         assert_eq!(
-            cpu.next(None).unwrap(),
+            cpu.next(|| None).unwrap(),
             Action::Write {
                 address: 0xff78,
                 width: Width::Word,
@@ -1262,7 +1263,7 @@ mod tests {
         );
         cpu.complete(0).unwrap();
         assert_eq!(
-            cpu.next(None).unwrap(),
+            cpu.next(|| None).unwrap(),
             Action::Read {
                 address: 50,
                 width: Width::Word,
@@ -1270,10 +1271,10 @@ mod tests {
             }
         );
         cpu.complete(0x200).unwrap();
-        assert_eq!(cpu.next(None).unwrap(), Action::Idle(2));
+        assert_eq!(cpu.next(|| None).unwrap(), Action::Idle(2));
         cpu.complete(0).unwrap();
         assert_eq!(
-            cpu.next(None).unwrap(),
+            cpu.next(|| None).unwrap(),
             Action::Read {
                 address: 0x200,
                 width: Width::Word,

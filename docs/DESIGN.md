@@ -180,6 +180,10 @@ Use the wide timestamp at component and API boundaries. The CPU's frequent execu
 work uses a 64-bit budget in its local clock domain. Convert between the two at
 synchronization points.
 
+Keep the CPU's local cycle cursor and budget disposable. Rebuild the projection when
+the clock configuration changes, and the budget when an interaction changes the next
+external boundary. Captures retain the underlying hardware clock obligation.
+
 ### 4.3 Preserve fractional remainder
 
 For a source frequency \(p/q\) Hz, one period in timestamp units is:
@@ -396,8 +400,9 @@ work. [Renesas exception sequences][2].
 
 Retain the distinction between peripheral condition, status latch, controller request,
 enables, CPU mask, request sampling, admission and exception entry. Suspend and resume
-at the same admission phase. Apply the target's distinct interruption rules for
-`EEPMOV.B` and `EEPMOV.W`. [Renesas interrupt rules][2].
+at the same admission phase. Query pending requests at those admission phases. Apply
+the target's distinct interruption rules for `EEPMOV.B` and `EEPMOV.W`.
+[Renesas interrupt rules][2].
 
 ### 8.4 Unspecified behavior
 

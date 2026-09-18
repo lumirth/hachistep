@@ -80,7 +80,7 @@ impl Bus {
         c.complete(value).unwrap();
     }
     fn action(&mut self, c: &mut Cpu, irq: Option<u8>) -> Action {
-        let a = c.next(irq).unwrap();
+        let a = c.next(|| irq).unwrap();
         self.perform(c, a);
         a
     }
@@ -104,7 +104,7 @@ impl Bus {
             }
         );
         assert_eq!(self.action(c, None), Action::Idle(2));
-        c.next(None).unwrap()
+        c.next(|| None).unwrap()
     }
 }
 
@@ -318,7 +318,7 @@ fn long_predecrement_exposes_completed_prefix_not_an_atomic_store() {
         }
     );
     assert_eq!(b.action(&mut c, None), Action::Idle(2));
-    let a = c.next(None).unwrap();
+    let a = c.next(|| None).unwrap();
     assert!(matches!(
         a,
         Action::Write {
@@ -333,7 +333,7 @@ fn long_predecrement_exposes_completed_prefix_not_an_atomic_store() {
     assert_eq!(&b.bytes[0xfefc..0xff00], &[0x12, 0x34, 0, 0]);
     assert_eq!(c.retired, 0);
     let mut restored = c.clone();
-    assert_eq!(c.next(None).unwrap(), restored.next(None).unwrap());
+    assert_eq!(c.next(|| None).unwrap(), restored.next(|| None).unwrap());
     b.action(&mut c, None);
     assert_eq!(&b.bytes[0xfefc..0xff00], &[0x12, 0x34, 0xfe, 0xfc]);
     assert_eq!(c.retired, 1);
@@ -374,7 +374,7 @@ fn ldc_still_defers_an_interrupt_for_the_following_instruction() {
     c.registers.er[7] = 0xff70;
     b.retire(&mut c);
     assert_eq!(
-        c.next(Some(19)).unwrap(),
+        c.next(|| Some(19)).unwrap(),
         Action::Read {
             address: 0x104,
             width: Width::Word,
@@ -458,7 +458,7 @@ fn eepmov_word_accepts_nmi_only_between_complete_byte_transfers() {
     for _ in 0..5 {
         b.action(&mut c, None);
     } // two fetches, two extra reads, data read
-    let a = c.next(Some(7)).unwrap();
+    let a = c.next(|| Some(7)).unwrap();
     assert!(matches!(
         a,
         Action::Write {
@@ -536,13 +536,13 @@ fn eepmov_issued_read_is_stable_when_interrupt_offer_changes() {
     for _ in 0..4 {
         b.action(&mut c, None);
     }
-    let a = c.next(None).unwrap();
-    assert_eq!(a, c.next(Some(7)).unwrap());
-    assert_eq!(a, c.next(Some(19)).unwrap());
+    let a = c.next(|| None).unwrap();
+    assert_eq!(a, c.next(|| Some(7)).unwrap());
+    assert_eq!(a, c.next(|| Some(19)).unwrap());
     assert_eq!(c.interrupt_entries, 0);
     b.perform(&mut c, a);
     assert!(matches!(
-        c.next(Some(7)).unwrap(),
+        c.next(|| Some(7)).unwrap(),
         Action::Write {
             address: 0xf900,
             ..

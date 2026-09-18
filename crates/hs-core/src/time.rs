@@ -128,11 +128,21 @@ impl Clock {
         self.after(1)
     }
     pub fn after(&self, edges: u64) -> Result<Time, TimeError> {
+        self.project(edges).map(|(at, _)| at)
+    }
+    #[inline]
+    fn project(&self, edges: u64) -> Result<(Time, u64), TimeError> {
         let fractions = u128::from(self.fraction) + u128::from(edges) * u128::from(self.remainder);
-        let carry = if let Ok(fractions) = u64::try_from(fractions) {
-            u128::from(fractions / self.denominator)
+        let (carry, fraction) = if let Ok(fractions) = u64::try_from(fractions) {
+            (
+                u128::from(fractions / self.denominator),
+                fractions % self.denominator,
+            )
         } else {
-            fractions / u128::from(self.denominator)
+            (
+                fractions / u128::from(self.denominator),
+                (fractions % u128::from(self.denominator)) as u64,
+            )
         };
         let delta = self
             .whole
@@ -142,15 +152,13 @@ impl Clock {
         self.at
             .0
             .checked_add(delta)
-            .map(Time)
+            .map(|at| (Time(at), fraction))
             .ok_or(TimeError::Overflow)
     }
     pub fn advance(&mut self, edges: u64) -> Result<Time, TimeError> {
-        let next = self.after(edges)?;
+        let (next, fraction) = self.project(edges)?;
         self.ordinal = self.ordinal.checked_add(edges).ok_or(TimeError::Overflow)?;
-        self.fraction = ((u128::from(self.fraction)
-            + u128::from(edges) * u128::from(self.remainder))
-            % u128::from(self.denominator)) as u64;
+        self.fraction = fraction;
         self.at = next;
         Ok(next)
     }
