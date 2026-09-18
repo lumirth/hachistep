@@ -8,7 +8,6 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Gpio {
-    target_f088: u8,
     pub pfcr: u8,
     pmr: [u8; 3],
     latch: [u8; 5],
@@ -115,7 +114,7 @@ impl Gpio {
         matches!(
             a,
             0xf085
-                ..=0xf088
+                ..=0xf087
                     | 0xf08c
                     | 0xffc0
                     | 0xffc2
@@ -140,7 +139,6 @@ impl Gpio {
     }
     pub fn read(&self, a: u16) -> u8 {
         match a {
-            0xf088 => self.target_f088,
             0xf085 => self.pfcr,
             0xf086 => self.pull[2],
             0xf087 => self.pull[3],
@@ -166,16 +164,6 @@ impl Gpio {
     }
     pub fn write(&mut self, a: u16, v: u8) -> Result<(), Error> {
         match a {
-            0xf088 => {
-                if v & !3 != 0 {
-                    return Err(Error::Unsupported {
-                        component: "target F088",
-                        detail: "uncharacterized bits outside observed low two fields",
-                        address: a,
-                    });
-                }
-                self.target_f088 = v;
-            }
             0xf085 => self.pfcr = v & 31,
             0xf086 => self.pull[2] = v & 0x1c,
             0xf087 => self.pull[3] = v & 15,
@@ -245,7 +233,7 @@ impl Gpio {
             let timer_output = i == 0 && self.pmr[0] & 7 == 0 && timer_mask & 2 != 0;
             if alternate || (!timer_output && self.direction[0] & (1 << i) == 0) {
                 let pull = if alternate {
-                    self.pull[0] & (1 << i) != 0
+                    self.pull[0] & !self.direction[0] & (1 << i) != 0 || (1 << i) & 5 != 0
                 } else {
                     self.levels[0] & (1 << i) != 0
                 };
@@ -259,7 +247,7 @@ impl Gpio {
         }
         if self.clock_selection() >= 2 {
             let high = if self.clock_output_floating {
-                self.digital_levels[0].unwrap_or(self.pull[0] & 1 != 0)
+                self.digital_levels[0].unwrap_or(true)
             } else {
                 self.clock_output
             };
@@ -292,7 +280,7 @@ impl Gpio {
                 } else {
                     None
                 })
-                .unwrap_or(self.pull[1] & 1 != 0),
+                .unwrap_or(self.pull[1] & !self.direction[1] & 1 != 0),
         };
         self.levels[1] = (self.levels[1] & !1) | u8::from(high);
         if self.sci.receive || self.direction[1] & 2 == 0 {
@@ -400,6 +388,24 @@ impl Gpio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn alternate_input_does_not_override_the_pullup_enable_condition() {
+        let mut g = Gpio::default();
+        for (a, v) in [(0xffd6, 1), (0xffe6, 1), (0xffe1, 1), (0xf085, 2)] {
+            g.write(a, v).unwrap();
+        }
+        g.resolve(Pins::default(), 0, 0, [None; 2]);
+        assert_eq!(g.irq_levels()[0], Some(false));
+        assert_eq!(
+            g.read(0xffd6) & 1,
+            1,
+            "PCR output readback still uses the latch"
+        );
+        g.write(0xffe6, 0).unwrap();
+        g.resolve(Pins::default(), 0, 0, [None; 2]);
+        assert_eq!(g.irq_levels()[0], Some(true));
+    }
+
     #[test]
     fn button_pins_and_mux_are_not_firmware_flags() {
         let mut p = Gpio::default();

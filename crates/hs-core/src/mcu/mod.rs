@@ -405,6 +405,10 @@ impl Mcu {
         if (RAM_START..=0xff7f).contains(&a) {
             return Ok(self.ram[usize::from(a - RAM_START)]);
         }
+        if a >= 0xc000 && Self::native_word(a & !1) {
+            let word = self.read16(a & !1)?;
+            return Ok((word >> if a & 1 == 0 { 8 } else { 0 }) as u8);
+        }
         if a == 0xffde {
             let channel = self.adc.channel();
             let adc_mask = if (4..=9).contains(&channel) {
@@ -412,7 +416,7 @@ impl Mcu {
             } else {
                 0
             };
-            return Ok(self.gpio.read(a) & !adc_mask & !(self.comparators.enabled_mask() << 4));
+            return Ok(self.gpio.read(a) & !adc_mask);
         }
         if Gpio::handles(a) {
             return Ok(self.gpio.read(a));
@@ -436,10 +440,10 @@ impl Mcu {
             0xffb0..=0xffb3 => Ok(self.watchdog.read(a)),
             0xffbe | 0xffbf => Ok(self.adc.peek(a)),
             0xf020..=0xf023 | 0xf02b => Ok(0),
-            _ => Err(self.unimplemented(a, false, 1)),
+            _ => self.unimplemented(a).map_or(Ok(0), Err),
         }
     }
-    pub fn read16(&mut self, a: u16) -> Result<u16, Error> {
+    pub fn read16(&self, a: u16) -> Result<u16, Error> {
         let a = a & !1;
         if a < 0xc000 {
             return Ok(u16::from_be_bytes([
@@ -455,7 +459,7 @@ impl Mcu {
             0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe => self.timer_w.read_word(a, &self.clocks),
             0xffbc => Ok(self.adc.result()),
             0xff8c | 0xff8e => self.aec.read_word(a),
-            _ => Err(self.unimplemented(a, false, 2)),
+            _ => self.unimplemented(a).map_or(Ok(0), Err),
         }
     }
     pub fn write8(
@@ -476,6 +480,11 @@ impl Mcu {
                 detail: "flash program/erase sequencer is not implemented",
                 address: a,
             });
+        }
+        // These latches require a native word write strobe. Byte stores do
+        // not synthesize a read-modify-write of an unspecified other lane.
+        if a >= 0xc000 && Self::native_word(a & !1) {
+            return Ok(());
         }
         if Gpio::handles(a) {
             return self.gpio.write(a, v);
@@ -540,7 +549,7 @@ impl Mcu {
                 }
             }
             0xf020..=0xf023 | 0xf02b if v == 0 => Ok(()),
-            _ => Err(self.unimplemented(a, true, 1)),
+            _ => self.unimplemented(a).map_or(Ok(()), Err),
         }
     }
     pub fn write16(&mut self, a: u16, v: u16, now: Time) -> Result<(), Error> {
@@ -560,30 +569,20 @@ impl Mcu {
                 self.collect_aec_requests();
                 Ok(())
             }
-            _ => Err(self.unimplemented(a, true, 2)),
+            _ => self.unimplemented(a).map_or(Ok(()), Err),
         }
     }
-    fn unimplemented(&self, a: u16, write: bool, width: u8) -> Error {
+    fn unimplemented(&self, a: u16) -> Option<Error> {
         let component = match a {
-            0xf020..=0xf02b => "flash",
+            0x0000..=0xbfff | 0xf020..=0xf023 | 0xf02b => "flash",
             0xf078..=0xf07f => "IIC2",
-            0xf0dc..=0xf0de => "comparators",
-            0xff8c..=0xff8f | 0xff92 | 0xff94..=0xff97 => "AEC",
-            0xf0f6..=0xf0ff => "Timer W byte-access",
-            0xffbc..=0xffbd => "ADC word-only access",
-            _ => {
-                return Error::Unmapped {
-                    address: a,
-                    write,
-                    width,
-                }
-            }
+            _ => return None, // Unselected bus: reads zero, writes have no latch.
         };
-        Error::Unsupported {
+        Some(Error::Unsupported {
             component,
             detail: "this hardware access is not implemented; see docs/STATUS.md",
             address: a,
-        }
+        })
     }
     pub fn peek8(&self, a: u16) -> Result<u8, Error> {
         if a < 0xc000 {
@@ -592,6 +591,10 @@ impl Mcu {
         if (RAM_START..=0xff7f).contains(&a) {
             return Ok(self.ram[usize::from(a - RAM_START)]);
         }
+        if a >= 0xc000 && Self::native_word(a & !1) {
+            let word = self.read16(a & !1)?;
+            return Ok((word >> if a & 1 == 0 { 8 } else { 0 }) as u8);
+        }
         if a == 0xffde {
             let channel = self.adc.channel();
             let adc_mask = if (4..=9).contains(&channel) {
@@ -599,7 +602,7 @@ impl Mcu {
             } else {
                 0
             };
-            return Ok(self.gpio.read(a) & !adc_mask & !(self.comparators.enabled_mask() << 4));
+            return Ok(self.gpio.read(a) & !adc_mask);
         }
         if Gpio::handles(a) {
             return Ok(self.gpio.read(a));
@@ -624,7 +627,7 @@ impl Mcu {
             0xffbe | 0xffbf => Ok(self.adc.peek(a)),
             0xffbc => Ok((self.adc.result() >> 8) as u8),
             0xffbd => Ok(self.adc.result() as u8),
-            _ => Err(self.unimplemented(a, false, 1)),
+            _ => self.unimplemented(a).map_or(Ok(0), Err),
         }
     }
     pub fn delay(&self, now: Time, states: u64) -> Result<Time, Error> {
