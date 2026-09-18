@@ -469,6 +469,16 @@ impl Machine {
             self.eeprom.set_selected(levels.eeprom_selected, self.now)?;
         }
         self.sensor.set_selected(levels.sensor_selected);
+        if !self.serial.sensor_selected
+            && !levels.sensor_selected
+            && (self.serial.clock != levels.clock || self.serial.mosi != levels.mosi)
+        {
+            self.sensor.i2c_pins(
+                [self.serial.clock, self.serial.mosi],
+                [levels.clock, levels.mosi],
+                self.now,
+            )?;
+        }
         self.lcd.select(levels.lcd_selected);
         self.lcd.command_data(levels.data);
         if levels.clock != self.serial.clock {
@@ -484,10 +494,11 @@ impl Machine {
             }
         }
         let data = self.serial_data()?;
-        if self.power.mcu() {
-            self.mcu.gpio.resolve(pins, timer, timer_mask, data);
-        }
-        self.serial = levels;
+        self.serial = if self.power.mcu() {
+            self.mcu.gpio.resolve(pins, timer, timer_mask, data)
+        } else {
+            self.mcu.gpio.resolve_unpowered(data)
+        };
         if !self.power.mcu() {
             if self.emitting {
                 self.emitting = false;

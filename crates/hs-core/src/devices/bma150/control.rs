@@ -84,6 +84,7 @@ impl Bma150 {
         Ok(())
     }
     fn soft_reset(&mut self, now: Time) -> Result<(), Error> {
+        self.i2c = i2c::State::default();
         let ready = if self.asleep {
             Duration::from_millis(30)
         } else {

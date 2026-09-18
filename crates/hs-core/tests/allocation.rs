@@ -4,6 +4,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[path = "support/flash.rs"]
 mod flash_guest;
+#[path = "support/sensor_i2c.rs"]
+mod sensor_i2c;
 struct Count;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -74,6 +76,13 @@ fn ordinary_run_has_no_heap_allocation() {
     result.unwrap();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
     assert_eq!(m.firmware()[0x9000], 0);
+
+    let (mut sensor, bus, end) = sensor_i2c::session();
+    ENABLED.store(true, Ordering::SeqCst);
+    let result = sensor.run_until(end, &bus, &mut ());
+    ENABLED.store(false, Ordering::SeqCst);
+    result.unwrap();
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
 
     let mut boot = hs_core::Machine::new(hs_core::Images {
         firmware: &[0; 49152],

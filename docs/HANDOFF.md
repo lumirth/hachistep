@@ -41,6 +41,13 @@ The subsequent decimal-adjust source audit found no executor defect. Three
 independent guests expand the suite to 128 passing cases
 (`out/decimal-conformance.json`), covering all printed rows and the manual's
 twenty omitted valid addition states; see [decimal adjustment](research/h8-decimal-adjust.md).
+Sensor GPIO I²C passes the full gates and all 132 independent guests in
+`out/i2c-check`; all four retail workloads and native replay remain unchanged
+in `out/i2c-retail`. Every new I²C guest fails against the preceding binary
+(`out/i2c-before.json`) and passes after the implementation. Edge-by-edge native
+captures and the allocation gate cover the new transport; focused tests check
+read freshness, reset ACK during quiet time, and a retained supply interruption.
+See [the protocol and board evidence](research/bma150-i2c.md).
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their

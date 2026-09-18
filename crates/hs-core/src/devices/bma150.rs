@@ -3,6 +3,7 @@
 mod analog;
 mod control;
 mod filter;
+mod i2c;
 mod interrupts;
 use super::nv::WriteCycle;
 use crate::{
@@ -24,6 +25,7 @@ pub struct Bma150 {
     registers: [u8; COUNT],
     nonvolatile: [u8; 0x13],
     serial: Serial,
+    i2c: i2c::State,
     selected: bool,
     rx: u8,
     rx_bits: u8,
@@ -73,6 +75,7 @@ impl Bma150 {
             registers,
             nonvolatile,
             serial: Serial::Address,
+            i2c: i2c::State::default(),
             selected: false,
             rx: 0,
             rx_bits: 0,
@@ -153,6 +156,7 @@ impl Bma150 {
             });
         }
         self.set_selected(false);
+        self.i2c.abort();
         self.unpowered_since.get_or_insert(now);
         self.cold = true;
         Ok(())
@@ -491,6 +495,7 @@ impl Bma150 {
     pub fn set_selected(&mut self, selected: bool) {
         let selected = selected && self.unpowered_since.is_none();
         if self.selected != selected {
+            self.i2c.abort();
             self.selected = selected;
             self.serial = Serial::Address;
             self.rx = 0;
@@ -516,7 +521,13 @@ impl Bma150 {
         }
     }
     pub fn data_output(&self) -> Drive {
-        if self.serial_ready.is_none()
+        if !self.selected
+            && self.unpowered_since.is_none()
+            && self.serial_ready.is_none()
+            && self.i2c.low
+        {
+            Drive::Low
+        } else if self.serial_ready.is_none()
             && self.selected
             && !self.four_wire()
             && !self.sleeping()
@@ -616,6 +627,9 @@ impl Bma150 {
         use crate::state::{future, require};
         self.filter.rebuild()?;
         self.interrupts.validate()?;
+        self.i2c.validate(
+            !self.selected && self.unpowered_since.is_none() && self.serial_ready.is_none(),
+        )?;
         for axis in &self.analog {
             axis.validate(self.unpowered_since.unwrap_or(now))?;
         }

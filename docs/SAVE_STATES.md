@@ -76,7 +76,11 @@ Flash/EEPROM/sensor programming retains original cells and its unfinished
 operation, rather than replacing them with a projected persistent image. Sensor
 filter sums are rebuilt from retained samples. Its pre-ADC analog output,
 normalized derivative and last evolution time remain causal state, including
-between input changes and conversions and across warm sleep. LCD scan/output latches and GPIO
+between input changes and conversions and across warm sleep. The sensor's I²C
+record retains its register pointer, partial incoming byte, transmitted-bit
+count, ACK phase and SDA-low intent; the prepared read/shadow state is shared
+with SPI. Loading between data completion and ACK cannot repeat a register write.
+LCD scan/output latches and GPIO
 last-resolved levels remain causal: resolving the board on load would deliver
 edges twice. No load callback or guest access occurs. A saved core fault remains
 stopped, with a generic restored-fault diagnostic rather than the original text.
@@ -106,7 +110,7 @@ horizons.
 
 Validation covers quarter-cycle CPU captures, split SFR lanes, copy and exception
 progress, flash pulses, EEPROM interruption, clock/reset/power transitions,
-private retail replay, malformed candidates and continuation without ordinary-run
+sensor I²C captures after every bus edge, private retail replay, malformed candidates and continuation without ordinary-run
 allocation. Debug and release decoding are tested with a 1 MiB thread stack.
 
 Manufacturer boot captures retain autobaud's source-edge start, the current
