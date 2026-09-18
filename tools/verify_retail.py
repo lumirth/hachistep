@@ -89,27 +89,28 @@ def main() -> None:
     env = environment()
     env.update(HS_FIRMWARE=str(firmware), HS_EEPROM=str(eeprom))
     records = []
-    records.append(
-        run(
-            [
-                cargo,
-                "test",
-                "-p",
-                "hs-core",
-                "--release",
-                "--test",
-                "retail",
-                "--locked",
-                "--offline",
-                "--",
-                "--ignored",
-                "--nocapture",
-            ],
-            out,
-            "partition-and-snapshot",
-            env,
+    for test, name in [("retail", "partition-and-snapshot"), ("retail_link", "peer-exchange")]:
+        records.append(
+            run(
+                [
+                    cargo,
+                    "test",
+                    "-p",
+                    "hs-core",
+                    "--release",
+                    "--test",
+                    test,
+                    "--locked",
+                    "--offline",
+                    "--",
+                    "--ignored",
+                    "--nocapture",
+                ],
+                out,
+                name,
+                env,
+            )
         )
-    )
     if a.runner is None:
         records.append(
             run(

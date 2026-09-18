@@ -83,6 +83,14 @@ CSV uses 100 Hz samples of a synthetic 2 Hz trajectory and does not inject steps
 The IR input supplies optical levels and their timing to the receiver model. The
 conformance IR fixture generates a pulse timeline in software.
 
+`tools/verify_retail.py` also runs two independent retail machines through a peer
+exchange. It prepares distinct identities and empty encounter histories in memory from
+a save with a walking Pokémon. Button presses start the connection; each machine's
+emitted pulses reach the other after a selected one-microsecond channel delay. The test
+checks that both firmwares commit the other device's record to encounter history.
+The delay defines this simulated channel; it is not a measurement of the physical
+transceiver. Source save files remain read-only.
+
 Analog fixture names are `pb0` through `pb5` and `vcref`; values are integer mV within
 the checked input envelope. Digital fixture names are `p10`–`p12`, `p30`–`p32`,
 `p90`–`p93`, and `adtrg`, with `0`, `1`, or `release`. They drive input or released
