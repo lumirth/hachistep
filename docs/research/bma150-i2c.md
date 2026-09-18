@@ -145,17 +145,22 @@ Require a new START after readiness returns. ([Sleep/reset][p21], [modes][p46])
 
 ## Timing and bounded physical uncertainty
 
-Table 11, p.33 specifies up to 3.4 MHz, SCL low ≥160 ns/high ≥60 ns,
-SDA setup ≥10 ns, SDA hold 10–70 ns, repeated-START setup/start hold/STOP
+Rev. 1.7 §4.2, table 11, p.34 specifies up to 3.4 MHz, SCL low ≥160 ns/high ≥60 ns,
+SDA setup ≥10 ns, SDA hold **0–70 ns**, repeated-START setup/start hold/STOP
 setup ≥160 ns, and bus-free ≥100 ns. There is no extra SPI-style turnaround
 clock, serial byte timeout, or I²C-specific register-write delay. Existing
 cold/wake/reset/image/EEPROM readiness continues through the shared owner.
-([Timing][p33])
+([Corrected timing][rev17-timing])
+
+The 29 June 2010 revision corrects the older 10 ns minimum; its history
+explicitly identifies the `Thddat` entry as a typo. This changes the cited
+input timing requirement, not the existing edge-level implementation.
+([Revision history, p.58][rev17-history])
 
 For this digital interface, launch output on the falling-edge consequence and
 sample on the next rise; valid timing leaves at least 160 ns for the specified
 data hold to finish. This abstracts pad propagation and pull-up slew rather
-than inventing a calibrated 10/70 ns delay. Exact sub-edge pad timing and
+than inventing a calibrated pad delay. Exact sub-edge pad timing and
 the maximum bit rate with the board's pull-up are the remaining physical
 measurements; they do not justify leaving the documented bus unimplemented.
 
@@ -212,7 +217,8 @@ and pad transitions.
 [p23]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=23
 [p25]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=25
 [p32]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=32
-[p33]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=33
+[rev17-timing]: https://datasheet.datasheetarchive.com/originals/library/Datasheets-EDS4/DSAEDA00066689.pdf#page=34
+[rev17-history]: https://datasheet.datasheetarchive.com/originals/library/Datasheets-EDS4/DSAEDA00066689.pdf#page=58
 [p34]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=34
 [p36]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=36
 [p37]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=37

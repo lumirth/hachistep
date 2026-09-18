@@ -68,7 +68,8 @@ workloads. ([Initialization][pw-init]; [diagnostic][pw-test])
 The Bosch register definitions establish gain fields and temperature trim, but
 the inspected APIs provide no numerical gain transfer. Searches for ANA016 and
 its newer identifier BST-MAS-AN014-01 found references, not the application note
-itself; the later rev.1.7 datasheet mirror could not be retrieved. There is no new
+itself; the initial pass could not retrieve the later rev.1.7 datasheet (see
+the source follow-up below). There is no new
 evidence here for `gain/32`, `1+gain/64`, or a temperature-offset step. Keep those
 bytes writable/retained and the specific missing analogue effect recorded; do
 not disguise an arbitrary multiplier as calibration completion.
@@ -197,6 +198,28 @@ the rounded steady limit can be used without evaluating an enormous argument.
 These bounds derive from the chosen transfer equations above, not a claimed
 Bosch numeric implementation.
 
+## Calibration source follow-up
+
+The follow-up recovered Bosch BST-BMA150-DS000-07 rev.1.7 (29 June 2010) from
+a different mirror. It still supplies no numerical gain transfer, and §3.5.1,
+p.24 expressly leaves temperature-offset trimming undescribed. Its history
+records the ANA016 reference changing to BST-MAS-AN014-01, not an added trim
+specification. The application note itself was not recovered. Keep the existing
+offset model and the recorded gain/temperature limitations. ([Rev.1.7 temperature
+section][rev17-temp], [revision history][rev17-history])
+
+Bosch's accessible **BST-MAS-AN030-01 rev.1.1** (October 2019), also titled
+*Inline calibration*, does not fill that gap. Its applicability list omits all
+three BMA150 reference codes; §6 uses a different register layout, with a
+calibration trigger at 36 and correction registers at 38–3A. It describes offset
+correction, not the BMA150's six-bit gain fields. Do not import those register
+effects or a sensitivity scale into this owner. No additional numerical trim
+behavior is justified by these newly checked sources. ([Applicability, pp.1/3;
+implementation, pp.5–6][inline-2019])
+
+[rev17-temp]: https://datasheet.datasheetarchive.com/originals/library/Datasheets-EDS4/DSAEDA00066689.pdf#page=24
+[rev17-history]: https://datasheet.datasheetarchive.com/originals/library/Datasheets-EDS4/DSAEDA00066689.pdf#page=58
+[inline-2019]: https://www.bosch-sensortec.com/media/boschsensortec/downloads/application_notes_1/bst-mas-an030.pdf
 [ds5]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=5
 [ds21]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=21
 [ds46]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=46
