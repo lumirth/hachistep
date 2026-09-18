@@ -109,7 +109,9 @@ samples. An accuracy correction that changes behavior requires a new justified b
 before performance comparison. A run with one binary measures its performance alone.
 
 CLI simulation-loop time and externally measured process/load/export time are reported
-separately. Report the host and sample spread with each result.
+separately. Use `--chunk-us` to measure frequent calls over the same firmware workload;
+the default is 1000 microseconds. Record the call horizon, host and sample spread with
+each result. The report retains the horizon, tool versions and binary hashes.
 
 ## Host-tool tests
 

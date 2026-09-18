@@ -453,6 +453,10 @@ impl Mcu {
             2
         }
     }
+    pub(crate) fn read_starts_transfer(a: u16) -> bool {
+        // Reading SSURDR or ICDRR can start reception or release a held clock.
+        matches!(a, 0xf0e9 | 0xf07f)
+    }
     pub fn read8(&mut self, a: u16, now: Time, out: &mut dyn Output) -> Result<u8, Error> {
         if a < 0xc000 {
             return self.flash.read8(a, now, out);

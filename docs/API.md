@@ -37,7 +37,9 @@ references](SOURCES.md).
 
 ```rust,ignore
 let end = machine.now().checked_add(Duration::from_millis(100)).ok_or("overflow")?;
-let result = machine.run_until(end, &input_timeline[cursor..], &mut output)?;
+let remaining = &input_timeline[cursor..];
+let count = remaining.partition_point(|change| change.at < end);
+let result = machine.run_until(end, &remaining[..count], &mut output)?;
 cursor += result.inputs_consumed;
 ```
 
@@ -46,6 +48,10 @@ still see it. Timelines are monotonic and properties cannot be assigned twice at
 same timestamp. Independent same-time changes are applied in one batch. Reversed
 horizons and past inputs fail. The host must not run ahead of the input history it
 actually knows; no retroactive input insertion is supported.
+
+For frequent calls, pass the portion of the ordered timeline before that call's horizon,
+as above. Input validation then visits each consumed event once, avoiding repeated scans
+of future input.
 
 A custom `Output` implements `fn event(&mut self, event: Event)`. It must not re-enter
 the machine. The callback is synchronous and cannot return an I/O error; a host sink may

@@ -753,10 +753,16 @@ impl Machine {
                 if edge.sample {
                     self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
                 }
+                let pins = self.mcu.ssu.pins();
                 self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
+                // Completing a frame can release selection and data drivers.
+                if self.mcu.ssu.pins() != pins {
+                    self.resolve_board(out)?;
+                }
             }
+        } else {
+            self.resolve_board(out)?;
         }
-        self.resolve_board(out)?;
         self.refresh_deadline()
     }
     fn input_tag(input: Input) -> u8 {
@@ -1113,9 +1119,9 @@ impl Machine {
             write,
             value,
         });
-        #[cfg(not(feature = "trace"))]
-        let _ = write;
-        if !memory {
+        // Due peripheral effects were settled before this access. Other reads
+        // only observe state or qualify flags; they preserve pins and deadlines.
+        if !memory && (write || Mcu::read_starts_transfer(a)) {
             self.resolve_board(out)?;
             self.refresh_deadline()?;
         }
