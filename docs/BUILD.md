@@ -58,6 +58,32 @@ On Windows the check/verification scripts select `hachistep.exe`; direct shell e
 in the docs use Unix executable spelling. Verify builds and behavior on each supported
 host.
 
+## WebAssembly checks
+
+The `wasm32-wasip1` build runs the same core and CLI through
+[Wasmtime](https://docs.wasmtime.dev/cli.html). Install its command-line tool and add
+the Rust target before running:
+
+```sh
+rustup target add wasm32-wasip1
+cargo build -p hs-cli --release --target wasm32-wasip1 --locked --offline
+CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p hs-core --release \
+  --target wasm32-wasip1 --locked --offline -- --test-threads=1
+uv run tools/verify_retail.py \
+  --runner target/wasm32-wasip1/release/hachistep.wasm --out out/wasm-retail-1
+```
+
+The retail verifier runs its native partition test, then uses the supplied module for
+the workloads and their saved continuations. The hachiware adapter's `--runner` and
+the benchmark's `--left` and `--right` also accept this module. The tools invoke
+Wasmtime with access to the directories containing the supplied inputs and outputs.
+
+The native test that selects a thread's stack size is ignored on Wasm because
+[this target cannot spawn threads](https://doc.rust-lang.org/rustc/platform-support/wasm32-wasip1.html#requirements).
+The remaining core tests exercise the Wasm build, including allocation and restoration.
+WASI supplies file and clock services for command-line verification. Browser embedding
+still needs host bindings and tests in actual browsers.
+
 ## Output safety
 
 The CLI always opens outputs with create-new semantics. `--out` creates a new directory

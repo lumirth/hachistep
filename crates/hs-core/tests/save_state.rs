@@ -120,6 +120,10 @@ fn faulted_instruction_capture_stays_stopped() {
     state::assert_same_state(&m, &loaded);
 }
 #[test]
+#[cfg_attr(
+    target_family = "wasm",
+    ignore = "requires native thread stack control"
+)]
 fn decode_uses_fixed_heap_storage_on_a_small_stack() {
     let bytes = machine(&[0x40fe]).snapshot().encode().unwrap();
     std::thread::Builder::new()

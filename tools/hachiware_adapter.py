@@ -1,13 +1,14 @@
-#!/usr/bin/env python3
 """Run hachiware experiments through HachiStep and export requested observations."""
 
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
+
+from _support import cli_command
 
 STORAGE = {
     "ram": "ram.bin",
@@ -132,22 +133,21 @@ def main() -> int:
     if args.milliseconds <= 0:
         parser.error("--milliseconds must be positive")
     command = [
-        str(args.runner),
         "run",
         "--firmware",
-        str(args.firmware),
+        str(args.firmware.resolve()),
         "--eeprom",
-        str(args.eeprom),
+        str(args.eeprom.resolve()),
         "--milliseconds",
         str(args.milliseconds),
         "--battery-drop-mv",
         str(CONDITIONS["battery_sense_drop_mv"]),
         "--out",
-        str(args.out),
+        str(args.out.resolve()),
     ]
     if args.input:
-        command += ["--input", str(args.input)]
-    result = subprocess.run(command, check=False)
+        command += ["--input", str(args.input.resolve())]
+    result = subprocess.run(cli_command(args.runner, command), check=False)
     report_path = args.out / "report.json"
     if report_path.is_file():
         report = json.loads(report_path.read_text())

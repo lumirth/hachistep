@@ -17,6 +17,7 @@ from pathlib import Path
 
 from _support import (
     ROOT,
+    cli_command,
     create_directory,
     digest,
     environment,
@@ -99,7 +100,6 @@ def main() -> None:
         # happen in this preflight so their cost stays outside the measurements.
         for variant, executable in variants.items():
             command = [
-                str(executable),
                 *arguments,
                 "--out",
                 str(out / f"preflight-{variant}"),
@@ -109,7 +109,7 @@ def main() -> None:
                 str(a.preflight_trace_limit),
             ]
             process = subprocess.run(
-                command,
+                cli_command(executable, command),
                 capture_output=True,
                 text=True,
                 env=environment(),
@@ -150,14 +150,13 @@ def main() -> None:
     for index, (repeat, variant) in enumerate(schedule):
         destination = out / f"{index:03}-{variant}"
         command = [
-            str(variants[variant]),
             *arguments,
             "--out",
             str(destination),
         ]
         start = time.perf_counter()
         process = subprocess.run(
-            command,
+            cli_command(variants[variant], command),
             capture_output=True,
             text=True,
             env=environment(),

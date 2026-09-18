@@ -10,6 +10,7 @@ from pathlib import Path
 from _support import (
     ROOT,
     binary,
+    cli_command,
     create_directory,
     digest,
     environment,
@@ -29,6 +30,11 @@ def main() -> None:
     p.add_argument("--firmware", type=Path, default=ROOT / "inputs/pokewalker.bin")
     p.add_argument("--eeprom", type=Path, default=ROOT / "inputs/eeprom.bin")
     p.add_argument("--out", type=Path, default=ROOT / "out/retail-check")
+    p.add_argument(
+        "--runner",
+        type=Path,
+        help="use a prebuilt native executable or WASI module for workloads",
+    )
     selection = p.add_mutually_exclusive_group()
     selection.add_argument(
         "--quick",
@@ -103,14 +109,15 @@ def main() -> None:
             env,
         )
     )
-    records.append(
-        run(
-            [cargo, "build", "-p", "hs-cli", "--release", "--locked", "--offline"],
-            out,
-            "build",
+    if a.runner is None:
+        records.append(
+            run(
+                [cargo, "build", "-p", "hs-cli", "--release", "--locked", "--offline"],
+                out,
+                "build",
+            )
         )
-    )
-    exe = release_executable()
+    exe = a.runner.resolve() if a.runner else release_executable()
 
     def execute(name, milliseconds, timeline, *, restore=None, trace=False):
         destination = out / name
@@ -120,7 +127,6 @@ def main() -> None:
             else ["--firmware", str(firmware), "--eeprom", str(eeprom)]
         )
         command = [
-            str(exe),
             "run",
             *arguments,
             "--milliseconds",
@@ -137,7 +143,7 @@ def main() -> None:
                 "--trace-limit",
                 "2000000",
             ]
-        records.append(run(command, out, name))
+        records.append(run(cli_command(exe, command), out, name))
         return destination
 
     summaries = []
@@ -207,6 +213,7 @@ def main() -> None:
             "kind": "emulator observations, not hardware conformance",
             "source": source_identity(),
             "toolchain": versions(),
+            "runner_sha256": digest(exe),
             "inputs": before,
             "inputs_unchanged": True,
             "regression_checked": expected is not None,

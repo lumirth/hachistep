@@ -112,6 +112,9 @@ CLI simulation-loop time and externally measured process/load/export time are re
 separately. Use `--chunk-us` to measure frequent calls over the same firmware workload;
 the default is 1000 microseconds. Record the call horizon, host and sample spread with
 each result. The report retains the horizon, tool versions and binary hashes.
+Both executable arguments also accept the `wasm32-wasip1` CLI module described in
+[BUILD](BUILD.md#webassembly-checks). This permits the same event and state comparison
+across native and Wasm execution.
 
 ## Host-tool tests
 
