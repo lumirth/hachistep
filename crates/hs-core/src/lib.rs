@@ -17,6 +17,7 @@
 //! # Ok::<(), hs_core::Error>(())
 //! ```
 #![forbid(unsafe_code)]
+pub mod audio;
 pub mod cpu;
 pub mod devices;
 pub mod error;
@@ -25,6 +26,7 @@ mod power;
 pub mod signals;
 mod state;
 pub mod time;
+pub use audio::Audio;
 pub use error::Error;
 pub use signals::{Acceleration, AnalogPin, Buttons, DigitalPin, Event, Input, Output, TimedInput};
 pub use time::{Duration, Time};

@@ -113,10 +113,22 @@ polarity. It includes PWM/FRC, the output latch, and frame-latched start line. I
 not advance the guest or alter snapshot state. Power-save and display-off return
 inactive drive. This is separate from analog glass response.
 
-Audio output currently consists of timestamped `Event::Buzzer` drive changes. The
-offline `tools/render_audio.py` tool converts a captured trace into WAV. The Rust API
-does not yet provide the reusable PCM conversion required by
-[DESIGN §12.2](DESIGN.md#122-buzzer-output).
+`machine.audio(sample_rate)` constructs an `Audio` renderer at the current time and
+buzzer drive. Pass output events to `audio.event(event, samples)` and call
+`audio.advance(result.now, samples)` after each run. Both accept a callback receiving
+borrowed mono `i16` sample blocks. The renderer ignores other event types. The
+[replay example](../crates/hs-core/examples/replay.rs) demonstrates streaming delivery.
+
+The rate can be 1000 through 192000 Hz. Rendering uses band-limited synthesis with DC
+removal, retains fractional phase across calls, and allocates only at construction.
+Transition times round to 1/4096 of a sample. The filter introduces about eight samples
+of delay. Output gain and the physical piezo's acoustic response remain presentation
+choices; this converter does not claim to reproduce its measured sound pressure.
+
+Rendering owns no machine state. Feed all buzzer events before advancing through their
+interval, including a final advance through silence. After restoring or replacing the
+machine, discard queued playback and construct a renderer for the new time and drive.
+Sample/filter history belongs to the frontend and is absent from native save states.
 
 `firmware`, `ram`, `eeprom`, `eeprom_status`, `sensor_nonvolatile`, `lcd_ram` and
 `lcd_icons` return read-only data. RAM and EEPROM edits use the operations below.

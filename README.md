@@ -61,9 +61,9 @@ Borsh encodes selected hardware state; SHA-256 identifies firmware and checks st
 files. Clap owns CLI argument validation and help.
 
 `hs-cli` accepts physical input CSVs, exports persistent images, produces run reports
-and captures bounded traces. The current audio renderer converts captured buzzer events
-to WAV through `tools/render_audio.py`. Frontends own device playback and file/slot
-management. [API](docs/API.md) describes the available embedding interface;
+and captures bounded traces. The core's `Audio` renderer streams PCM from buzzer events;
+`tools/render_audio.py` also converts saved traces to WAV. Frontends own device playback
+and file/slot management. [API](docs/API.md) describes the available embedding interface;
 [DESIGN §12](docs/DESIGN.md#12-outputs-and-presentation) defines the intended output support.
 
 ## Verification

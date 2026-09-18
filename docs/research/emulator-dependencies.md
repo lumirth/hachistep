@@ -55,6 +55,7 @@ to be free of unsafe code. Manifests and `Cargo.lock` own versions and features;
 | --- | --- |
 | Borsh | Core save state encoding. Fixed-width integer rules and support for the actual fixed-array records avoid a handwritten paired encoder/decoder. Use `std` and `derive`, without schema-generation machinery. |
 | SHA-2 | Core firmware identity/state checksum and CLI image identities. Replaces custom digest code; the selected `force-soft` backend keeps hashing portable. It does no work in ordinary emulation. |
+| blip_buf | Reusable PCM conversion from timed buzzer changes. Supplies band-limited synthesis, DC removal and fixed buffer storage instead of maintaining resampling code and coefficient tables in HachiStep. The renderer runs only when a consumer requests audio. |
 | Serde JSON | CLI report encoding, including full-width time values. Keeps escaping and serialization out of handwritten format strings. |
 | Clap | CLI option declarations, relationships, validation, and generated help share one definition. |
 | Proptest | Development-only generation and shrinking of execution partitions and capture points. It supplies inputs, not hardware expectations. |
@@ -79,3 +80,10 @@ definitions fit the chosen native records.
 
 Adopt future dependencies for work they remove. Choose parsing tools when the CPU
 generator's source format is defined. Error formatting is small enough to keep explicit.
+
+[`blip_buf`](https://github.com/mvdnes/blip_buf-rs) is an MIT-licensed Rust implementation
+with no additional dependencies. Its fixed synthesis buffer allocates at construction;
+HachiStep bounds rendering intervals and drains samples before reusing it. Mapping time
+to an exact power-of-two ratio avoids cumulative sample-rate rounding. Its safe API
+contains an internal `Send` declaration; HachiStep's own unsafe-code prohibition remains
+in force.

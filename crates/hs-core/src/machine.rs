@@ -271,6 +271,11 @@ impl Machine {
     pub fn display(&self, pixels: &mut [u8; 6144]) {
         self.lcd.render(pixels);
     }
+    /// Start an audio stream from the current time and buzzer drive. Feed the
+    /// renderer subsequent events and completed run horizons, including silence.
+    pub fn audio(&self, sample_rate: u32) -> Result<crate::Audio, Error> {
+        crate::Audio::new(sample_rate, self.now, self.piezo)
+    }
     pub fn display_enabled(&self) -> bool {
         self.lcd.enabled()
     }

@@ -146,4 +146,27 @@ fn ordinary_run_has_no_heap_allocation() {
     result.unwrap();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
     assert!(boot.firmware().iter().all(|v| *v == 255));
+
+    let mut audio =
+        hs_core::Audio::new(48_000, Time::ZERO, hs_core::signals::Piezo::Neutral).unwrap();
+    let mut samples = 0;
+    ENABLED.store(true, Ordering::SeqCst);
+    let result = (|| -> Result<(), hs_core::Error> {
+        boot.write_ram(0xf780, &[42])?;
+        boot.write_eeprom(0, &[99])?;
+        audio.event(
+            hs_core::Event::Buzzer {
+                at: Time::ZERO,
+                drive: hs_core::signals::Piezo::Positive,
+            },
+            &mut |block| samples += block.len(),
+        )?;
+        audio.advance(Time::from_micros(10_000), &mut |block| {
+            samples += block.len()
+        })
+    })();
+    ENABLED.store(false, Ordering::SeqCst);
+    result.unwrap();
+    assert_eq!(samples, 480);
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
 }
