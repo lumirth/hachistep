@@ -1,4 +1,4 @@
-"""Software-observed replay expectations, deliberately not a hardware oracle."""
+"""Expected results recorded from emulator replays."""
 from __future__ import annotations
 import json
 from pathlib import Path

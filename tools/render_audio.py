@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Integrate an exact timestamped piezo-drive trace into an ideal-drive mono WAV.
+"""Integrate timestamped piezo drive over sample intervals to produce a mono WAV.
 
-This is host audio rendering, not a calibrated piezo/acoustic model. A complete
-trace and its report are mandatory; truncated traces must never sound complete.
+Requires a complete trace and its report. See docs/INPUTS.md for the rendering model.
 """
 from __future__ import annotations
 import argparse

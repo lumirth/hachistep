@@ -96,8 +96,7 @@ fn nonblank_boot_erases_every_block_with_retained_partial_pulses() {
         );
     }
     state::assert_same_state(&m, &resumed);
-    // Erasing all blocks materializes every cell's charge: exercise the maximum
-    // physical native payload, not merely a tiny initial snapshot.
+    // Erasing all blocks exercises save states with charge data for every cell.
     let bytes = m.snapshot().encode().unwrap();
     assert!(bytes.len() > 3_000_000 && bytes.len() <= hs_core::Snapshot::MAX_ENCODED_SIZE);
     let loaded = state::restore_file(&m.snapshot());

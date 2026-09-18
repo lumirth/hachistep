@@ -1,6 +1,6 @@
-//! Compact cell progression for an accepted EEPROM write. Erase/program is
-//! physical; the equal phase split and fixed cell thresholds are the canonical
-//! part model, not measured timing. See research/lcd-and-eeprom.md.
+//! Cell progression during an accepted EEPROM write. The model divides time
+//! equally between erase and program, with fixed thresholds for each cell.
+//! See docs/research/lcd-and-eeprom.md for the basis of these inferred choices.
 use crate::time::{Duration, Time, TimeError};
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]

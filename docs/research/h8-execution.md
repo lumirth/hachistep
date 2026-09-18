@@ -1,187 +1,136 @@
-# H8 execution: prefetch, timing, and division
+# H8 execution: fetches, access order, and interrupt admission
 
-Reviewed the current starter at `21412e8003fe353bdc4a6b1f1edecdc5394cfbc1`.
-This is a source review, not a hardware measurement or an implemented fix.
+## Sources
 
-## Sources and applicability
+The H8/38602R hardware manual supplies target-specific timing and interrupt rules; the
+H8/38606 addition changes memory, flash, packaging, and electrical conditions without
+replacing the CPU architecture. The H8/300H software manual supplies detailed ordered
+bus sequences, encodings, and flags. Printed pages are PDF pages minus 34 for the
+hardware manual and minus 16 for the software manual. Apply target-specific rules before
+examples from older H8 products.
+[Hardware manual][hardware], [target addition][addition], [software manual][software].
 
-- **H8/38602R hardware manual**, REJ09B0152-0300, Rev. 3.00: §2.6
-  (printed pp.32–33), §3.2.1 (44–45), §3.6.1/Fig.3.4 (56), §3.7.1/Table 3.4
-  (57), and Appendix A.3/Tables A.3–A.4 (461–471).
-  [Original manual](https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual).
-- **H8/38606 addition**, TN-H8*-A414A/E, Rev. 1.00, 22 April 2009,
-  pp.1–5: the listed differences concern memory, flash organization, packaging,
-  and electrical characteristics; they do not replace the CPU execution rules.
-  [Original update](https://www.renesas.com/en/document/tcu/addition-h838606-group#page=2).
-- **H8/300H software manual**, REJ09B0213-0300, Rev. 3.00: §2.2.26
-  (DIVXS, printed pp.83–90), §2.2.27 (DIVXU, 91–95), §2.2.62 (TRAPA, 186),
-  §2.6 (cycle counts, 217–227), and **§2.8/Table 2.10** (ordered bus cycles,
-  233–244). The last section already supplies much of the sequencing sometimes
-  mistaken for undocumented behavior.
-  [Original manual](https://www.renesas.com/en/document/mah/h8300h-series-software-manual).
+## Prefetch and physical accesses
 
-Printed page numbers differ from PDF positions: add 34 for the hardware manual
-and 16 for the software manual. Copies and extracted text are in ignored
-`out/research/`. Searches of Renesas technical updates by device, manual number,
-division, and corrections found no CPU-specific update superseding these rules;
-that is a search result, not a claim that every historical bulletin was located.
+Software-manual §2.8/Table 2.10 places NEXT prefetch before MOV data accesses and
+between a modifying memory-bit instruction's read and write. Retain the fetched word and
+address: RAM code that overwrites that word must still execute the prefetched value.
+Extension words, discarded fetches, operand accesses, and internal waits have distinct
+effects and suspension points.
 
-## 1. Replace instruction-at-a-time fetching with the documented prefetch order
+For Bcc16, use displacement-word fetch, two internal states, then fetch the selected
+next PC. This interpretation reconciles the ordered table with its I=2/N=2 totals: an
+untaken target alone cannot supply the next opcode. For Bcc8, retain NEXT and fetch the
+potential target, selecting the retained result by the condition. The untaken target
+interpretation is supported by MAME's independent implementation. [Sequences,
+pp.235–240][sequences],
+[branch counts, p.220][branch-counts], [MAME branch macros][mame-branch].
 
-The starter clears `words` at every boundary, then reads the current instruction
-at `pc`. After decoding, it commits the instruction's effects before beginning
-the next fetch. Consequently, it has no retained next-instruction word.
-([CPU boundary/fetch](../../crates/hs-core/src/cpu/mod.rs#L283-L311),
-[fetch completion](../../crates/hs-core/src/cpu/mod.rs#L452-L479)).
+With instruction/data/stack in two-state on-chip memory, the target totals are:
 
-The manual's sequences instead put NEXT prefetch before MOV data accesses and
-between the read and write of modifying memory-bit instructions. Eight-bit
-conditional branches list both NEXT and EA fetches.
-([§2.8, pp.235–240](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=251)).
+| Operation | States |
+| --- | ---: |
+| MOV.B/W postincrement or predecrement, including PUSH.W/POP.W | 6 |
+| MOV.L postincrement/predecrement, including PUSH.L/POP.L | 10 |
+| JMP @@aa:8 and RTS | 8 |
+| RTE | 10 |
 
-**Concrete failure:** RAM code overwrites the first word of its immediately
-following instruction. The starter fetches the replacement. A word already
-prefetched by the real sequence must remain the executed word. The same problem
-affects saved state, interrupt return addresses, and the timing of register
-accesses even when the final register values happen to agree.
+An access cannot become an idle delay merely because both last two states. The next
+instruction's first fetch is charged in the preceding instruction's sequence; do not
+charge it again. [Target cycle tables][counts].
 
-**Correction:** retain fetched material and its address as causal CPU state;
-make NEXT fetch, extension fetch, discarded fetch, data access, and internal wait
-explicit stages of the existing executor. Consume the retained first word at
-the next instruction boundary. Do not simply add another fetch to every current
-instruction: the manual charges the next instruction's first fetch to the
-current instruction, and double charging would create another timing defect.
-Preserve arbitrary-horizon suspension through these stages.
+The MOV.L and PUSH.L rows disagree about word order despite identical encodings when the
+address register is ER7. Use the common MOV.L sequence: decrement the full register by
+four, write the high word at EA, then the low word at EA+2. The generic row and MAME
+agree; the reversed PUSH row is treated as a table error. For source/address aliases,
+the manual explicitly requires the updated register value. That requirement overrides
+MAME's old-source choice.
+[Alias notes][aliases], [contradictory rows][push-rows], [MAME MOV.L][mame-mov].
 
-**Conditional-branch interpretation:** for Bcc16, use displacement-word fetch,
-two internal states, then fetch the selected next PC: target if taken, fallthrough
-otherwise. The selected-PC interpretation is an inference: reading only an
-untaken target could not supply the next opcode, and an extra fallthrough fetch
-would contradict both the ordered table and its I=2, N=2 cycle count. MAME instead
-reads extension, NEXT, and target. That coincidentally totals six states on
-two-state memory, but substitutes a read for documented internal work. For
-Bcc8, retain NEXT and perform the potential-target fetch, choosing the retained
-word according to the condition. That untaken-target address is supported by
-MAME, rather than explicitly explained by the manual's EA legend.
-([§2.8, p.236](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=252),
-[§2.6, p.220](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=236),
-[MAME branch macros](https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L27-L40)).
+## Reset and exceptions
 
-## 2. Correct missing states and distinguish bus work from delay
+Reset has its own vector, internal-delay, and initial-target-fetch sequence. Interrupt
+entry includes the discarded fetch, internal phases, PC stack write, CCR stack write,
+vector read, and handler fetch; the normal response is 14 states after the running
+instruction. Sleep recovery replaces a fetch with internal work. TRAPA also uses the
+detailed 14-state sequence: its instruction definition, cycle table, and ordered
+sequence agree, while the target appendix omits four internal states. [Hardware §§3.2,
+3.6–7][hardware],
+[TRAPA definition][trapa], [software entry sequences][entry].
 
-The following totals assume code/data/stack in two-state on-chip memory. Starter
-totals below are derived from its action sequences and
-[`Mcu::access_states`](../../crates/hs-core/src/mcu/mod.rs#L269-L279), not measured.
+Execute the first instruction after reset before admitting even a pending NMI. Retain
+the request during that deferral. Do not impose this reset-specific rule on every
+exception handler. [Target §3.2.2][reset], [Renesas Q&A -021A][reset-qa].
 
-| Instruction | Starter states | Required states | Missing work |
-| --- | ---: | ---: | --- |
-| MOV.B/W postincrement or predecrement, including PUSH.W/POP.W | 4 | 6 | Two internal states |
-| MOV.L postincrement/predecrement, including PUSH.L/POP.L | 8 | 10 | Two internal states |
-| JMP @@aa:8 | 6 | 8 | An instruction fetch |
-| RTS | 6 | 8 | An instruction fetch |
-| RTE | 8 | 10 | An instruction fetch |
+Exception entry writes PC first, then a word with CCR duplicated in both bytes. The
+return path ignores the odd CCR byte, but that does not make its stored value arbitrary:
+target Figure 3.5 labels both bytes and the inherited H8/300 normal-mode format
+explicitly duplicates it. STC.W is separate; Q&A -037A leaves its odd byte unspecified,
+and the model selects zero. LDC.W/RTE consume the even byte. [Target stack][stack],
+[inherited normal-mode stack][old-stack],
+[STC.W clarification][stc-qa].
 
-The target's cycle counts establish these deficits.
-([Appendix A.3, pp.467–470](https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=501)).
-The current causes are direct transition into `Memory`, and the shared
-`BranchWait` returning `Idle(2)`.
-([memory setup](../../crates/hs-core/src/cpu/mod.rs#L730-L759),
-[control-transfer actions](../../crates/hs-core/src/cpu/mod.rs#L353-L401)).
+## Interrupt qualification
 
-**Correction:** assign each instruction family its actual ordered sequence.
-An instruction fetch cannot be substituted with two idle states just because
-both consume the same duration. Preserve per-access bus timing; do not patch
-these deficits with one final instruction-wide delay. Multiplication and
-ordinary nonzero division already have the documented nominal totals; their
-prefetch placement still needs the first correction.
+A peripheral request raised during the instruction clearing its enable remains eligible
+through that instruction's admission boundary. CCR masking and the live source flag
+still apply: clearing the source cancels the request. Retain bounded source eligibility,
+not an unconditional vector. Q&A -015A corroborates the peripheral case, but its
+older-product external IER example does not replace this target's IENR rule. [Target
+§3.8.4][disable], [Q&A -015A][disable-qa].
 
-**Reconcile PUSH.L's contradictory row:** p.241 orders a predecrement MOV.L's
-writes at EA then EA+2, but p.242 lists PUSH.L's low word first. These instructions
-have identical encodings when the address register is ER7. Use the common MOV.L
-sequence: decrement by four, write the high word at the resulting EA, then the
-low word at EA+2. This follows the generic MOV row and MAME's implementation;
-treating the reversed PUSH row as a table error is a reasoned choice, not a
-hardware measurement. Do not invent a distinct stack-register implementation.
-For source/address aliasing, the manual explicitly requires storing the
-**decremented** value, including PUSH.L ER7; MAME instead captures the old source
-and is unsuitable as the expected result for that case.
-([MOV encoding and alias notes, p.127](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=143),
-[PUSH notes, p.148](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=164),
-[contradictory sequences, pp.241–242](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=257),
-[MAME predecrement MOV.L](https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L349-L361)).
+Selecting an IRQ function on a low input can set its flag. The documented clear sequence
+requires an intervening instruction. Model the mux change and that instruction-level
+qualification; unchanged GPIO resolution must not create a fresh request. [Target
+§3.8.2][mux]. LDC/ANDC/ORC/XORC's following-instruction mask deferral does not apply to
+RTE. EEPMOV.W admits NMI between completed byte pairs; EEPMOV.B and maskable admission
+wait for completion. Saved return PC is the following instruction, so firmware
+explicitly resumes any remaining copy.
+[Target §§3.8.5–6][hardware].
 
-## 3. Complete reset, interrupt, and trap sequencing
+## Division and undefined result bits
 
-Current exception entry immediately decrements SP and writes PC, then CCR, then
-reads the vector. PC-before-CCR is correct, but the preceding discarded fetch,
-internal phases, and handler prefetch are not represented as one complete entry
-sequence. Reset paths likewise construct `Cpu` from an untimed vector value.
-([entry](../../crates/hs-core/src/cpu/mod.rs#L273-L279),
-[entry continuation](../../crates/hs-core/src/cpu/mod.rs#L544-L552),
-[reset integration](../../crates/hs-core/src/machine.rs#L374)).
+DIVXU/DIVXS continue through zero divisors and quotient overflow. Z reflects a zero
+divisor; unsigned N follows the divisor sign bit, and signed N follows operand sign
+difference, including a quotient truncated to zero. Preserve the unaffected CCR flags.
+There is no specified divide exception.
+[DIVXS][divxs], [DIVXU][divxu].
 
-The target diagram establishes two-state fetch/internal phases around the stack
-and vector operations; its interrupt-response table accounts for 14 states
-after the running instruction completes. Reset has its own vector/internal/
-initial-fetch sequence. Sleep recovery replaces the extra prefetch with internal
-work. These distinctions must survive suspension and reset.
-([Hardware §3.2.1/Fig.3.1](https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=79),
-[§3.6.1–3.7.1](https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=90),
-[software §2.8, pp.243–244](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=259)).
+For a nonzero divisor, compute widely and retain the destination-width quotient and
+remainder on overflow; for zero, retain the destination. These deterministic result-bit
+choices follow MAME, while the documented flag rules take precedence over its
+signed-zero and word-width mistakes. Refine the chosen result bits when better evidence
+warrants it without halting ordinary execution.
+[MAME signed division][mame-divs], [unsigned division][mame-divu].
 
-**Reconcile a real documentation conflict:** hardware Table A.4's TRAPA row
-omits internal states, yielding 10; software §2.2.62 says 14, §2.6 includes four
-internal states, and §2.8 places both two-state internal phases. Use the detailed
-14-state normal-mode sequence. This is a supported reconciliation, not a reason
-to leave traps incomplete.
-([TRAPA description](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=202),
-[software count](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=242),
-[conflicting target row](https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=505)).
+No reviewed source defines a universal NOP or illegal-instruction exception for
+unassigned encodings. A model decode error is a host diagnostic, not an invented
+architectural exception. The target instruction list also excludes MOVFPE/MOVTPE;
+H8S/H8SX additions are not missing H8/38606 instructions. [Target instruction
+list][instructions].
 
-## 4. Division must not terminate the machine
-
-`muldiv` returns `Unsupported` before completing zero-divisor or overflowing
-quotient cases. This invents a terminal emulator outcome for an instruction that
-the CPU executes.
-([Current checks](../../crates/hs-core/src/cpu/mod.rs#L891-L929)).
-
-DIVXU/DIVXS set Z from a zero divisor; preserve H/V/C and the other unaffected
-CCR bits. Unsigned N follows the divisor's sign bit; signed N follows operand
-sign difference, including a zero quotient. Zero and overflow destination
-results are not guaranteed, and no division exception is specified.
-([DIVXS pp.83–87](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=99),
-[DIVXU pp.91–93](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=107)).
-
-**Correction now:** execute the normal timed instruction and commit documented
-flags. For a nonzero divisor, calculate in a sufficiently wide type and retain
-the destination-width quotient/remainder fields on overflow. For zero, preserve
-the destination. These result-bit choices follow an existing independent
-implementation and provide a deterministic continuation; they are not claimed
-as measured Pokéwalker results. A focused hardware case can refine them without
-blocking normal execution or introducing a public accuracy setting.
-
-MAME uses these overflow/zero-result choices, but is not an oracle: its signed
-N computation uses `q < 0`, which misses the manual's negative zero-quotient
-case, and its word DIVXU tests bit 7 for N. Keep the starter's correct operand-sign
-logic and word-width sign mask.
-([Pinned MAME signed division](https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L779-L859),
-[unsigned division](https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L1473-L1511)).
-
-## Implementation order and distinguishing cases
-
-1. Fix division's terminal errors with a small focused change. Cover all four
-   signed/unsigned widths, zero divisors, overflowing quotients, operand aliases,
-   preserved CCR bits, and negative signed quotients truncated to zero.
-2. Add retained prefetch state and ordered continuations, then close the timing
-   deficits together. Use RAM self-modification of the next first word, a
-   separately changed extension word, and both taken and untaken branches.
-3. Complete reset/exception/trap stages. Place reset immediately before and after
-   each stack access; compare completed writes, saved PC/CCR, and elapsed states.
-4. Compare uninterrupted execution with stops and save/restores around these
-   effects. Expected bus order and timing come from the cited tables, not the
-   candidate executor. Keep inferred exceptional division result bits separate
-   from independently established hardware expectations.
-
-Retail execution remains a useful integration workload, but cannot establish
-these distinctions by itself. No alternate executor, rollback, broad observer
-framework, or per-instruction allocation is needed for the corrections.
+[hardware]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
+[addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group
+[software]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual
+[sequences]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=251
+[branch-counts]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=236
+[mame-branch]: https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L27-L40
+[counts]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=501
+[aliases]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=143
+[push-rows]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=257
+[mame-mov]: https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L349-L361
+[trapa]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=202
+[entry]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=259
+[reset]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=79
+[reset-qa]: https://www.renesas.com/us/en/document/apn/technical-qa-h8300h-series-application-note#page=41
+[stack]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=91
+[old-stack]: https://www.renesas.com/en/document/mah/h83318#page=44
+[stc-qa]: https://www.renesas.com/us/en/document/apn/technical-qa-h8300h-series-application-note#page=58
+[disable]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=94
+[disable-qa]: https://www.renesas.com/us/en/document/apn/technical-qa-h8300h-series-application-note#page=34
+[mux]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=93
+[divxs]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=99
+[divxu]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=107
+[mame-divs]: https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L779-L859
+[mame-divu]: https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.lst#L1473-L1511
+[instructions]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=50

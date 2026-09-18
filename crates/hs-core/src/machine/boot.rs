@@ -1,7 +1,7 @@
 //! Functional contract of the unavailable manufacturer boot ROM (§6.3).
 //! All accesses use the ordinary MCU bus, SCI shifter and flash pulse owner;
 //! uploaded code enters the sole H8 interpreter. Private ROM instruction timing
-//! and scratch registers are not known. See h8-boot-mode-implementation.md.
+//! and scratch registers are not known. See docs/research/h8-boot-mode.md.
 #[cfg(test)]
 mod tests;
 

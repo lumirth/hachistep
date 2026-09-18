@@ -1,6 +1,5 @@
-//! ST M95512 main-array protocol. Pin-level input and output are canonical;
-//! no MCU-only byte shortcut exists. Serial command state and an ongoing
-//! nonvolatile operation have independent lifetimes.
+//! ST M95512 main-array protocol driven through its pins. Serial command state
+//! and an ongoing nonvolatile operation have independent lifetimes.
 use super::nv::WriteCycle;
 use crate::{
     error::Error,

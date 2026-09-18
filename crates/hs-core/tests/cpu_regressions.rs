@@ -1,6 +1,5 @@
-//! Narrow, independently stated ISA regressions. The bus harness only supplies
-//! bytes to the production CPU; it does not interpret instructions. Expectations
-//! are from ADE-602-053A MOV usage notes and REJ09B0152-0300 §3.8.5.
+//! Instruction regressions using a fixture bus to supply bytes to the CPU.
+//! Expectations follow ADE-602-053A MOV usage notes and REJ09B0152-0300 §3.8.5.
 use hs_core::cpu::{
     decode::{decode, Address, Decode, Instruction, Size},
     Action, Cpu, Width,

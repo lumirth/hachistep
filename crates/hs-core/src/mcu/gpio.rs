@@ -174,8 +174,8 @@ impl Gpio {
             0xffde => self.levels[4],
             0xffe0 => self.pull[0],
             0xffe1 => self.pull[1],
-            // PCR readback is the selected deterministic witness for firmware's
-            // read-modify-write instructions; unused package bits read zero.
+            // PCR reads return the direction latch, inferred from firmware's
+            // read-modify-write instructions. Unused package bits read zero.
             0xffe4 => self.direction[0],
             0xffe6 => self.direction[1],
             0xffeb => self.direction[2],
@@ -213,9 +213,9 @@ impl Gpio {
         }
         Ok(())
     }
-    /// Resolve the pins actually bonded to the shared serial devices. The
-    /// default pull policy for unconnected/undriven inputs is documented in
-    /// STATUS.md; no undocumented contention model is synthesized here.
+    /// Resolve the shared serial pins. Chip-select nets have a board pull-up;
+    /// other released nets follow connected drivers and enabled MCU pull-ups,
+    /// then default low. See docs/research/h8-registers-and-gpio.md.
     pub fn resolve(
         &mut self,
         serial: Pins,

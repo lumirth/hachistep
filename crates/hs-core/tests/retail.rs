@@ -1,5 +1,5 @@
-//! Private-input regression, explicitly opt-in. Expected outcomes here are
-//! recorded emulator observations, not independent hardware certification.
+//! Optional regressions using private firmware and EEPROM inputs.
+//! Expected outcomes come from recorded emulator observations.
 #[path = "support/state.rs"]
 mod state;
 use hs_core::{Buttons, Images, Input, Machine, Time, TimedInput};

@@ -1,4 +1,4 @@
-//! Timing-mechanism tests, not claims about unmeasured oscillator parameters.
+//! Clock phase and pending edge counts across clock selection, gating and startup.
 use hs_core::{
     cpu::WriteOrigin,
     mcu::{
@@ -207,7 +207,7 @@ fn ssu_switches_prescaler_with_a_byte_already_in_flight() {
     ] {
         s.write(a, v, true, Time::ZERO, &c).unwrap();
     }
-    // Load, then six watch-clock half edges: a partial byte, not a restart.
+    // After loading and six watch-clock half edges, the byte is partly shifted.
     for _ in 0..7 {
         let t = s.deadline(&c).unwrap().unwrap();
         if let Some(e) = s.advance(t, &c).unwrap() {

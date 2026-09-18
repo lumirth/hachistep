@@ -1,5 +1,5 @@
-//! Incremental H8/300H normal-mode decoder. Only words already fetched by
-//! the CPU are supplied. A prefix never peeks ahead into host backing memory.
+//! Incremental H8/300H normal-mode decoder. It consumes instruction words
+//! as the CPU fetches them.
 //! Reference: ADE-602-053A tables 2-3 through 2-6; H8/38602R target restrictions.
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Confirm selected tests reject deliberate hardware defects in isolated copies.
 
-This is a test-sensitivity check, not hardware certification. The source checkout
-is never modified. Mutants must compile and fail a named assertion test; compiler
-errors, missing tests and unapplied mutations are failures of this tool.
+Mutants must compile and fail a named assertion test. Compiler errors, missing
+tests and unapplied mutations are failures of this tool.
 """
 from __future__ import annotations
 import argparse

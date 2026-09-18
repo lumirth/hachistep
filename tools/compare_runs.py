@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Compare complete exported observations, optionally including product history.
 
-This is a software-equivalence check, not a hardware oracle. It runs outside the
-simulation's timed path. It rejects truncated/missing histories when requested
-and reports the first differing byte/record instead of hiding it behind counts.
+Runs outside the simulation's timed path. When history comparison is requested,
+both histories must be complete. Reports the first differing byte or record.
 """
 from __future__ import annotations
 import argparse

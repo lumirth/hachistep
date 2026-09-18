@@ -1,8 +1,7 @@
 //! Timer W: compare/PWM, paired buffers, capture, and external event counting.
-//! Ordered conflicts follow REJ09B0152-0300 §10.7. The three-reference-edge
-//! input pipeline follows Figs.10.15/10.17 at reference-edge granularity;
-//! metastability, sub-state propagation and out-of-spec short pulses are not
-//! characterized. There is one counter recurrence for internal/external clocks.
+//! Ordered conflicts follow REJ09B0152-0300 §10.7. The input pipeline takes three
+//! reference-clock edges per Figs.10.15/10.17. The model resolves inputs at these
+//! edges and uses one counter recurrence for internal and external clocks.
 use super::clocks::{ClockWait, Clocks, Tap};
 use crate::{
     error::Error,
@@ -96,8 +95,8 @@ impl TimerW {
         }
         d
     }
-    /// One canonical counter transition, including the old-register snapshot
-    /// used by *all* comparisons and paired-buffer transfers at this edge.
+    /// Advance the counter once. Comparisons and paired buffer transfers at
+    /// this edge all use the register values from before the transition.
     fn counter_step(&mut self, edges: u64, at: Time) {
         let before = self.count;
         let regs = self.general;

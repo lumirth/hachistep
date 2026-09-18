@@ -1,6 +1,5 @@
 //! REJ09B0152-0300 §§3.4.1, 3.5.1, 3.8.6, 5.2 and 6.3.
 //! Electrical fixture pulses below are much longer than the two-clock minimum.
-//! No subcycle input synchronizer or maskable-enable race certification claimed.
 #[path = "support/state.rs"]
 mod state;
 use hs_core::{mcu::control::Control, Images, Input, Machine, Time, TimedInput};
@@ -12,7 +11,7 @@ fn program(code: &[u8]) -> Machine {
     rom[..2].copy_from_slice(&0x100u16.to_be_bytes());
     rom[14..16].copy_from_slice(&0x200u16.to_be_bytes());
     rom[0x100..0x100 + code.len()].copy_from_slice(code);
-    // ISR increments RAM, then RTE. It is ordinary guest code, not a callback.
+    // The guest interrupt handler increments RAM, then executes RTE.
     rom[0x200..0x20c].copy_from_slice(&[
         0x6a, 0x08, 0xf7, 0x80, 0x0a, 0x08, 0x6a, 0x88, 0xf7, 0x80, 0x56, 0x70,
     ]);

@@ -1,5 +1,5 @@
-//! Native file envelope and selected causal fields. No machine deserializer is
-//! public: construction always passes owner validation and cache reconstruction.
+//! Save state file envelope and captured hardware state. Restoration validates
+//! each component and reconstructs caches before exposing a machine.
 use super::*;
 use crate::{
     cpu::state::SavedCpu,
@@ -183,7 +183,7 @@ impl Snapshot {
         self.state.firmware_origin
     }
 
-    /// Encode causal state. No version, executor IDs, profiler totals or caches.
+    /// Encode the state needed to reproduce subsequent hardware behavior.
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let payload = borsh::to_vec(&Saved::capture(&self.state)?)
             .map_err(|_| Error::Snapshot("cannot encode saved state"))?;

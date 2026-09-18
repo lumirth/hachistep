@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Make a standalone HTML viewer for actual captured PGM frames (not an emulator UI)."""
+"""Make a standalone HTML viewer for captured PGM frames."""
 from __future__ import annotations
 import argparse
 import base64

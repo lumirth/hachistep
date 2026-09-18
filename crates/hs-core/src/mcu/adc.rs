@@ -1,5 +1,5 @@
-//! A 31-step successive-approximation conversion, with a held input sample
-//! and a clocked ADTRG synchronizer. No conversion is completed by a host read.
+//! Successive approximation in 31 converter steps, with a held input sample
+//! and a clocked ADTRG synchronizer.
 use super::clocks::{ClockWait, Clocks, Tap};
 use crate::{error::Error, time::Time};
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]

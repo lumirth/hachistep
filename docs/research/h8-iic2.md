@@ -1,8 +1,4 @@
-# H8/38606F IIC2 implementation contract
-
-Research handoff, 2026-09-18. Implemented after this research handoff. It expands the IIC portion of
-[the flash/IIC survey](h8-flash-and-iic.md). Expectations below come from the
-sources and independent reasoning, not emulator output.
+# H8/38606F IIC2
 
 ## Sources
 
@@ -23,8 +19,8 @@ sources and independent reasoning, not emulator output.
 
 ## Registers and authoritative state
 
-All registers have byte-wide, two-state accesses. The map and masks are in
-§16.3, pp. 314–327, and the address table on p. 373. [Manual][registers]
+All registers have byte-wide, two-state accesses. The map and masks are in §16.3, pp.
+314–327, and the address table on p. 373. [Manual][registers]
 
 | Address | Register/reset | Contract |
 | --- | --- | --- |
@@ -37,23 +33,23 @@ All registers have byte-wide, two-state accesses. The map and masks are in
 | `F07E` | ICDRT / `FF` | Transmit holding byte. Write clears TDRE/TEND; transfer to the shift register sets TDRE. MLS=1 reverses stored/readback bit order. |
 | `F07F` | ICDRR / `FF` | Receive holding byte. Guest read clears RDRF and may release/advance reception. Writes have no effect. |
 
-SCP, SDAOP and BCWP always read 1. BC=0 means eight data bits; values 1–7
-mean that many. I²C adds an ACK bit; its first address frame always has eight
-data bits. BC reads remaining count and returns to zero after the frame.
-Preserve the actual bus write strobes; instructions other than the advised MOV
-are not grounds for a guest fault. [§§16.3.2–3, 16.4.1][registers]
+SCP, SDAOP and BCWP always read 1. BC=0 means eight data bits; values 1–7 mean that
+many. I²C adds an ACK bit; its first address frame always has eight data bits. BC reads
+remaining count and returns to zero after the frame. Preserve the actual bus write
+strobes; instructions other than the advised MOV are not grounds for a guest fault.
+[§§16.3.2–3, 16.4.1][registers]
 
-Recommended state: registers and status-read qualification; one shift register;
-bit/ACK phase; current transaction selection; receive continuation/hold state;
-own SCL/SDA drive intent; two input-filter histories; remaining local clock
-obligations. AAS is sticky status, not the current transaction-selection latch.
-Use TDRE itself for holding-register availability: manually clearing it can
-transmit an extra old byte (§16.5, p. 345). Debug inspection has no read effects.
+Recommended state: registers and status-read qualification; one shift register; bit/ACK
+phase; current transaction selection; receive continuation/hold state; own SCL/SDA drive
+intent; two input-filter histories; remaining local clock obligations. AAS is sticky
+status, not the current transaction-selection latch. Use TDRE itself for
+holding-register availability: manually clearing it can transmit an extra old byte
+(§16.5, p. 345). Debug inspection has no read effects.
 
 ## Transfer rules
 
-The following follows §§16.4.1–6 and flowcharts 16.17–20, pp. 328–339,
-341–344. [Manual operation and diagrams][operation]
+The following follows §§16.4.1–6 and flowcharts 16.17–20, pp. 328–339, 341–344. [Manual
+operation and diagrams][operation]
 
 - A filtered START sets BBSY and begins an address frame. Repeated START does
   this while the bus is already busy. Nonmatching slaves release SDA and await
@@ -66,10 +62,10 @@ The following follows §§16.4.1–6 and flowcharts 16.17–20, pp. 328–339,
   full ICDRT replaces its holding byte; it does not replace the active shift.
 - Master RX starts from an ICDRR dummy read. Publish ICDRS into ICDRR and set
   RDRF at the ninth rise. If the previous RDR remains full, hold SCL low at the
-  **eighth falling edge**, before ACK/publication; reading RDR releases it.
+  eighth falling edge, before ACK/publication; reading RDR releases it.
 - RCVD is a continuation control, not an unconditional prohibition on starting
-  RX. The single-byte sequence is **ACKBT=1, RCVD=1, dummy-read RDR, receive one
-  byte**. For multiple bytes, set those bits before reading the penultimate
+  RX. The single-byte sequence is ACKBT=1, RCVD=1, dummy-read RDR, receive one
+  byte. For multiple bytes, set those bits before reading the penultimate
   byte; one final byte follows. A final read while already stopped by RCVD must
   not start another frame. Track which in-flight/next frame the read authorizes,
   including reads between the ninth rise and fall. Figure 16.18 explicitly
@@ -79,24 +75,24 @@ The following follows §§16.4.1–6 and flowcharts 16.17–20, pp. 328–339,
   A matching read address changes TRS to TX and sets TDRE; Fig. 16.9 shows no
   corresponding receive-register publication. ACKBT controls the slave ACK.
 - Slave TX stretches when starved. After data becomes available, retain
-  **10φ or 20φ** setup time, selected by CKS3, before releasing SCL. Slave RX
+  10φ or 20φ setup time, selected by CKS3, before releasing SCL. Slave RX
   uses the eighth-fall unread-RDR hold. Clearing TRS and dummy-reading RDR
   releases a completed slave transmitter; TEND alone does not do so.
 - STOP clears BBSY. STOP status qualifies after a completed master frame or an
-  addressed/general-call slave transaction. **STOP does not automatically clear
-  MST/TRS**: the flowcharts perform that write in software.
+  addressed/general-call slave transaction. STOP does not automatically clear
+  MST/TRS: the flowcharts perform that write in software.
 - Arbitration loss compares transmitted data with resolved SDA on SCL rises,
   excluding ACK reception, and detects another START while master SDA intent
   is high. Set AL, clear MST/TRS and release master ownership. Retaining the
   partially shifted address as slave reception continues is the chosen inference.
 
-FS=1 reuses the shift/holding engine without address or ACK phases. Sample RX
-on rises, change TX on falls. Master RX starts when master receive is selected,
-without an I²C dummy read. Publish on the eighth rise. If RDRF is still set,
-preserve the previous RDR, set OVE and clear MST. RCVD/read sequencing ends
-continuous reception with SCL high. The [synchronous example][sync], pp. 20,
-22, 24, warns that setting RCVD immediately after entering master receive can
-suppress the first clock; it waits for reception to start first.
+FS=1 reuses the shift/holding engine without address or ACK phases. Sample RX on rises,
+change TX on falls. Master RX starts when master receive is selected, without an I²C
+dummy read. Publish on the eighth rise. If RDRF is still set, preserve the previous RDR,
+set OVE and clear MST. RCVD/read sequencing ends continuous reception with SCL high. The
+[synchronous example][sync], pp. 20, 22, 24, warns that setting RCVD immediately after
+entering master receive can suppress the first clock; it waits for reception to start
+first.
 
 ## Clocks, pins, reset and IRQ
 
@@ -107,19 +103,19 @@ CKS 0..7:  28, 40, 48, 64, 80, 100, 112, 128 φ cycles per bit
 CKS 8..F:  56, 80, 96,128,160,200,224,256 φ cycles per bit
 ```
 
-Two cascaded φ-sampled latches filter each pad: update the filtered value only
-when the latches agree, otherwise retain it. START/STOP and receive edges use
-these filtered inputs. Master synchronization monitors released SCL after
-`7.5, 19.5, 17.5, 41.5φ` for CKS3/CKS2=`00,01,10,11`. Preserve half-cycle
-phase. External low prevents a released clock from advancing as high.
+Two cascaded φ-sampled latches filter each pad: update the filtered value only when the
+latches agree, otherwise retain it. START/STOP and receive edges use these filtered
+inputs. Master synchronization monitors released SCL after `7.5, 19.5, 17.5, 41.5φ` for
+CKS3/CKS2=`00,01,10,11`. Preserve half-cycle phase. External low prevents a released
+clock from advancing as high.
 [Table 16.2; §§16.4.7, 16.6, pp. 316, 340, 346][clock]
 
-P90/SCL and P91/SDA are open-drain, with **SSU > IIC2 > GPIO** priority.
-SDAO/SCLO report output intent; SDAI/SCLI are distinct pad inputs in the pin
-diagrams. Feed resolved pads back even when another function masks the IIC
-output; do not equate release with a high pad. CKSTPR2 bit5 enables IIC2;
-clearing it halts the module. State is retained in watch, subactive, subsleep
-and standby. Preserve phase across clock absence; MCU reset restores the table.
+P90/SCL and P91/SDA are open-drain, with SSU > IIC2 > GPIO priority. SDAO/SCLO report
+output intent; SDAI/SCLI are distinct pad inputs in the pin diagrams. Feed resolved pads
+back even when another function masks the IIC output; do not equate release with a high
+pad. CKSTPR2 bit5 enables IIC2; clearing it halts the module. State is retained in
+watch, subactive, subsleep and standby. Preserve phase across clock absence; MCU reset
+restores the table.
 [Manual pp. 82, 86, 136–137; appendix B.4, pp. 482–483][pins]
 
 IRQ34 is shared with SSU. Use:
@@ -130,22 +126,22 @@ TDRE&TIE | TEND&TEIE | RDRF&RIE
 | (NAKIE && (AL_or_OVE || (FS=0 && NACKF)))
 ```
 
-Table 16.3 and the NAKIE description put AL/OVE under NAKIE. RIE prose
-contradicts this; follow the table/NAKIE definition. Existing flags plus enables
-remain the request source, independently of whether the transfer clock runs.
+Table 16.3 and the NAKIE description put AL/OVE under NAKIE. RIE prose contradicts this;
+follow the table/NAKIE definition. Existing flags plus enables remain the request
+source, independently of whether the transfer clock runs.
 [§§16.3.4, 16.5, pp. 321–322, 345][irq]
 
-IICRST releases SDAO/SCLO and sets TDRE in TX mode; it does not reinitialize
-the registers. While held, BBSY/SCP/SDAO writes are blocked and shifting stops,
-but START/STOP/arbitration detection remains active. BBSY is not automatically
-cleared: a resulting physical STOP may clear it. Writing FS=1 clears BBSY.
-During active reset/ICE disable, BBSY/STOP are documented as indeterminate;
-choose to retain them first, then apply actual detected edges. [A022, pp. 1–2][reset]
+IICRST releases SDAO/SCLO and sets TDRE in TX mode; it does not reinitialize the
+registers. While held, BBSY/SCP/SDAO writes are blocked and shifting stops, but
+START/STOP/arbitration detection remains active. BBSY is not automatically cleared: a
+resulting physical STOP may clear it. Writing FS=1 clears BBSY. During active reset/ICE
+disable, BBSY/STOP are documented as indeterminate; choose to retain them first, then
+apply actual detected edges. [A022, pp. 1–2][reset]
 
 ## Chosen boundaries and silicon defects
 
-These choices complete the model where the sources constrain outcomes without
-specifying every internal phase. They are local implementation inferences:
+These choices complete the model where the sources constrain outcomes without specifying
+every internal phase. They are local implementation inferences:
 
 - Use equal nominal high/low halves of the documented full period. At the
   specified monitor offset, pause the remaining high obligation if SCL is low;
@@ -168,16 +164,16 @@ specifying every internal phase. They are local implementation inferences:
   release credit models the effect. Choose the collision on the same φ sampling
   edge and release on the next φ sample; this exact window is an inference.
 
-Keep chosen-boundary regressions separate from expectations established by the
-manual. The legal byte sequences work through this same model; no unsupported
-guest operation branch or alternate atomic-byte execution path is needed.
+Keep chosen-boundary regressions separate from expectations established by the manual.
+The legal byte sequences work through this same model; no unsupported guest operation
+branch or alternate atomic-byte execution path is needed.
 
 ## Original conformance vectors
 
-Unless specified otherwise, start from reset in active mode, enable CKSTPR2
-bit5, disable SSU with bit4=0, and attach an open-drain signal fixture to physical
-P90/P91. Give each input level enough φ samples to pass the filter. Drive data
-while SCL is low. The expected results below exclude the chosen race windows.
+Unless specified otherwise, start from reset in active mode, enable CKSTPR2 bit5,
+disable SSU with bit4=0, and attach an open-drain signal fixture to physical P90/P91.
+Give each input level enough φ samples to pass the filter. Drive data while SCL is low.
+The expected results below exclude the chosen race windows.
 
 | Case | Guest actions / input | Expected observations and basis |
 | --- | --- | --- |
@@ -195,13 +191,10 @@ while SCL is low. The expected results below exclude the chosen race windows.
 | `iic-reset-detector` | During IICRST, externally hold SDA low, bring SCL high, then release SDA. | Own drives are released; the filtered STOP clears BBSY despite IICRST. A022. |
 | `iic-clock-period` | Observe repeated un-stretched data clocks at CKS0, then CKS5. | Full periods are 28φ and 100φ, ratio `25/7`; independent calculation from table 16.2. Do not assert inferred duty split. |
 
-In this starter, add IIC drives to `mcu/gpio.rs` and pad feedback to
-`machine.rs::resolve_board`; P90 also selects the sensor and P91 is shared SPI
-clock, so these edges must reach existing external-device owners. Add the
-register route, retained gate state, deadlines and IRQ34 OR in `mcu/mod.rs`.
-Keep IIC pad feedback independent of PFCR.SSUS, which swaps SSU functions.
-Save all future-determining filter, shift, hold and clock state; rebuild derived
-appointments after exact restoration.
+IIC drives resolve on the same P90/P91 pads as GPIO and SSU. P90 also selects the sensor
+and P91 clocks the shared serial bus, so transitions reach those external chips too.
+PFCR.SSUS relocates SSU functions, not IIC pads. Save states retain filter, shift, hold
+and clock progress; appointments are derived from it.
 
 [manual]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group
@@ -217,14 +210,3 @@ appointments after exact restoration.
 [receive]: https://www.renesas.com/en/document/tcu/usage-notes-i2c-bus-interface-2-iic2-master-receive-mode
 [eeprom]: https://www.renesas.com/en/document/apn/application-examples-reading-fromwriting-serial-eeprom
 [sync]: https://www.renesas.com/en/document/apn/access-serial-eeprom-spi-eeprom-clock-synchronous-mode-i2c-interface
-
-## Implementation checkpoint
-
-The single shifter is integrated with the MCU registers, gates, IRQ34 and the
-resolved P90/P91 board pins. Eleven physical-bus tests cover selection, ACK,
-master single-byte receive, slave receive holding, synchronous overrun, bit
-counts, filter/reset detection, arbitration, stretching, WAIT insertion and
-half-phi retention across module gating. Guest-driven package transfers are
-partition- and snapshot-invariant. All 94 independent hachiware diagnostics
-and full development checks pass; retail home/menu and exact replay retain
-their reviewed expectations. No test result is a hardware capture.

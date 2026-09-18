@@ -1,5 +1,5 @@
 //! Saved hardware work, independent of executor continuation identifiers.
-//! Tag meanings and completed effects: docs/research/save-state-cpu-progress.md.
+//! Tag meanings and completed effects: docs/CPU_STATE.md.
 use super::*;
 use crate::state::require;
 use borsh::{BorshDeserialize, BorshSerialize};

@@ -1,5 +1,5 @@
 //! Register/latch expectations from REJ09B0152-0300 §18. Response times below
-//! are explicit simulation parameters, not new physical captures.
+//! use the selected model parameters.
 #[path = "support/state.rs"]
 mod state;
 use hs_core::{

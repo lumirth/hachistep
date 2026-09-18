@@ -10,5 +10,5 @@ Use these default label strings for the five canonical triage roles.
 | `ready-for-human` | `ready-for-human` | Requires human implementation |
 | `wontfix` | `wontfix` | Will not be actioned |
 
-When a skill names a triage role, apply the corresponding tracker label.
-Edit the tracker column if the label vocabulary changes.
+When a skill names a triage role, apply the corresponding tracker label. Edit the
+tracker column if the label vocabulary changes.

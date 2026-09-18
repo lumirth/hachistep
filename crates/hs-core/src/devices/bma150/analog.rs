@@ -1,5 +1,5 @@
-//! Continuous pre-ADC response. Bosch specifies a second-order 1500-Hz stage;
-//! unity-DC Butterworth damping is the canonical physical inference.
+//! Continuous response before ADC sampling. Bosch specifies a second-order
+//! 1500-Hz stage; the model uses Butterworth damping with unity DC gain.
 use crate::{time::TimeError, Error, Time};
 
 const SIGNAL: i128 = 1 << 24; // micro-g, retaining sub-ADC physical response
@@ -12,8 +12,8 @@ const fn round(n: i128, d: i128) -> i128 {
     (n + if n < 0 { -d / 2 } else { d / 2 }) / d
 }
 
-/// exp((-1+i)*k*dt), Q48. Reduce before the fixed Taylor polynomial, then
-/// square back; no host libm or floating-point execution determines results.
+/// Evaluate exp((-1+i)*k*dt) in Q48 integer arithmetic. Reduce the argument
+/// before the fixed Taylor polynomial, then restore its scale by squaring.
 const fn decay(dt: u128) -> (i64, i64) {
     if dt >= (8u128 << 64) / 1000 {
         return (0, 0); // Below one signal bit even at the allowed input extremes.

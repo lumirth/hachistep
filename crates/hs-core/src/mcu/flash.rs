@@ -1,5 +1,5 @@
 //! H8/38606F flash: software-controlled pulses, persistent cell exposure and
-//! a four-byte verify sense latch. See docs/research/h8-flash-implementation.md.
+//! a four-byte verify sense latch. See docs/research/h8-flash.md.
 use super::{control::Mode, FLASH_SIZE};
 use crate::{
     error::Error,

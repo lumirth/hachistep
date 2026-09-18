@@ -1,5 +1,5 @@
-//! NT7508 serial command parser and controller RAM. The visible 96x64 view is
-//! derived; it is not separate authoritative storage. A chip-select boundary
+//! NT7508 serial command parser and controller RAM. The visible 96x64 view
+//! derives from that RAM and the controller settings. A chip-select boundary
 //! clears a partial serial byte but does not erase a pending command parameter.
 use crate::{
     error::Error,
@@ -313,8 +313,7 @@ impl Nt7508 {
         });
         Ok(())
     }
-    /// Logical shade codes. This does not claim analog panel luminance or scan
-    /// waveform fidelity; the raw controller RAM remains available to fixtures.
+    /// Logical shade codes derived from controller RAM for the attached panel.
     pub fn render(&self, pixels: &mut [u8; LCD_WIDTH * LCD_HEIGHT]) {
         for y in 0..LCD_HEIGHT {
             // The panel occupies SEG0..95 and COM32..95. Direction commands

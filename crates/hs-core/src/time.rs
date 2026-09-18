@@ -151,8 +151,7 @@ impl Clock {
     }
     /// Count edges strictly before a horizon by inverting the same rational
     /// recurrence used by `after`. The normal calculation is O(1). The checked
-    /// binary fallback handles enormous horizons without intermediate overflow;
-    /// it is an exact arithmetic fallback, not another CPU execution engine.
+    /// binary fallback handles enormous horizons without intermediate overflow.
     pub fn edges_before(&self, limit: Time) -> u64 {
         if limit <= self.at {
             return 0;

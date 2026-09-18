@@ -1,4 +1,4 @@
-//! Private codec primitives. No guest execution or host I/O is used on load.
+//! Save state decoding and validation helpers.
 use crate::{Error, Time};
 use std::io::{self, Read};
 
@@ -16,7 +16,7 @@ pub(crate) fn future(at: Option<Time>, now: Time) -> Result<(), Error> {
     )
 }
 
-/// The length comes from the hardware, never from untrusted input.
+/// Read the fixed number of bytes required by the hardware component.
 pub(crate) fn read_bytes<const N: usize, R: Read>(reader: &mut R) -> io::Result<Box<[u8; N]>> {
     let mut bytes = vec![0; N].into_boxed_slice();
     reader.read_exact(&mut bytes)?;

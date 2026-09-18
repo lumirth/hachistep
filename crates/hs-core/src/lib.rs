@@ -1,12 +1,11 @@
-//! Runnable, deterministic, single-engine Pokéwalker development core.
+//! Deterministic Pokéwalker emulator core.
 //!
-//! Hardware coverage and unmeasured timing witnesses are documented in
-//! `docs/STATUS.md` in the repository; running retail firmware is not a claim
-//! of complete silicon accuracy.
+//! See `docs/API.md` for embedding and `docs/SOURCES.md` for the hardware
+//! evidence and selected model parameters.
 //!
 //! ```
 //! use hs_core::{Images, Machine, Time};
-//! // An original two-byte BRA-self diagnostic, not a Nintendo firmware image.
+//! // A two-byte BRA instruction that loops back to itself.
 //! let mut rom = vec![0u8; 49_152];
 //! rom[..2].copy_from_slice(&0x0100u16.to_be_bytes());
 //! rom[0x100..0x102].copy_from_slice(&[0x40, 0xfe]);

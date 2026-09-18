@@ -1,4 +1,4 @@
-//! Sample the resolved TXD waveform as a UART host; no completed-byte shortcut.
+//! Sample the resolved TXD waveform as a UART host.
 use crate::{DigitalPin, Images, Input, Machine, Time, TimedInput};
 fn input(us: u64, input: Input) -> TimedInput {
     TimedInput {

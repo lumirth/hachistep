@@ -1,4 +1,4 @@
-//! Flash observations, not an oracle copied from the cell representation.
+//! Flash register, pulse and persistent cell observations.
 use hs_core::{
     mcu::{control::Mode, flash::Flash},
     signals::NvDomain,

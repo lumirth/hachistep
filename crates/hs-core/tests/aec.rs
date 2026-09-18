@@ -1,6 +1,5 @@
-//! Independently expressed register/count/PWM expectations from MCU §13.
-//! Tests establish documented digital rules and the explicitly chosen
-//! reference-edge interpretation, not new physical measurements.
+//! Register, count and PWM expectations from MCU §13, with the model's
+//! selected phase at reference-clock edges.
 #[path = "support/state.rs"]
 mod state;
 use hs_core::{
@@ -460,7 +459,7 @@ fn guest_gate_input_alone_vectors_18() {
 #[test]
 fn pwm_output_pin_route_and_digital_collision_validation() {
     let mut m = fixture(false);
-    // The routing seam resolves physical P12, not a direct EEPROM-byte callback.
+    // The board resolves P12 and delivers its edges to the EEPROM.
     let mut g = hs_core::mcu::gpio::Gpio::default();
     g.write(0xffc0, 0x20).unwrap();
     g.set_aec_output(true, Some(false));

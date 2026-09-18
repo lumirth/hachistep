@@ -188,8 +188,8 @@ impl Interrupts {
                 self.motion_level
             })
     }
-    /// An autonomous wake must finish qualification, not sleep between the
-    /// first qualifying sample and its required duration/history.
+    /// Keep the sensor awake until a candidate interrupt meets its required
+    /// duration or sample history, or stops qualifying.
     pub(super) fn verifying(&self, registers: &[u8]) -> bool {
         self.thresholds
             .iter()

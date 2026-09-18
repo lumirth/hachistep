@@ -1,6 +1,6 @@
 use crate::time::Time;
 
-/// A pin is not a byte. High impedance is resolved by board pulls/drivers.
+/// Electrical pin drive. Board pulls and drivers resolve high impedance.
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 #[borsh(use_discriminant = true)]
@@ -127,9 +127,8 @@ impl Buttons {
         right: false,
     };
 }
-/// A real package analog node. Explicit voltages are electrical-fixture
-/// stimuli, not extra controls wired into an unmodified product. `None` releases
-/// the override and restores the ordinary board-derived voltage.
+/// A package analog node driven by an electrical fixture. `None` releases
+/// the override and restores the voltage supplied by the board.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AnalogPin {
@@ -146,7 +145,7 @@ impl AnalogPin {
         self as usize
     }
 }
-/// Package nodes exposed for electrical fixtures, not additional product buttons.
+/// Package nodes exposed for electrical fixtures.
 /// A level is used only while the selected pin function is an input; release
 /// restores the board pull. Output contention remains outside this fixture API.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -179,8 +178,7 @@ pub enum Input {
     TemperatureMillicelsius(i32),
     InfraredLevel(bool),
     ResetPin(bool),
-    /// Dedicated NMI package pin (high is the canonical user-mode idle level).
-    /// This is an electrical fixture, not an additional product button.
+    /// Electrical fixture for the dedicated NMI pin, which idles high in user mode.
     NmiPin(bool),
     DigitalPin {
         pin: DigitalPin,

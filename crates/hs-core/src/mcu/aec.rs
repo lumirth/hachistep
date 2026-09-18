@@ -1,14 +1,13 @@
 //! Asynchronous event counter and its PWM gate (REJ09B0152-0300 §13).
 //!
-//! Two eight-bit counters or one cascaded sixteen-bit counter share the actual
+//! Two eight-bit counters or one cascaded sixteen-bit counter share the
 //! IRQAEC/IECPWM gating signal. Internal counting is analytical; external input
 //! and PWM boundaries enter the same counter update. Controller requests are
-//! edge notifications, not aliases of the OVH/OVL flags.
+//! edge notifications with lifetimes independent of the OVH/OVL flags.
 //!
-//! The initial prescaler polarity, gate/clock coincidences, and interrupt
-//! synchronizer delay are explicit reference-edge witnesses. The manual bounds
-//! gate-induced error by one count and interrupt synchronization by one cycle;
-//! this implementation does not claim sub-state silicon characterization.
+//! The model resolves gate/clock coincidences at reference-clock edges. The
+//! manual bounds gating error by one count and interrupt synchronization by
+//! one cycle. See docs/research/h8-counters-and-adc.md for phase and delay choices.
 use super::clocks::{Clocks, Tap};
 use crate::{
     error::Error,
@@ -221,9 +220,8 @@ impl Aec {
             return Err(TimeError::Reversed.into());
         }
         if !self.module {
-            // No AEC clock or output evolution in module standby. Rejoining
-            // the shared phases is done once by set_power, not at every
-            // unrelated MCU read. Pin baselines are still retained separately.
+            // Module standby freezes clocks and outputs while retaining pin
+            // baselines. set_power rejoins the shared phases when it resumes.
             self.at = now;
             return Ok(());
         }
@@ -253,9 +251,8 @@ impl Aec {
         self.at = now;
         Ok(())
     }
-    /// Pin selection establishes a baseline. Ordinary changes subsequently
-    /// traverse the same AND-gate semantics as PWM changes. This deliberately
-    /// preserves the possible gate-return edge instead of dropping it.
+    /// Pin selection establishes a baseline. Later pin and PWM changes pass
+    /// through the same AND gate, including edges caused by reopening it.
     pub fn input_pins(
         &mut self,
         pins: [Option<bool>; 3],

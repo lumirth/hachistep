@@ -1,6 +1,5 @@
 //! A single resumable execution engine. `Action` describes the next physical
-//! access or internal wait; `complete` commits only that action. There is no
-//! atomic-instruction executor or rollback path.
+//! access or internal wait; `complete` commits that action.
 pub mod alu;
 pub mod decode;
 pub(crate) mod state;
@@ -219,9 +218,8 @@ pub struct Cpu {
     interrupt_delay: u8,
 }
 impl Cpu {
-    /// The caller obtains the reset vector through its MCU memory authority.
-    /// Zero general-register startup is a deterministic witness, not a claim
-    /// about physical power-on SRAM/register values.
+    /// The caller obtains the reset vector through the MCU bus.
+    /// The model initializes general registers to zero at cold startup.
     pub fn new(reset_vector: u16) -> Self {
         Self {
             registers: Registers {
@@ -418,10 +416,8 @@ impl Cpu {
             self.prefetch_then(pc.wrapping_add(2), false, stack);
         }
     }
-    /// Produce the next action. A request is stable until `complete` is called.
-    /// `interrupt` is a controller-selected vector, not an already-cleared flag.
-    /// Pure projection of work that has already been admitted. No fetch,
-    /// exception admission, address update or effect occurs here.
+    /// Inspect the admitted action without changing CPU state.
+    /// The request remains stable until `complete` is called.
     #[inline]
     pub(crate) fn issued_action(&self) -> Option<Action> {
         match self.phase {
@@ -1088,8 +1084,7 @@ impl Cpu {
                     a.wrapping_add(correction)
                 };
                 self.registers.write(Size::Byte, reg, u32::from(r));
-                // H and V are not guaranteed by this instruction. Preserve a
-                // deterministic witness rather than inventing arithmetic facts.
+                // The model preserves H and V, whose results are unspecified.
                 self.registers.ccr =
                     (self.registers.ccr & !(N | Z)) | alu::nz(u32::from(r), Size::Byte);
                 if !subtract && (u16::from(a) + u16::from(correction) > 255) {

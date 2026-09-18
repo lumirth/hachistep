@@ -1,5 +1,5 @@
-//! Explicit H8 arithmetic. No host overflow or oversized shifts determine
-//! guest behavior. Fields not owned by an instruction are preserved.
+//! H8 arithmetic with explicit guest widths, shifts and flag updates.
+//! Each instruction preserves the fields it does not own.
 use super::decode::{Alu, Shift, Size, Unary};
 pub const C: u8 = 1;
 pub const V: u8 = 2;

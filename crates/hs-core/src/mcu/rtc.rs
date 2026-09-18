@@ -1,6 +1,6 @@
-//! RTC and its alternate free-running counter. Busy entry/exit are distinct
-//! from the second rollover; default busy placement is a documented 62.5-ms
-//! duration with an explicitly unmeasured phase witness (see STATUS.md).
+//! RTC and its alternate free-running counter. Busy entry and exit occur
+//! separately from the second rollover. The busy interval lasts 62.5 ms at
+//! the selected phase in docs/research/h8-counters-and-adc.md.
 use super::clocks::{Clocks, Tap};
 use crate::{error::Error, time::Time};
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]

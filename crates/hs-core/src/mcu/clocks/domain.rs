@@ -1,5 +1,5 @@
-//! A rational source can stop without accumulating imaginary edges. Starting
-//! an oscillator establishes a fresh phase; derived clocks join their source.
+//! A rational clock source advances only while enabled. Starting an oscillator
+//! establishes a fresh phase; derived clocks join their source.
 use crate::{
     error::Error,
     time::{Clock, Time},

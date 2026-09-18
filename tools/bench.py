@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Repeated end-to-end CLI measurements with raw samples and optional ABBA pairing.
 
-No fastest-emulator claim. Output export and process launch are included in the
-external time; each CLI report separately records the simulation-loop wall time.
+External time includes output export and process launch. Each CLI report also
+records wall time spent in the simulation loop.
 """
 from __future__ import annotations
 import argparse
@@ -43,9 +43,8 @@ def main() -> None:
         inputs['timeline'] = digest(a.input)
     equivalence = None
     if a.right:
-        # Untimed correctness preflight. Measured runs below do not trace/hash
-        # product events in the simulation path. Never benchmark changed guest
-        # behavior as if it were an optimization of the same implementation.
+        # Verify behavior before timing runs. Tracing and hashing product events
+        # happen in this preflight so their cost stays outside the measurements.
         for variant, executable in variants.items():
             command = [str(executable), 'run', '--firmware', str(a.firmware.resolve()),
                        '--eeprom', str(a.eeprom.resolve()), '--milliseconds', str(a.milliseconds),

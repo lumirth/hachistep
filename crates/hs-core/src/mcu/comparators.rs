@@ -1,8 +1,7 @@
 //! H8/38602R §18: two analog comparators with read-armed interrupt latches.
 //!
-//! The digital register/latch contract is documented. The default 15 µs
-//! inertial response is a *bounded timing witness*: §21 gives a maximum, not
-//! a measured delay for a particular unit. No silicon noise/offset is claimed.
+//! The default 15 µs response uses the manual's maximum conversion time.
+//! See docs/research/h8-comparators.md for the basis of this timing choice.
 use crate::{
     error::Error,
     time::{Duration, Time, TimeError},

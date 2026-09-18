@@ -1,5 +1,5 @@
-//! Shared clock phases. A peripheral records a consumed divider-edge ordinal;
-//! stopping a downstream gate does not restart the oscillator or its divider.
+//! Shared clock phases. Each peripheral records how many divider edges it has
+//! consumed. Clocks keep their shared phase across consumer stops and restarts.
 mod domain;
 mod prescaler;
 use crate::{

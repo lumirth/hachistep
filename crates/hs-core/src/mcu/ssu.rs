@@ -1,5 +1,5 @@
-//! SSU holding registers and one edge-level shifter. The board handles every
-//! emitted edge; no completed-byte route into an attached device exists.
+//! SSU holding registers and a shifter that advances on each clock edge.
+//! The board routes each emitted edge to the attached devices.
 use super::clocks::{ClockWait, Clocks, Tap};
 use crate::{error::Error, signals::Drive, time::Time};
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]

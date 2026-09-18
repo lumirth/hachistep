@@ -1,6 +1,5 @@
 //! MCU operating modes, clock/module controls, and external interrupt latches.
-//! Invalid mode combinations stop explicitly; there is no product-level wake
-//! shortcut based on a button name or retail firmware address.
+//! Invalid mode combinations stop execution with an error.
 use super::clocks::{ClockWait, Clocks, Source, Tap};
 use crate::{error::Error, time::Time};
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]

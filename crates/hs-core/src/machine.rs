@@ -1,8 +1,7 @@
-//! Fixed board composition and one exact-horizon execution kernel.
+//! Fixed board composition and execution to an exclusive time horizon.
 //!
-//! The starter retains partial CPU and serial work. Its hardware coverage and
-//! timing witnesses are enumerated in docs/STATUS.md; successful execution is
-//! not a claim of complete silicon conformance.
+//! Retains partial CPU and serial work across caller horizons. Component timing
+//! rules and their evidence are indexed in docs/SOURCES.md.
 mod boot;
 mod state;
 use crate::{
@@ -125,8 +124,7 @@ impl Machine {
         Self::with_persistent_state(images, conditions, None)
     }
     /// Construct with a sensor nonvolatile image exported by an earlier session.
-    /// `None` selects the documented canonical sensor image, not a claim that
-    /// all physical units have identical calibration.
+    /// `None` constructs the sensor with its default nonvolatile image.
     pub fn with_persistent_state(
         images: Images<'_>,
         conditions: Conditions,
@@ -1161,8 +1159,8 @@ impl Machine {
         let mut consumed = 0;
         while self.now < end {
             // Process causes pending at this exact time before admitting another
-            // CPU action. Device-before-input/CPU tie rules are starter witnesses;
-            // fine-grained silicon conflict coverage is explicit in STATUS.md.
+            // CPU action. Peripheral owners resolve their access conflicts within
+            // this device, input, then CPU boundary order.
             if self.next_devices == Some(self.now) {
                 self.devices_at_boundary(out)?;
             }

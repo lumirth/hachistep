@@ -1,19 +1,16 @@
-# Native save-state CPU progress
+# CPU save state semantics
 
-Research handoff, 2026-09-18. This specifies the current CPU and its issued
-work, refining [the codec contract](save-state-codec-contract.md) and
-[DESIGN §13.6](../DESIGN.md#136-native-save-state-design). Source authority is
-the current [CPU runtime][cpu], [incremental decoder][decoder],
-[Machine bus integration][machine], and [clock-wait owner][clocks]. It does
-not prescribe a different executor, install dependencies, or add versioning.
-No production/test code was changed and no build was run.
+The native representation describes unfinished hardware work and already completed
+effects. This document explains those meanings; field declarations and explicit tags
+live in [cpu/state.rs](../crates/hs-core/src/cpu/state.rs). The [file
+contract](SAVE_STATES.md) defines encoding, validation, and restoration. Changing
+executor layout does not change these meanings automatically.
 
 ## Common retained fields
 
-Use one private `CpuState` with these fields, followed by a tagged
-`CpuProgress`. Integers have explicit widths; addresses are normal-mode 16-bit
-addresses, not host pointers. Give saved enums documented tags independently
-of the live Rust enum order.
+Use one private `CpuState` with these fields, followed by a tagged `CpuProgress`.
+Integers have explicit widths; addresses are normal-mode 16-bit addresses, not host
+pointers. Give saved enums documented tags independently of the live Rust enum order.
 
 | Field | Type and meaning | Live mapping |
 | --- | --- | --- |
@@ -26,26 +23,25 @@ of the live Rust enum order.
 | `interrupt_deferral` | `u8`, currently 0 or 1 instruction-boundary deferrals | `interrupt_delay` |
 | `exception_notification` | `Option<u8>`, admitted vector not yet consumed by MCU integration | `accepted_vector` |
 
-Keep `instruction_address`: `write_origin` uses bit 1 for absolute-8 MOV.B
-access provenance. It is not merely a trace label. Preserve prefetch and
-fetched words even if the backing RAM/flash has changed. Preserve the full
-32-bit ER values: address arithmetic and updates operate on them before the
-bus truncates addresses. ([CPU fields and provenance, lines 203–275][cpu].)
+Keep `instruction_address`: `write_origin` uses bit 1 for absolute-8 MOV.B access
+provenance. It is not merely a trace label. Preserve prefetch and fetched words even if
+the backing RAM/flash has changed. Preserve the full 32-bit ER values: address
+arithmetic and updates operate on them before the bus truncates addresses. ([CPU fields
+and provenance][cpu].)
 
-`Instruction` is disposable decoded interpretation. For progress that needs
-it, run the existing pure `decode` on the captured word prefix and require
-`Ready` with exactly that count. Do not read guest memory or call `next`,
-`prepare`, `begin` or `complete` to reconstruct it. Retain the small fetched
-record even where it is only historical; this avoids fragile phase-specific
-omission rules and preserves diagnostic attribution.
+`Instruction` is disposable decoded interpretation. For progress that needs it, run the
+existing pure `decode` on the captured word prefix and require `Ready` with exactly that
+count. Do not read guest memory or call `next`, `prepare`, `begin` or `complete` to
+reconstruct it. Retain the small fetched record even where it is only historical; this
+avoids fragile phase-specific omission rules and preserves diagnostic attribution.
 
 ## Complete progress mapping
 
-The following are concrete suggested saved variants. Each row maps in both
-directions; fields named below have their live field's value. A `frame` means
-`{ vector: u8, saved_pc: u16, saved_ccr: u8 }`. Where a row mentions `decoded`,
-reconstruct it from the captured words. Set inactive live `continuation` to
-`Boundary`. No serialized variant contains another arbitrary `Phase`.
+The following are concrete suggested saved variants. Each row maps in both directions;
+fields named below have their live field's value. A `frame` means `{ vector: u8,
+saved_pc: u16, saved_ccr: u8 }`. Where a row mentions `decoded`, reconstruct it from the
+captured words. Set inactive live `continuation` to `Boundary`. No serialized variant
+contains another arbitrary `Phase`.
 
 | Saved variant and payload | Live phase / active continuation | Meaning at capture |
 | --- | --- | --- |
@@ -83,29 +79,26 @@ reconstruct it from the captured words. Set inactive live `continuation` to
 | `CopyBytes { count_width:CountWidth, step:CopyStep }` | `Copy { word_count, stage, value }` | EEPMOV mapping below. |
 | `Sleeping` | `Sleeping` | SLEEP has retired; wake/direct-transition work is owned by Machine/control. |
 
-`BitOp` names Set, Clear, Toggle, Test, StoreCarry, LoadCarry, AndCarry,
-OrCarry and XorCarry; carry operations retain the existing inversion boolean.
-These map directly to `decode::Bit`, not instruction opcode ordinals.
+`BitOp` names Set, Clear, Toggle, Test, StoreCarry, LoadCarry, AndCarry, OrCarry and
+XorCarry; carry operations retain the existing inversion boolean. These map directly to
+`decode::Bit`, not instruction opcode ordinals.
 
-`install` deliberately does **not** mean “the condition was true”: untaken
-Bcc16 selects fallthrough and sets live `take=true` to install that fetched
-word. Raw branch/entry/indirect targets can be odd; the existing executor
-aligns the actual fetch and later architectural PC. Do not reject odd targets
-or normalize their latched values prematurely.
+`install` deliberately does not mean "the condition was true": untaken Bcc16 selects
+fallthrough and sets live `take=true` to install that fetched word. Raw
+branch/entry/indirect targets can be odd; the existing executor aligns the actual fetch
+and later architectural PC. Do not reject odd targets or normalize their latched values
+prematurely.
 
-`Ready`, `Execute` and `Finish` are normally transient within an API call, but
-explicit mappings make capture total over the executor's states. The four
-fetch outcomes and three delay outcomes above exhaust all current
-`prefetch_then`/`delay_then` call sites. Reject other active continuation
-combinations instead of serializing an arbitrary continuation tree.
-([Preparation/entry, lines 318–415; `next`, lines 418–615; `complete`, lines
-616–855; setup, lines 894–1187][cpu].)
+`Ready`, `Execute` and `Finish` are normally transient within an API call, but explicit
+mappings make capture total over the executor's states. The four fetch outcomes and
+three delay outcomes above exhaust all current `prefetch_then`/`delay_then` call sites.
+Reject other active continuation combinations instead of serializing an arbitrary
+continuation tree. ([CPU execution][cpu].)
 
 ### Memory transfer fields
 
-The existing `Transfer` already expresses hardware progress and can be reused
-privately with explicit encoding; a duplicate generic instruction IR is not
-needed.
+The existing `Transfer` already expresses hardware progress and can be reused privately
+with explicit encoding; a duplicate generic instruction IR is not needed.
 
 | Field | Retained meaning / validation |
 | --- | --- |
@@ -116,24 +109,23 @@ needed.
 | `ccr:bool` | CCR load/store rather than MOV; requires Word and changes completion/flag behavior. |
 | `absolute8:bool` | Absolute-8 MOV provenance, agreeing with the captured decoded addressing form. |
 | `value:u32` | Entire pending store value, or already collected load data. A long load with `done=2` holds its first word in the low 16 bits. |
-| `done:u8` | Bytes whose **whole CPU-level transfer** has completed: 0 for Byte/Word; 0 or 2 for Long. |
+| `done:u8` | Bytes whose whole CPU-level transfer has completed: 0 for Byte/Word; 0 or 2 for Long. |
 | `post:Option<(u8,u32)>` | Deferred full-ER post-increment destination/value; index <8. Apply only at operand completion, before destination-register replacement. |
 
-For stores, bound `value` by the size mask; a CCR store's low byte is zero.
-For loads, `value=0` before any word completes, and at most `FFFF` at long
-`done=2`. Match size/register/direction/CCR/addressing-mode flags to the
-captured instruction without recalculating a latched address or value from
-live registers. Pre-decrement has already changed ER, including when that ER
-aliases the source. `post` is present only for the corresponding load form.
-`DelayAfterAddressUpdate` requires `done=0` and a pre-decrement/post-increment
-instruction. ([Transfer creation, lines 957–997; completion, 688–716][cpu];
-[memory decoding, lines 664–788][decoder].)
+For stores, bound `value` by the size mask; a CCR store's low byte is zero. For loads,
+`value=0` before any word completes, and at most `FFFF` at long `done=2`. Match
+size/register/direction/CCR/addressing-mode flags to the captured instruction without
+recalculating a latched address or value from live registers. Pre-decrement has already
+changed ER, including when that ER aliases the source. `post` is present only for the
+corresponding load form. `DelayAfterAddressUpdate` requires `done=0` and a
+pre-decrement/post-increment instruction. ([Transfer creation][cpu];
+[memory decoding][decoder].)
 
 ### EEPMOV substeps
 
-`CountWidth::Byte` maps to `word_count=false` and R4L; `Word` maps to true and
-R4. Both forms transfer **bytes**. ER5/ER6 retain source/destination and their
-full 32-bit updates in the common register bank.
+`CountWidth::Byte` maps to `word_count=false` and R4L; `Word` maps to true and R4. Both
+forms transfer bytes. ER5/ER6 retain source/destination and their full 32-bit updates in
+the common register bank.
 
 | `CopyStep` | Live stage/value | Completed work / remaining action |
 | --- | --- | --- |
@@ -143,17 +135,16 @@ full 32-bit updates in the common register bank.
 | `ReadAdmittedByte` | 4 / 0 | Admission is finished; an outstanding source read must remain stable if NMI arrives. |
 | `WriteLatchedByte { value:u8 }` | 3 / value | Source byte captured; destination write remains. Pointers/count still describe this pair. |
 
-Stages 2/3/4 require a nonzero count. Pointers increment and count decrements
-only after destination-write completion; final NEXT fetch then uses
-`FetchNextBeforeRetirement`. Stage 2 and 4 must never collapse into one saved
-“copying” state. ([EEPMOV request/admission, lines 566–612; completion,
-801–849][cpu].)
+Stages 2/3/4 require a nonzero count. Pointers increment and count decrements only after
+destination-write completion; final NEXT fetch then uses `FetchNextBeforeRetirement`.
+Stage 2 and 4 must never collapse into one saved "copying" state. ([EEPMOV
+request/admission][cpu].)
 
 ## Issued request and physical lanes
 
 Preserve `Machine.pending` separately from CPU progress. Its `Action` is the
-already-issued **logical** request, while the lane and `ClockWait` describe
-the physical action still in progress:
+already-issued logical request, while the lane and `ClockWait` describe the physical
+action still in progress:
 
 - `Read { address:u16, width:Byte|Word, fetch:bool }`.
 - `Write { address:u16, width:Byte|Word, value:u16, mov_byte:bool }`.
@@ -162,67 +153,61 @@ the physical action still in progress:
 - `wait`, `split:bool`, `lane:u8`, `high:u8` map to the existing `Pending`.
   `Action::Sleep` is never a pending timed action.
 
-Validate `split == (width == Word && !Mcu::native_word(address & !1))`.
-Unsplit actions and internal waits have lane 0. A split word has lane 0 or 1;
-lane 1 means the high-byte access already happened. For a split read, `high`
-is that actual returned byte and cannot be reread. For a split write, it is
-the already-written high byte (derivable from `value`). Only the low lane is
-performed after restoration. `done` in a long `Transfer` does not advance
-until both lanes of its current logical word finish.
+Validate `split == (width == Word && !Mcu::native_word(address & !1))`. Unsplit actions
+and internal waits have lane 0. A split word has lane 0 or 1; lane 1 means the high-byte
+access already happened. For a split read, `high` is that actual returned byte and
+cannot be reread. For a split write, it is the already-written high byte (derivable from
+`value`). Only the low lane is performed after restoration. `done` in a long `Transfer`
+does not advance until both lanes of its current logical word finish.
 
-Match a saved request to its suspended progress with a pure request
-projection, sharing/factoring the existing action construction if useful.
-It must not call `next(None)`: that can decrement deferral, consume prefetch,
-mutate registers or admit EEPMOV's next pair. Request validation covers
-address/width, fetch flag, write value and MOV.B provenance. Word bus addresses
-use `address & !1`; do not require arbitrary stack/target input addresses to
-have been even. Preserve `instruction_address` and `absolute8` so resumed
-MOV.B uses the same `WriteOrigin`.
+Match a saved request to its suspended progress with a pure request projection,
+sharing/factoring the existing action construction if useful. It must not call
+`next(None)`: that can decrement deferral, consume prefetch, mutate registers or admit
+EEPMOV's next pair. Request validation covers address/width, fetch flag, write value and
+MOV.B provenance. Word bus addresses use `address & !1`; do not require arbitrary
+stack/target input addresses to have been even. Preserve `instruction_address` and
+`absolute8` so resumed MOV.B uses the same `WriteOrigin`.
 
-Only suspended action-producing phases can have `pending`: reset/fetch,
-the fetch variants, delays, memory/bit accesses, indirect/call/target/return/
-exception accesses, arithmetic interval, and EEPMOV stages 0/1/3/4. EEPMOV
-stage 2 cannot already have a source request. Conversely, do not require every
-action-producing phase to have one: initial construction, clock/reset holds,
-direct transitions and faults can leave work not yet issued.
-([Pending/Resume, lines 61–79; queue, 843–970; completion, 971–1056][machine].)
+Only suspended action-producing phases can have `pending`: reset/fetch, the fetch
+variants, delays, memory/bit accesses, indirect/call/target/return/ exception accesses,
+arithmetic interval, and EEPMOV stages 0/1/3/4. EEPMOV stage 2 cannot already have a
+source request. Conversely, do not require every action-producing phase to have one:
+initial construction, clock/reset holds, direct transitions and faults can leave work
+not yet issued. ([Pending/Resume][machine].)
 
 ## Clock obligations and reconstruction
 
-Save `ClockWait` as `{ source:ClockSource, divide:u32, obligation }`, where
-`obligation` is `Running { target_edge:u64 }`,
-`Paused { remaining_edges:u64 }`, or `Ready { at:u128 }`. `at` uses the common
-64.64-second timeline. Source names are System, Cpu, Watch, OnChip, Oscillator
-and Subclock. Never convert an edge target into a duration from the capture
-time or call `ClockWait::after` to reconstruct an existing Running obligation.
+Save `ClockWait` as `{ source:ClockSource, divide:u32, obligation }`, where `obligation`
+is `Running { target_edge:u64 }`, `Paused { remaining_edges:u64 }`, or `Ready { at:u128
+}`. `at` uses the common 64.64-second timeline. Source names are System, Cpu, Watch,
+OnChip, Oscillator and Subclock. Never convert an edge target into a duration from the
+capture time or call `ClockWait::after` to reconstruct an existing Running obligation.
 
-Omit `cached` and `revision`. Restore/validate clock authorities first, set a
-fresh clock revision, then give every Running wait that revision and either
-the checked `clocks.edge(target, tap)` projection when available or `Time::MAX`
-when unavailable. A subsequent source change invalidates the cache normally.
-Do not initialize a supposedly current cached timestamp to zero. Paused and
-Ready obligations need no cached projection. ([ClockWait, lines 434–532][clocks].)
+Omit `cached` and `revision`. Restore/validate clock authorities first, set a fresh
+clock revision, then give every Running wait that revision and either the checked
+`clocks.edge(target, tap)` projection when available or `Time::MAX` when unavailable. A
+subsequent source change invalidates the cache normally. Do not initialize a supposedly
+current cached timestamp to zero. Paused and Ready obligations need no cached
+projection. ([ClockWait][clocks].)
 
-Require a valid source and nonzero divider before any clock arithmetic. The
-current CPU pending wait uses Cpu÷1. Keep the other Machine obligations
-separate: delayed SLEEP uses Cpu÷1; wake stabilization uses Oscillator÷1 and
-retains `direct`; watchdog reset uses OnChip÷1; newly added `reset_release`
-uses System÷1. `Resume::Sleep` means SLEEP has retired but its mode transition
-is pending; `Resume::Wake` means the wake sequence is pending. Do not fold
-these into CPU instruction progress. ([Machine reset, lines 330–350,
-526–543; resume/queue, 843–929][machine].)
+Require a valid source and nonzero divider before any clock arithmetic. The CPU pending
+wait uses Cpu÷1. Keep the other Machine obligations separate: delayed SLEEP uses Cpu÷1;
+wake stabilization uses Oscillator÷1 and retains `direct`; watchdog reset uses OnChip÷1;
+`reset_release` uses System÷1. `Resume::Sleep` means SLEEP has retired but its mode
+transition is pending; `Resume::Wake` means the wake sequence is pending. Do not fold
+these into CPU instruction progress. ([Machine reset][machine].)
 
-For active available appointments, checked projection must succeed and give
-`deadline >= Machine.now`; equality is valid because the horizon is exclusive.
-For unavailable sources retain the obligation rather than inventing a current
-timestamp. Paused zero remaining edges is legal. Validate the underlying
-clock/divider phases before attempting projections; then rebuild scheduler
-appointments without consuming any edges or invoking peripheral callbacks.
+For active available appointments, checked projection must succeed and give `deadline >=
+Machine.now`; equality is valid because the horizon is exclusive. For unavailable
+sources retain the obligation rather than inventing a current timestamp. Paused zero
+remaining edges is legal. Validate the underlying clock/divider phases before attempting
+projections; then rebuild scheduler appointments without consuming any edges or invoking
+peripheral callbacks.
 
 ## Validation and disposable state
 
-Decode into a candidate; reject before replacing the live machine. In addition
-to the local bounds above:
+Decode into a candidate; reject before replacing the live machine. In addition to the
+local bounds above:
 
 - Require `fetched_count <= 5`, even architectural PC/instruction/prefetch
   addresses, and `interrupt_deferral <= 1`. Zero unused fetched slots during
@@ -245,27 +230,26 @@ to the local bounds above:
   Preserve the error latch and validate that particular stopped state;
   healthy-progress invariants must not reject snapshots the core produces.
   The normal run API must keep returning the saved error rather than resume
-  the invalid instruction. ([Fetch completion, lines 662–685][cpu];
-  [fault latch, lines 1058–1072][machine].)
+  the invalid instruction. ([Fetch completion][cpu];
+  [fault latch][machine].)
 
-Discard inactive `continuation`; inactive EEPMOV `value` outside stage 3;
-`Call.target` after target fetch; `JumpTarget.return_pc` when no call follows;
-and pending `high` before any first lane completes. Reconstruct canonical zeros
-for these. Keep active partial-load/store values, saved exception CCR/PC,
-branch decisions, prefetched bytes, and deferred register updates. `retired`
-and `interrupt_entries` are diagnostic counters, not hardware authority;
-initialize them under the codec's stated diagnostic policy. Consequently,
-restoration is inverse over causal progress, not bitwise equality of stale
-scratch fields or profiler totals.
+Discard inactive `continuation`; inactive EEPMOV `value` outside stage 3; `Call.target`
+after target fetch; `JumpTarget.return_pc` when no call follows; and pending `high`
+before any first lane completes. Reconstruct canonical zeros for these. Keep active
+partial-load/store values, saved exception CCR/PC, branch decisions, prefetched bytes,
+and deferred register updates. `retired` and `interrupt_entries` are diagnostic
+counters, not hardware authority; initialize them under the codec's stated diagnostic
+policy. Consequently, restoration is inverse over causal progress, not bitwise equality
+of stale scratch fields or profiler totals.
 
-Implement capture and reconstruction beside the CPU owner with exhaustive
-matches; keep ordinary `next`/`complete` as the only executor. The meaningful
-regression checks are identical subsequent bus effects and timing after a
-capture between longword halves, between split SFR lanes, during each exception
-stack phase, during EEPMOV admission/read/write, and before arithmetic/CCR
-commitment—not just encoded round-trip equality.
+Capture and reconstruction use exhaustive matches beside the CPU owner; keep ordinary
+`next`/`complete` as the only executor. The meaningful regression checks are identical
+subsequent bus effects and timing after a capture between longword halves, between split
+SFR lanes, during each exception stack phase, during EEPMOV admission/read/write, and
+before arithmetic/CCR commitment. Encoded round-trip equality alone does not establish
+it.
 
-[cpu]: ../../crates/hs-core/src/cpu/mod.rs
-[decoder]: ../../crates/hs-core/src/cpu/decode.rs
-[machine]: ../../crates/hs-core/src/machine.rs
-[clocks]: ../../crates/hs-core/src/mcu/clocks.rs
+[cpu]: ../crates/hs-core/src/cpu/mod.rs
+[decoder]: ../crates/hs-core/src/cpu/decode.rs
+[machine]: ../crates/hs-core/src/machine.rs
+[clocks]: ../crates/hs-core/src/mcu/clocks.rs

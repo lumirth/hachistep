@@ -49,8 +49,7 @@ fn input(s: &mut Sci, c: &Clocks, at: Time, high: bool) {
     run(s, c, at);
     s.input_pins(None, high, at, c).unwrap();
 }
-// The expectations below are literal register/timing-table consequences from
-// REJ09B0152-0300 and A333B/E, not values computed by Format or Baud helpers.
+// Register and timing expectations follow REJ09B0152-0300 and A333B/E.
 #[test]
 fn startup_mark_and_first_stop_status_are_separate_from_wire_completion() {
     let c = clocks(1_000_000);

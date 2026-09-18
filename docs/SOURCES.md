@@ -13,19 +13,16 @@ ROM SHA-256: f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607
 Reset vector: 0x02c4
 ```
 
-The archive was inspected for a 64 KiB EEPROM and did not contain one. The EEPROM
-used in the runs was acquired separately from the user's File Library:
+The archive was inspected for a 64 KiB EEPROM and did not contain one. The EEPROM used
+in the runs was acquired separately from the user's File Library:
 
 ```
 EEPROM bytes: 65536
 EEPROM SHA-256: 9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008
 ```
 
-Neither image was patched. Verification checks their hashes before and after
-execution. The archive's unrelated source/toolchain material was not copied into
-this repository. Private filesystem paths from original metadata are not part of
-the maintained documentation. The private delivery contains just the two images,
-not the original archive. Image ownership and redistribution rights are unchanged.
+Verification checks both image hashes before and after execution. Local document hashes
+and extraction metadata are retained in `evidence/input-provenance.json`.
 
 ## Primary hardware references
 
@@ -42,61 +39,44 @@ not the original archive. Image ownership and redistribution rights are unchange
 - Novatek NT7508 v1.0:
   https://www.orientdisplay.com/wp-content/uploads/2022/08/NT7508_V1.0.pdf
 
-The archive also carries an SSD1854 datasheet. Its presence is not evidence that
-the LCD owner should implement that controller. This starter implements NT7508
-commands and the reached `pw` driver behavior. The original PDF bytes are not
-redistributed; local document hashes are in `evidence/input-provenance.json`.
+The archive also carries an SSD1854 datasheet. Its presence is not evidence that the LCD
+owner should implement that controller. HachiStep implements NT7508 commands and the
+reached `pw` driver behavior. The original PDF bytes are not redistributed; local
+document hashes are in `evidence/input-provenance.json`.
 
 ## Decompilation evidence
 
-`lumirth/pw` was read at commit
-`6dc7bc09950078fa3fe0dffa4dae34e9549a99da`:
+`lumirth/pw` was read at commit `6dc7bc09950078fa3fe0dffa4dae34e9549a99da`:
 https://github.com/lumirth/pw/tree/6dc7bc09950078fa3fe0dffa4dae34e9549a99da
 
 Relevant files include `src/application/pw_accel_bma150.c`, `pw_nt7508.c`,
-`pw_eeprom_m95512.c`, `pw_battery.c`, `pw_player_input.c`, `pw_power.c`,
-`pw_rtc.c`, `src/support/lib_common.c`, serial/IR setup, and startup/register
-headers. These establish reached accesses and software intent. They are not
-substituted as host-native routines, and their source comments are not treated
-as independent measurements of undocumented hardware.
+`pw_eeprom_m95512.c`, `pw_battery.c`, `pw_player_input.c`, `pw_power.c`, `pw_rtc.c`,
+`src/support/lib_common.c`, serial/IR setup, and startup/register headers. These
+establish reached accesses and software intent. Read the executed sequences when source
+comments differ from the hardware evidence.
 
-Examples of concrete integration evidence are active-high button sampling,
-separate LCD command/parameter selected intervals, the BMA protected-window
-initialization, clock/module setup around SLEEP, battery sampling/polling,
-watchdog service and RTC stable reads. STATUS separates established mechanisms
-from provisional physical behavior.
+Examples of concrete integration evidence are active-high button sampling, separate LCD
+command/parameter selected intervals, the BMA protected-window initialization,
+clock/module setup around SLEEP, battery sampling/polling, watchdog service and RTC
+stable reads. The owner notes below distinguish manufacturer requirements from selected
+physical parameters and circuit inferences.
 
-## Original implementation and test code
+## Implementation and diagnostic provenance
 
-The Rust core, CLI, small Python tools and original seven synthetic diagnostic programs
-were written for the starter. Revision 0.2 extends that Git history, adds eight
-guest fixtures and independently stated target regressions. Existing HachiStep implementation files and other
-emulator source were not copied into this repository. The core-independent test
-builder does not derive expected values by calling the production decoder. It is
-not a full independently hardware-validated CPU suite.
+This repository develops the supplied fresh starter. Its Git history records that
+implementation and subsequent changes. Historical build receipts and compiler/input
+identities remain in `evidence/`; they are records of particular runs rather than
+current requirements.
 
-## Compiler artifact
+The independent fixture corpus is maintained in
+[hachiware](https://github.com/lumirth/hachiware), without a dependency on
+`hs-core`. Its expectations record their evidence. The HachiStep adapter exports
+observations without owning those expectations.
 
-The sandbox lacked a Rust compiler and direct binary downloads were unavailable.
-An existing public `risc0/rust` CI artifact supplied a Linux host toolchain:
+## Manual sections
 
-```
-Commit: e638c6cfea1eff5fbbb24a27e60538e3760d21b8
-Workflow run: 29519685716
-Artifact: 8385562883
-Artifact SHA-256: 3308427d26e29070f007d27bf837098e69920558c19d1334bcec459237469d8c
-```
-
-No workflow was launched to acquire it. No user repository or computer was
-modified. The toolchain is not bundled, the project requires no fork-specific
-feature, and the declared Rust minimum was not separately tested. Build reports
-record the actual compiler rather than claiming an upstream stable version.
-
-## Revision 0.2 source anchors
-
-The implementation uses the same primary references; no new physical captures
-were obtained. Printed page numbers differ from PDF indices. The named sections
-and diagrams are recorded in owner comments and tests.
+Printed page numbers differ from PDF indices. Use the named sections and diagrams when
+comparing the manuals with the implementation.
 
 - REJ09B0152-0300 §20.1, printed pp.372–375: register physical access widths and
   state counts. `hachiware/spec/register_access.tsv` is a separate 95-row
@@ -107,18 +87,39 @@ and diagrams are recorded in owner comments and tests.
   distinguishes low-at-reset bootstrap/debug straps from ordinary user mode.
 - §10, particularly input/output timing and §10.7 conflict notes: Timer W
   compare/capture/buffer semantics and external clock. The implementation uses
-  reference-edge pipelines; mux glitches and subcycle behavior are not claimed.
+  input pipelines resolved at reference-clock edges.
 - §13: AEC/PWM, CUE/CRC, independent/cascaded counters, clock and IRQAEC gates,
   Fig.13.5 gate-return counting, and separate interrupt requests. Conflicting
   module-stop descriptions and phase apertures remain explicitly identified.
 - §18, Table 18.2/Fig.18.2: comparator ladder/hysteresis; CMDR read-armed baseline
-  and interrupt behavior. §1.3/§8.2 identify VCref as P30, not P32. A quoted maximum
-  response time is used only as a nominal witness, not an exact measured delay.
+  and interrupt behavior. §1.3/§8.2 identify VCref as P30. The model uses the maximum
+  documented response time as its nominal delay.
 - ADE-602-053A MOV.B/W/L usage notes (printed pp.121/123/125): update an aliased
   predecrement address register before capturing store data. Instruction encoding
   tables provide fixed displacement-24 selectors and 6B long/CCR restrictions.
 
-The core-independent fixture corpus is maintained in
-[ hachiware ](https://github.com/lumirth/hachiware), with no dependency on
-`hs-core`. Its initial expectations are documented or reasoned, not physical
-captures. The HachiStep adapter exports observations without owning expectations.
+
+## Hardware rationale
+
+These notes preserve source interpretation and model choices that are not obvious from
+the code, including the reasoning behind inferred behavior and nominal parameters.
+
+| Mechanism | Reference |
+| --- | --- |
+| CPU fetch, access order, exceptions and admission | [Execution](research/h8-execution.md) |
+| Encoding and arithmetic | [Encodings and arithmetic](research/h8-encoding-and-arithmetic.md) |
+| Clocks and SCI/IrDA | [Clock and serial rules](research/h8-clock-and-sci.md) |
+| Timers, RTC, watchdog, ADC and AEC | [Counter and converter rules](research/h8-counters-and-adc.md) |
+| Register bus and GPIO | [Access and pin rules](research/h8-registers-and-gpio.md) |
+| SSU and IIC2 | [SSU](research/h8-ssu.md), [IIC2](research/h8-iic2.md) |
+| Internal flash and manufacturer boot service | [Flash](research/h8-flash.md), [boot service](research/h8-boot-mode.md) |
+| Supply and reset | [Board supply, retention and startup](research/power-and-reset.md) |
+| ADC board circuit and comparators | [Battery sensing](research/adc-board-transfer.md), [comparators](research/h8-comparators.md) |
+| BMA150 sensor | [Sampling, filtering and register behavior](research/bma150-behavior.md), [I²C](research/bma150-i2c.md) |
+| LCD and EEPROM | [Controller and storage behavior](research/lcd-and-eeprom.md) |
+| Infrared board behavior | [Optical interface and firmware evidence](research/infrared.md) |
+
+Native save state field semantics are in [SAVE_STATES](SAVE_STATES.md) and
+[CPU_STATE](CPU_STATE.md). The [design](DESIGN.md) owns architectural decisions;
+comparisons with other emulators support those decisions without defining Pokéwalker
+hardware behavior.
