@@ -187,8 +187,8 @@ impl Machine {
     pub fn statistics(&self) -> Statistics {
         self.stats
     }
-    pub fn firmware(&self) -> &[u8; 49_152] {
-        self.mcu.firmware()
+    pub fn firmware(&self) -> Box<[u8; 49_152]> {
+        self.mcu.firmware(self.observation_time())
     }
     pub fn ram(&self) -> &[u8; 2048] {
         self.mcu.ram()
@@ -237,14 +237,20 @@ impl Machine {
     /// Diagnostic inspection is side-effect free. Counter owners are projected
     /// on a temporary copy; guest read side effects are never executed.
     pub fn peek(&self, address: u16) -> Result<u8, Error> {
+        if address < 0xc000 {
+            return Ok(self.mcu.flash.peek(address, self.observation_time()));
+        }
         if Mcu::is_memory(address) || !self.powered {
             return self.mcu.peek8(address);
         }
         let mut view = self.mcu.clone();
         // Exclude effects exactly at the caller's unprocessed horizon.
-        let t = Time::from_raw(self.now.raw().saturating_sub(1)).max(self.last_effect);
+        let t = self.observation_time();
         view.sync(t)?;
         view.peek8(address)
+    }
+    fn observation_time(&self) -> Time {
+        Time::from_raw(self.now.raw().saturating_sub(1)).max(self.last_effect)
     }
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -274,6 +280,7 @@ impl Machine {
         }
         self.eeprom.power_off(self.now, out);
         self.sensor.power_off(self.now, out);
+        self.mcu.flash.power_off(self.now);
         self.last_effect = self.now;
         self.mcu
             .sci
@@ -831,14 +838,18 @@ impl Machine {
             if boundary {
                 self.mcu.instruction_boundary();
             }
-            if self.cpu.take_accepted_vector() == Some(7) {
-                self.mcu.control.acknowledge_nmi();
+            if let Some(vector) = self.cpu.take_accepted_vector() {
+                self.mcu.flash.protect(self.now)?;
+                if vector == 7 {
+                    self.mcu.control.acknowledge_nmi();
+                }
             }
             match action {
                 Action::Sleep => {
                     if self.mcu.control.sleeping() {
                         return Ok(());
                     }
+                    self.mcu.flash.protect(self.now)?;
                     if self.mcu.sync(self.now)? {
                         self.reset_mcu(true, out)?;
                         continue;
@@ -944,7 +955,7 @@ impl Machine {
             self.stats.bus_reads = self.stats.bus_reads.wrapping_add(1);
             match w {
                 Width::Byte => u16::from(self.mcu.read8(a, self.now)?),
-                Width::Word => self.mcu.read16(a)?,
+                Width::Word => self.mcu.read16(a, self.now)?,
             }
         };
         #[cfg(feature = "trace")]

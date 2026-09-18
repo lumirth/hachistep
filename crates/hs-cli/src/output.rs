@@ -156,6 +156,7 @@ pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
     // Caller creates a new directory before running. Each file is create_new;
     // no existing firmware, EEPROM, status sidecar, or user output is replaced.
     for (name, data) in [
+        ("flash.bin", m.firmware().as_slice()),
         ("eeprom.bin", m.eeprom().as_slice()),
         ("eeprom.status", &[m.eeprom_status()][..]),
         ("ram.bin", m.ram().as_slice()),

@@ -68,7 +68,8 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "8ce657735b1bb93554a88b08a838290701432af963342986f23f0440e26a123c",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "afc77cf3447f697c668422c0e73d2c8696cb47ebf6cb1f54a62dfe0a3e4b002b"
+        "frame.pgm": "afc77cf3447f697c668422c0e73d2c8696cb47ebf6cb1f54a62dfe0a3e4b002b",
+        "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     },
     "menu": {
@@ -129,7 +130,8 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "a7e9d66ded8017adffac97890df3f650514783cce4dc86071ab089c06e437fb6",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "f58b0afec3915c2865c03f96e5070fcf82d6ff0a1d47a3a9cd1a857de5c08acb"
+        "frame.pgm": "f58b0afec3915c2865c03f96e5070fcf82d6ff0a1d47a3a9cd1a857de5c08acb",
+        "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     },
     "walking": {
@@ -190,7 +192,8 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "28d013e23f2a54e34f34c6a2b8e167ef595ff8a486ab3a5488555605af63c699",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "cf8c83327dee7a27c43552e7f01b483a1cc36318bcad7f58f2a54d654b3f565d"
+        "frame.pgm": "cf8c83327dee7a27c43552e7f01b483a1cc36318bcad7f58f2a54d654b3f565d",
+        "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     },
     "idle": {
@@ -251,7 +254,8 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "8ce657735b1bb93554a88b08a838290701432af963342986f23f0440e26a123c",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "07bb57bdb53bef0dc17dc1a0a68b0b80331fead43e3f5c1f9451c1bb127a95d8"
+        "frame.pgm": "07bb57bdb53bef0dc17dc1a0a68b0b80331fead43e3f5c1f9451c1bb127a95d8",
+        "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     }
   }

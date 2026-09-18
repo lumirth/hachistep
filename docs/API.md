@@ -71,6 +71,13 @@ display-off return inactive drive. This is separate from analog glass response.
 return read-only data. No mutable bypass into a guest register or memory array is
 part of the ordinary facade. Guest modifications go through normal execution.
 
+`firmware()` returns an owned 48-KiB image of the current flash cells, including
+the physical progress of an unfinished pulse. It may differ from the firmware
+loaded at construction. The CLI exports this as `flash.bin`; the input file is
+never modified. Exporting or peeking at flash does not perform a guest read,
+trigger protection or finish a pulse. A raw image preserves readable bytes;
+an exact snapshot additionally preserves intermediate cell charge and controls.
+
 ## Checkpoint
 
 `snapshot()` creates an owned, typed causal snapshot. `restore(&snapshot)`
@@ -88,7 +95,7 @@ snapshot the machine, and record the corresponding input position together.
 `Input::ResetPin(false)` asserts active-low MCU reset; `true` releases it.
 External component lifetimes are not erased just because the MCU resets.
 `power_off(output)` and `power_on(output)` are whole-product lifecycle calls at
-the current boundary. Power removal stops activity and preserves partial external nonvolatile
+the current boundary. Power removal stops activity and preserves partial nonvolatile
 programming through the same cell model used during normal progress.
 
 `Input::NmiPin(bool)` controls the dedicated NMI input, separate from IRQ enables
@@ -111,3 +118,8 @@ can run on separate host threads. There are no global hardware variables or
 internal locks. A caller may allocate an output vector; the core itself does not
 allocate during ordinary execution. Snapshot/constructor/peek costs should not
 be confused with hot execution cost.
+
+Flash construction reserves at most 384 charge-page slots (about 3 MiB of
+address space); a slot is populated only when its page is exposed to a pulse.
+Normal firmware uses direct byte-array reads. Snapshot cloning preserves that
+reserve so even later custom firmware programming does not allocate in a run.

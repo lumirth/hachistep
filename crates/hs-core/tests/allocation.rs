@@ -2,6 +2,8 @@
 //! The production library forbids unsafe code and has no external dependencies.
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[path = "support/flash.rs"]
+mod flash_guest;
 struct Count;
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -40,4 +42,15 @@ fn ordinary_run_has_no_heap_allocation() {
     ENABLED.store(false, Ordering::SeqCst);
     result.unwrap();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+
+    // Construction and snapshots may allocate; executing custom programming
+    // firmware after either operation must retain the same execution contract.
+    let mut m = flash_guest::machine();
+    m = hs_core::Machine::from_snapshot(&m.snapshot());
+    ENABLED.store(true, Ordering::SeqCst);
+    let result = m.run_until(hs_core::Time::from_micros(12000), &[], &mut ());
+    ENABLED.store(false, Ordering::SeqCst);
+    result.unwrap();
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+    assert_eq!(m.firmware()[0x9000], 0);
 }

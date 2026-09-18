@@ -20,7 +20,7 @@ fn watch_counter_keeps_the_last_tick_of_oscillator_stabilization() {
     // The watch/256 edge at 8448 us must survive that gate transition.
     let mut code = vec![0x79, 7, 0xff, 0x70];
     for (a, v) in [
-        (0xfffa_u16, 5),
+        (0xfffa_u16, 7), // Keep flash available while enabling Timer B1.
         (0xf0d0, 0x3f),
         (0xf0d1, 0),
         (0xf0d0, 0x7f),
@@ -341,7 +341,7 @@ fn external_avcc_fixture_sets_the_adc_midpoint_transitions() {
     for (mv, expected) in [(0, 0), (1, 1), (2, 1), (3, 2), (2047, 1023)] {
         let mut m = Machine::with_conditions(
             Images {
-                firmware: base.firmware(),
+                firmware: &*base.firmware(),
                 eeprom: &base.eeprom(),
                 eeprom_status: 0,
             },
@@ -437,7 +437,7 @@ fn rtc_clock_output_is_a_physical_pin_even_with_the_counter_stopped() {
     let base = machine(&code);
     let mut whole = Machine::with_conditions(
         Images {
-            firmware: base.firmware(),
+            firmware: &*base.firmware(),
             eeprom: &base.eeprom(),
             eeprom_status: 0,
         },
@@ -681,7 +681,7 @@ fn all_nonvolatile_domains_can_be_reloaded_without_a_snapshot() {
     sensor[0x12 - 0x0b] = 0x5a; // BMA150 customer EEPROM working-image byte.
     let mut restored = Machine::with_persistent_state(
         Images {
-            firmware: m.firmware(),
+            firmware: &*m.firmware(),
             eeprom: &m.eeprom(),
             eeprom_status: 0x84,
         },
@@ -697,7 +697,7 @@ fn all_nonvolatile_domains_can_be_reloaded_without_a_snapshot() {
     assert_eq!(restored.eeprom_status(), 0x84);
     assert!(Machine::with_persistent_state(
         Images {
-            firmware: m.firmware(),
+            firmware: &*m.firmware(),
             eeprom: &m.eeprom(),
             eeprom_status: 0
         },
@@ -726,7 +726,7 @@ fn zero_supply_stops_the_board_and_restoration_uses_the_power_domain() {
     assert!(m.retired() > 0);
     let mut off = Machine::with_conditions(
         Images {
-            firmware: m.firmware(),
+            firmware: &*m.firmware(),
             eeprom: &m.eeprom(),
             eeprom_status: 0,
         },

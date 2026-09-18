@@ -3,6 +3,7 @@ pub mod aec;
 pub mod clocks;
 pub mod comparators;
 pub mod control;
+pub mod flash;
 pub mod gpio;
 pub mod iic;
 pub mod rtc;
@@ -23,6 +24,7 @@ use aec::Aec;
 use clocks::{Clocks, Frequencies, Tap};
 use comparators::Comparators;
 use control::{Control, Mode};
+use flash::Flash;
 use gpio::Gpio;
 use iic::Iic;
 use rtc::Rtc;
@@ -37,7 +39,7 @@ pub const RAM_SIZE: usize = 2048;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mcu {
-    pub(crate) flash: Box<[u8; FLASH_SIZE]>,
+    pub(crate) flash: Flash,
     pub(crate) ram: [u8; RAM_SIZE],
     pub clocks: Clocks,
     pub control: Control,
@@ -58,20 +60,8 @@ pub struct Mcu {
 }
 impl Mcu {
     pub fn new(firmware: &[u8], frequencies: Frequencies) -> Result<Self, Error> {
-        if firmware.len() != FLASH_SIZE {
-            return Err(Error::ImageSize {
-                name: "firmware",
-                expected: FLASH_SIZE,
-                actual: firmware.len(),
-            });
-        }
-        let flash = firmware
-            .to_vec()
-            .into_boxed_slice()
-            .try_into()
-            .map_err(|_| Error::Internal("flash allocation shape"))?;
         let mut m = Self {
-            flash,
+            flash: Flash::new(firmware)?,
             ram: [0; RAM_SIZE],
             clocks: Clocks::new(Time::ZERO, frequencies)?,
             control: Control::default(),
@@ -92,14 +82,11 @@ impl Mcu {
         m.apply_gates(Time::ZERO, &mut ())?;
         Ok(m)
     }
-    pub fn firmware(&self) -> &[u8; FLASH_SIZE] {
-        &self.flash
+    pub fn firmware(&self, now: Time) -> Box<[u8; FLASH_SIZE]> {
+        self.flash.image(now)
     }
     pub fn ram(&self) -> &[u8; RAM_SIZE] {
         &self.ram
-    }
-    pub fn reset_vector(&self) -> u16 {
-        u16::from_be_bytes([self.flash[0], self.flash[1]])
     }
     /// Synchronize clocked counters at an actual effect boundary. The return
     /// flag requests an MCU reset; attached device owners are not reconstructed.
@@ -145,6 +132,12 @@ impl Mcu {
         Ok(())
     }
     pub fn apply_gates(&mut self, now: Time, _out: &mut dyn Output) -> Result<(), Error> {
+        self.flash.environment(
+            self.control.mode,
+            self.control.gate1 & 2 != 0,
+            self.control.main_running() && self.control.osc & 2 == 0,
+            now,
+        )?;
         let watch_mode = self.control.mode != Mode::Standby
             && self.control.stabilizing_from != Some(Mode::Standby);
         let main = self.control.main_running();
@@ -251,6 +244,7 @@ impl Mcu {
     pub fn reset(&mut self, now: Time, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         // RAM, flash, watch-source phase, RTC, and external chips survive an MCU
         // reset. Undefined MCU RAM is initialized only by cold construction.
+        self.flash.reset(now);
         if !self.control.main_running() {
             self.clocks.restart_oscillator(now)?;
         }
@@ -422,13 +416,13 @@ impl Mcu {
     }
     pub fn read8(&mut self, a: u16, now: Time) -> Result<u8, Error> {
         if a < 0xc000 {
-            return Ok(self.flash[usize::from(a)]);
+            return self.flash.read8(a, now);
         }
         if (RAM_START..=0xff7f).contains(&a) {
             return Ok(self.ram[usize::from(a - RAM_START)]);
         }
         if a >= 0xc000 && Self::native_word(a & !1) {
-            let word = self.read16(a & !1)?;
+            let word = self.word_value(a & !1)?;
             return Ok((word >> if a & 1 == 0 { 8 } else { 0 }) as u8);
         }
         if a == 0xffde {
@@ -462,18 +456,18 @@ impl Mcu {
             0xffb0..=0xffb3 => Ok(self.watchdog.read(a)),
             0xffbe | 0xffbf => Ok(self.adc.peek(a)),
             0xf078..=0xf07f => self.iic.read(a, now, &self.clocks),
-            0xf020..=0xf023 | 0xf02b => Ok(0),
-            _ => self.unimplemented(a).map_or(Ok(0), Err),
+            0xf020..=0xf023 | 0xf02b => Ok(self.flash.register(a)),
+            _ => Ok(0),
         }
     }
-    pub fn read16(&self, a: u16) -> Result<u16, Error> {
+    pub fn read16(&mut self, a: u16, now: Time) -> Result<u16, Error> {
         let a = a & !1;
         if a < 0xc000 {
-            return Ok(u16::from_be_bytes([
-                self.flash[usize::from(a)],
-                self.flash[usize::from(a) + 1],
-            ]));
+            return self.flash.read16(a, now);
         }
+        self.word_value(a)
+    }
+    fn word_value(&self, a: u16) -> Result<u16, Error> {
         if (RAM_START..=0xff7e).contains(&a) {
             let i = usize::from(a - RAM_START);
             return Ok(u16::from_be_bytes([self.ram[i], self.ram[i + 1]]));
@@ -482,7 +476,7 @@ impl Mcu {
             0xf0f6 | 0xf0f8 | 0xf0fa | 0xf0fc | 0xf0fe => self.timer_w.read_word(a, &self.clocks),
             0xffbc => Ok(self.adc.result()),
             0xff8c | 0xff8e => self.aec.read_word(a),
-            _ => self.unimplemented(a).map_or(Ok(0), Err),
+            _ => Ok(0),
         }
     }
     pub fn write8(
@@ -528,11 +522,7 @@ impl Mcu {
             return Ok(());
         }
         if a < 0xc000 {
-            return Err(Error::Unsupported {
-                component: "flash",
-                detail: "flash program/erase sequencer is not implemented",
-                address: a,
-            });
+            return self.flash.write8(a, v, now);
         }
         // These latches require a native word write strobe. Byte stores do
         // not synthesize a read-modify-write of an unspecified other lane.
@@ -612,12 +602,23 @@ impl Mcu {
                 }
             }
             0xf078..=0xf07f => self.iic.write(a, v, now, &self.clocks),
-            0xf020..=0xf023 | 0xf02b if v == 0 => Ok(()),
-            _ => self.unimplemented(a).map_or(Ok(()), Err),
+            0xf020..=0xf023 | 0xf02b => {
+                self.flash.write_register(a, v, now)?;
+                if a == 0xf022 {
+                    self.apply_gates(now, out)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
         }
     }
     pub fn write16(&mut self, a: u16, v: u16, now: Time) -> Result<(), Error> {
         let a = a & !1;
+        if a < 0xc000 {
+            let bytes = v.to_be_bytes();
+            self.flash.write8(a, bytes[0], now)?;
+            return self.flash.write8(a + 1, bytes[1], now);
+        }
         if (RAM_START..=0xff7e).contains(&a) {
             let i = usize::from(a - RAM_START);
             self.ram[i..i + 2].copy_from_slice(&v.to_be_bytes());
@@ -633,29 +634,18 @@ impl Mcu {
                 self.collect_aec_requests();
                 Ok(())
             }
-            _ => self.unimplemented(a).map_or(Ok(()), Err),
+            _ => Ok(()),
         }
-    }
-    fn unimplemented(&self, a: u16) -> Option<Error> {
-        let component = match a {
-            0x0000..=0xbfff | 0xf020..=0xf023 | 0xf02b => "flash",
-            _ => return None, // Unselected bus: reads zero, writes have no latch.
-        };
-        Some(Error::Unsupported {
-            component,
-            detail: "this hardware access is not implemented; see docs/STATUS.md",
-            address: a,
-        })
     }
     pub fn peek8(&self, a: u16) -> Result<u8, Error> {
         if a < 0xc000 {
-            return Ok(self.flash[usize::from(a)]);
+            return Ok(self.flash.settled_byte(a));
         }
         if (RAM_START..=0xff7f).contains(&a) {
             return Ok(self.ram[usize::from(a - RAM_START)]);
         }
         if a >= 0xc000 && Self::native_word(a & !1) {
-            let word = self.read16(a & !1)?;
+            let word = self.word_value(a & !1)?;
             return Ok((word >> if a & 1 == 0 { 8 } else { 0 }) as u8);
         }
         if a == 0xffde {
@@ -691,7 +681,8 @@ impl Mcu {
             0xf078..=0xf07f => Ok(self.iic.peek(a)),
             0xffbc => Ok((self.adc.result() >> 8) as u8),
             0xffbd => Ok(self.adc.result() as u8),
-            _ => self.unimplemented(a).map_or(Ok(0), Err),
+            0xf020..=0xf023 | 0xf02b => Ok(self.flash.register(a)),
+            _ => Ok(0),
         }
     }
     pub fn delay(&self, now: Time, states: u64) -> Result<Time, Error> {
