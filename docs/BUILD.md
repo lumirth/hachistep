@@ -45,7 +45,9 @@ tests, Clippy, a release build, host-tool unit tests, independent fixture genera
 fixture execution. Pass `--hachiware PATH` if the suite is elsewhere. Rust builds and
 local tests do not require the suite checkout. `verify_retail.py` separately requires
 private images and runs full event/state partition comparison, snapshot replay, and the
-real boot/menu/walking/idle workloads. `--quick` omits walking and idle.
+retail workloads, including persistent writes, power interruption and infrared timeout.
+`--quick` selects home, menu and settings; `--list` describes the available cases without
+private inputs. Repeat `--case NAME` to select individual scenarios.
 
 The conformance report is `out/check-1/conformance/results.json`. Failed cases retain
 their observations and command logs beside it. To investigate one diagnostic, use

@@ -1,0 +1,13 @@
+# Home left selects Settings; enter Volume, advance once, then save.
+4500000,buttons,1,0,0
+4750000,buttons,0,0,0
+5000000,buttons,0,1,0
+5250000,buttons,0,0,0
+5500000,buttons,0,1,0
+5750000,buttons,0,0,0
+6000000,buttons,0,0,1
+6250000,buttons,0,0,0
+6500000,buttons,0,1,0
+6518000,power,0
+6618000,buttons,0,0,0
+6618000,power,1

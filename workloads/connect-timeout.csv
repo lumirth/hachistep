@@ -1,0 +1,5 @@
+# Connect without an optical peer and let firmware handle its timeout.
+4500000,buttons,0,1,0
+4750000,buttons,0,0,0
+5000000,buttons,0,1,0
+5250000,buttons,0,0,0

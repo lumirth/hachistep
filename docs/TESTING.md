@@ -66,7 +66,7 @@ demonstrate sensitivity to those bugs.
 ## Private firmware: regression versus smoke
 
 `verify_retail.py` checks the exact firmware/EEPROM identity and scenario, semantic
-report fields and all six exported images, including frame bytes, against
+report fields and all exported images, including frame bytes, against
 `workloads/retail.json`. The reviewed observations form a software regression baseline. A
 model-correcting change may legitimately require a separately reviewed expectation
 change; never auto-rebaseline from a candidate.
@@ -74,7 +74,14 @@ change; never auto-rebaseline from a candidate.
 Use `--smoke-only` with different private inputs to test execution only. Its output
 explicitly says that no behavioral regression comparison was made. It is a host
 verification choice, not an emulator accuracy mode; the execution engine is the same.
-`--quick` omits the longer walking/idle workloads.
+`--quick` selects home, menu and settings. Use `--list` to inspect the corpus or repeat
+`--case NAME` for a focused run. The manifest owns scenario selection and durations.
+
+Settings changes and interrupted saves exercise firmware persistence and mirror repair.
+The infrared timeout exercises an attempt without a peer. Their capture points also
+check restoration during ongoing operations: complete traces before and after loading
+must concatenate to the continuous history, and final native state and exports must
+match. Captured traces are stored as `events.txt` in each scenario's output directory.
 
 A step count produced from a synthetic trajectory records the emulator's pedometer
 response to that input.
