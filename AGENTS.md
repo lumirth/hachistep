@@ -14,13 +14,23 @@ sections of `docs/DESIGN.md`. It records the design contract and agreed clarific
 Continue to question assumptions through concrete consequences; revise the design when
 those consequences justify a different choice.
 
-## Documentation
+## Documentation and prose
 
-Keep durable contracts, usage instructions, primary-source references, and nonobvious
-hardware rationale in the repository. Update their existing home when a decision
-changes. Keep progress, handoffs, completed audit reports, and individual change
-validation summaries in the task, commits, or issues. Git preserves superseded
-documents; remove them instead of maintaining a parallel work log.
+Keep durable contracts, usage instructions, references to primary sources, and nonobvious
+rationale in the repository. Keep progress, handoffs, completed audit reports, and
+individual validation summaries in the task, commits, or issues.
+
+As you add or revise documentation, consider where readers will look for it. Prefer
+updating existing material; split distinct topics when that improves navigation,
+consolidate overlap, and remove superseded material after preserving useful reasoning.
+Resolve contradictions and update affected references as part of the change. Keep this
+upkeep proportional to the work.
+
+Apply the same prose standards to documentation and code comments. State the main point
+directly, use familiar words and active voice, and keep paragraphs focused. Use lists
+when they make the content easier to scan or compare. Comments should explain behavior,
+constraints, or nonobvious reasoning. Cut filler, stock conclusions, unprompted contrasts,
+and invented or needlessly hyphenated labels. Keep technical caveats specific and useful.
 
 ## Agent skills
 
