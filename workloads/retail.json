@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "software-regression",
   "hardware_measured": false,
-  "basis_revision": "9493d9104b393e682c618cc49549843db9a4132f",
+  "basis_revision": "47131362bda71f81055a1e579767af2fcf23cd7f",
   "basis": "Software regression observations from the identified retail images and physical input timelines. They protect reviewed CPU, memory, event, display and persistent-output behavior; they are not hardware measurements. Hardware interpretations and model parameters are documented in docs/SOURCES.md and its component references. Git history records changes to these expectations.",
   "change_policy": "Review independent hardware evidence before rebasing an expectation. The verifier never updates this file.",
   "inputs": {
@@ -524,6 +524,71 @@
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
         "frame.pgm": "c7b8a3df63217f586994a4c6abccf3f7bffa6b82c61ced19f721cf941bc1ea16",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
+      }
+    },
+    "day-rollover": {
+      "milliseconds": 86405000,
+      "timeline": null,
+      "quick": false,
+      "checkpoint_ms": 45991750,
+      "input_sha256": null,
+      "report": {
+        "firmware_sha256": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607",
+        "initial_eeprom_sha256": "9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008",
+        "initial_sensor_nv_sha256": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
+        "initial_eeprom_status": 0,
+        "input_sha256": null,
+        "initial_conditions": {
+          "avcc_override_millivolts": null,
+          "battery_sense_drop_millivolts": 600,
+          "main_hz": 3686400,
+          "on_chip_hz": 1310720,
+          "supply_millivolts": 3000,
+          "temperature_millicelsius": 20000,
+          "watch_hz": 32768
+        },
+        "requested_time_raw": "1593890921688873807380480",
+        "time_raw": "1593890921688873807380480",
+        "er": [
+          63413,
+          64,
+          0,
+          0,
+          0,
+          0,
+          63422,
+          65400
+        ],
+        "ccr": 8,
+        "pc": 9628,
+        "instruction_pc": 9626,
+        "phase": "sleep",
+        "retired": 58260083,
+        "interrupt_entries": 177180,
+        "sleeping": true,
+        "display_on": false,
+        "display_start": 64,
+        "events": 676225,
+        "lcd_events": 670591,
+        "nv_commits": 236,
+        "buzzer_events": 0,
+        "ir_events": 0,
+        "serial_tx": 2042035,
+        "serial_rx": 1014770,
+        "bus_reads": 105801221,
+        "bus_writes": 8764457,
+        "resets": 0,
+        "fault": null
+      },
+      "exports": {
+        "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607",
+        "ram.bin": "804eb58730203b90f636e6e245175a5de57e168a4348e94928f7938f02af892a",
+        "eeprom.bin": "6d5507462daf93c87500cae1644ef7002473661b67db6d8345e5f631b8f0a88a",
+        "eeprom.status": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+        "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
+        "lcd-ram.bin": "8ce657735b1bb93554a88b08a838290701432af963342986f23f0440e26a123c",
+        "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
+        "frame.pgm": "07bb57bdb53bef0dc17dc1a0a68b0b80331fead43e3f5c1f9451c1bb127a95d8"
       }
     }
   }

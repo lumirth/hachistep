@@ -83,6 +83,14 @@ check restoration during ongoing operations: complete traces before and after lo
 must concatenate to the continuous history, and final native state and exports must
 match. Captured traces are stored as `events.txt` in each scenario's output directory.
 
+The day-rollover workload runs for an emulated day, including idle sleep, hourly saves,
+diary rotation and midnight maintenance. Its capture falls inside the RTC busy interval
+before midnight, so restoration must preserve the pending calendar update and all later
+firmware writes. The reviewed results follow `pw`'s RTC and diary routines: elapsed
+hours and days advance, save mirrors retain valid checksums, and midnight clears the ten
+peer-history device IDs while preserving the received staging record and other fields.
+Run it alone with `--case day-rollover`.
+
 A step count produced from a synthetic trajectory records the emulator's pedometer
 response to that input.
 
