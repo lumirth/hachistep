@@ -27,9 +27,14 @@ impl Domain {
         }
     }
     pub fn ticks(&self, now: Time) -> u64 {
+        // stop() already settles the final source edge. A stopped derived
+        // domain likewise starts with its count settled at held_at.
+        if !self.running {
+            return self.clock.ordinal();
+        }
         self.clock.ordinal().saturating_add(
             self.clock
-                .edges_before(Time::from_raw(self.time(now).raw().saturating_add(1))),
+                .edges_before(Time::from_raw(now.raw().saturating_add(1))),
         )
     }
     pub fn stop(&mut self, now: Time) -> Result<(), Error> {
@@ -65,6 +70,32 @@ impl Domain {
             self.held_at <= now && (self.running || self.held_at >= self.clock.at),
             "invalid held clock phase",
         )?;
-        self.clock.validate(self.time(now))
+        self.clock.validate(self.time(now))?;
+        crate::state::require(
+            self.running
+                || self
+                    .clock
+                    .edges_before(Time::from_raw(self.held_at.raw().saturating_add(1)))
+                    == 0,
+            "stopped clock has unsettled edges",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stopping_before_on_and_after_an_edge_keeps_the_count_through_restart() {
+        for (us, count) in [(999, 0), (1000, 1), (1001, 1), (9999, 9)] {
+            let mut d = Domain::new(Time::ZERO, 1000, 1).unwrap();
+            d.stop(Time::from_micros(us)).unwrap();
+            assert_eq!(d.ticks(Time::MAX), count);
+            d.validate(Time::MAX).unwrap();
+            d.start(Time::from_micros(10_000), 1000).unwrap();
+            assert_eq!(d.ticks(Time::from_micros(10_999)), count);
+            assert_eq!(d.ticks(Time::from_micros(11_001)), count + 1);
+        }
     }
 }

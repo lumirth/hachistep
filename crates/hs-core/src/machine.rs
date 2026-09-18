@@ -493,11 +493,15 @@ impl Machine {
                 self.sensor.falling();
             }
         }
-        let data = self.serial_data()?;
-        self.serial = if self.power.mcu() {
-            self.mcu.gpio.resolve(pins, timer, timer_mask, data)
+        let settled_data = self.serial_data()?;
+        // Only the external serial drivers can have changed since the first
+        // resolution. Preserve it when the electrical inputs are identical.
+        self.serial = if settled_data == data {
+            levels
+        } else if self.power.mcu() {
+            self.mcu.gpio.resolve(pins, timer, timer_mask, settled_data)
         } else {
-            self.mcu.gpio.resolve_unpowered(data)
+            self.mcu.gpio.resolve_unpowered(settled_data)
         };
         if !self.power.mcu() {
             if self.emitting {

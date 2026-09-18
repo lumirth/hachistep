@@ -48,6 +48,13 @@ in `out/i2c-retail`. Every new I²C guest fails against the preceding binary
 captures and the allocation gate cover the new transport; focused tests check
 read freshness, reset ACK during quiet time, and a retained supply interruption.
 See [the protocol and board evidence](research/bma150-i2c.md).
+The subsequent removal of repeated stopped-clock arithmetic and identical GPIO
+resolution passes `out/settled-work-check`, all four reviewed workloads and
+native replay in `out/settled-work-retail`, and Rust 1.95.0 clock tests.
+Paired home/idle measurements use 5.4%/6.3% less simulation time; the short
+custom flash case has no established improvement. All paired native states,
+exports and complete product histories match. Details and raw receipt paths
+are in [the performance note](research/repeated-clock-and-pin-work.md).
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their
