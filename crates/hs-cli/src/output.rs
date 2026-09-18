@@ -3,6 +3,7 @@ use hs_core::{Event, Machine, Output, Time};
 use std::{
     fs,
     io::{self, Write},
+    ops::ControlFlow,
     path::Path,
 };
 #[derive(Default)]
@@ -20,7 +21,7 @@ pub struct Events {
     pub bus_trace: bool,
 }
 impl Output for Events {
-    fn event(&mut self, event: Event) {
+    fn event(&mut self, event: Event) -> ControlFlow<()> {
         let is_bus = match event {
             #[cfg(feature = "trace")]
             Event::Bus { .. } => true,
@@ -37,7 +38,7 @@ impl Output for Events {
             _ => {}
         }
         if is_bus && !self.bus_trace {
-            return;
+            return ControlFlow::Continue(());
         }
         if self.trace.is_some() && self.trace_count >= self.trace_limit {
             self.trace_dropped = self.trace_dropped.saturating_add(1);
@@ -49,6 +50,11 @@ impl Output for Events {
                 }
                 self.trace_count += 1;
             }
+        }
+        if self.error.is_some() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
         }
     }
 }

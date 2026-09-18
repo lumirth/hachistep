@@ -336,7 +336,7 @@ impl M95512 {
                             now,
                         );
                         self.array[usize::from(address)] = value;
-                        output.event(Event::NvByte {
+                        let _ = output.event(Event::NvByte {
                             at: now,
                             domain: NvDomain::EepromArray,
                             address,
@@ -352,7 +352,7 @@ impl M95512 {
             Programming::Status { .. } => {
                 let value = self.persistent_status(now);
                 self.status = value;
-                output.event(Event::NvByte {
+                let _ = output.event(Event::NvByte {
                     at: now,
                     domain: NvDomain::EepromStatus,
                     address: 0,
@@ -362,7 +362,7 @@ impl M95512 {
             }
             Programming::None => return,
         };
-        output.event(if complete {
+        let _ = output.event(if complete {
             Event::NvCommit {
                 at: now,
                 domain,

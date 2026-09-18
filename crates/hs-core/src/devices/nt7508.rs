@@ -213,7 +213,7 @@ impl Nt7508 {
         } else {
             self.ram[usize::from(self.page & 15) * 256 + col] = byte;
         }
-        output.event(Event::LcdWrite {
+        let _ = output.event(Event::LcdWrite {
             at: now,
             page: self.page,
             column_byte: self.column_byte,
@@ -240,7 +240,7 @@ impl Nt7508 {
                 0xf4 => self.otp_control = byte & 3,
                 _ => return Err(Error::Internal("unrecognized pending LCD parameter")),
             }
-            output.event(Event::LcdControl {
+            let _ = output.event(Event::LcdControl {
                 at: now,
                 command,
                 parameter: Some(byte),
@@ -306,7 +306,7 @@ impl Nt7508 {
             // factory-test bytes have no modeled effect on this board.
             _ => {}
         }
-        output.event(Event::LcdControl {
+        let _ = output.event(Event::LcdControl {
             at: now,
             command: byte,
             parameter: None,

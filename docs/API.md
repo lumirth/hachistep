@@ -53,10 +53,19 @@ For frequent calls, pass the portion of the ordered timeline before that call's 
 as above. Input validation then visits each consumed event once, avoiding repeated scans
 of future input.
 
-A custom `Output` implements `fn event(&mut self, event: Event)`. It must not re-enter
-the machine. The callback is synchronous and cannot return an I/O error; a host sink may
-latch its error and stop issuing further run calls. The CLI implements this pattern. A
-no-op sink is `&mut ()`.
+A custom `Output` implements `fn event(&mut self, event: Event) -> ControlFlow<()>`,
+using `std::ops::ControlFlow`. Return `Continue(())` to keep running or `Break(())` to
+return control after all effects at the current timestamp finish. Further events at
+that timestamp are still delivered, and the entire input batch is consumed. The callback
+is synchronous and must not re-enter the machine. A host sink can retain an I/O error
+and return `Break(())`; the CLI uses this pattern. A no-op sink is `&mut ()`.
+
+After a stop request, `RunResult.now` is the exclusive horizon one 64.64 time quantum
+(`2^-64` seconds) after the completed instant. It can precede the requested `end`. New
+input may start at the returned horizon; the completed instant is already past. Resume
+through another `run_until` call with the unconsumed inputs. The stop request belongs to
+the current call and is absent from save states. Immediate power operations always
+finish their complete operation and return.
 
 Persistent updates carry their data in `NvByte`; `NvCommit` or `NvInterrupted` then
 closes an address range containing the affected bytes. A wrapped EEPROM write spans
@@ -80,8 +89,9 @@ buffering belong to the application.
 
 `Event::Infrared` reports timestamped emission changes. `Input::InfraredLevel` supplies
 incident optical levels through the timestamped input timeline. Deliver inputs before
-advancing past their timestamps. `Output::event` is a notification; it does not stop
-`run_until` before the requested horizon. The connection design and required timing
+advancing past their timestamps. Returning `Break(())` from the output callback on an
+emission change gives the caller control before any later effects. The caller still
+supplies a horizon within its known input timeline. The connection design and timing
 responsibilities are in [DESIGN
 §13.5](DESIGN.md#135-execution-pacing-and-external-connections).
 

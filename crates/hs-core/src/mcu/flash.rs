@@ -310,7 +310,7 @@ impl Flash {
                         }
                         if self.bytes[address + byte] != sensed {
                             self.bytes[address + byte] = sensed;
-                            out.event(Event::NvByte {
+                            let _ = out.event(Event::NvByte {
                                 at: now,
                                 domain: NvDomain::InternalFlash,
                                 address: (address + byte) as u16,
@@ -356,7 +356,7 @@ impl Flash {
         let domain = NvDomain::InternalFlash;
         let address = start as u16;
         let length = (end - start) as u16;
-        out.event(if complete {
+        let _ = out.event(if complete {
             Event::NvCommit {
                 at: now,
                 domain,

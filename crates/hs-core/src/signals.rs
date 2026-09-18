@@ -1,4 +1,5 @@
 use crate::time::Time;
+use core::ops::ControlFlow;
 
 /// Electrical pin drive. Board pulls and drivers resolve high impedance.
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,16 +87,24 @@ pub enum Event {
 /// operation's physical progress is settled; NvCommit/NvInterrupted close its
 /// enclosing address range after all affected bytes have been delivered. A
 /// wrapped EEPROM write encloses the whole page. A flash pulse can
-/// report progress before it ends. No polling or re-entry is required or allowed.
+/// report progress before it ends. The callback must not re-enter the machine.
+///
+/// Return `Break(())` to end `Machine::run_until` after all effects at the
+/// current timestamp finish. Further events at that timestamp are still delivered.
+/// The returned exclusive horizon is one time quantum after those effects.
+/// Immediate power operations finish completely regardless of this return value.
 pub trait Output {
-    fn event(&mut self, event: Event);
+    fn event(&mut self, event: Event) -> ControlFlow<()>;
 }
 impl Output for () {
-    fn event(&mut self, _: Event) {}
+    fn event(&mut self, _: Event) -> ControlFlow<()> {
+        ControlFlow::Continue(())
+    }
 }
 impl Output for Vec<Event> {
-    fn event(&mut self, event: Event) {
+    fn event(&mut self, event: Event) -> ControlFlow<()> {
         self.push(event);
+        ControlFlow::Continue(())
     }
 }
 

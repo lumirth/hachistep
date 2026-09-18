@@ -18,6 +18,7 @@ use crate::{
     time::{Time, TimeError},
 };
 use boot::Boot;
+use core::ops::ControlFlow;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug)]
@@ -49,9 +50,24 @@ impl Default for Conditions {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunResult {
+    /// Exclusive horizon reached, including an earlier return requested by output.
     pub now: Time,
     pub inputs_consumed: usize,
     pub retired: u64,
+}
+// Output can shorten the horizon; owners finish the current timestamp first.
+struct Delivery<'a> {
+    output: &'a mut dyn Output,
+    end: Time,
+}
+impl Output for Delivery<'_> {
+    fn event(&mut self, event: Event) -> ControlFlow<()> {
+        let flow = self.output.event(event);
+        if flow.is_break() {
+            self.end = self.end.min(Time::from_raw(event.time().raw() + 1));
+        }
+        flow
+    }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Statistics {
@@ -368,7 +384,7 @@ impl Machine {
                 self.pending = None;
             }
             if (old != 0) != (rail != 0) {
-                out.event(Event::Power {
+                let _ = out.event(Event::Power {
                     at: self.now,
                     on: rail != 0,
                 });
@@ -499,14 +515,14 @@ impl Machine {
         if !self.power.mcu() {
             if self.emitting {
                 self.emitting = false;
-                out.event(Event::Infrared {
+                let _ = out.event(Event::Infrared {
                     at: self.now,
                     emitting: false,
                 });
             }
             if self.piezo != Piezo::Neutral {
                 self.piezo = Piezo::Neutral;
-                out.event(Event::Buzzer {
+                let _ = out.event(Event::Buzzer {
                     at: self.now,
                     drive: Piezo::Neutral,
                 });
@@ -539,7 +555,7 @@ impl Machine {
         let emitting = self.mcu.gpio.emitting();
         if emitting != self.emitting {
             self.emitting = emitting;
-            out.event(Event::Infrared {
+            let _ = out.event(Event::Infrared {
                 at: self.now,
                 emitting,
             });
@@ -553,7 +569,7 @@ impl Machine {
         };
         if drive != self.piezo {
             self.piezo = drive;
-            out.event(Event::Buzzer {
+            let _ = out.event(Event::Buzzer {
                 at: self.now,
                 drive,
             });
@@ -604,7 +620,7 @@ impl Machine {
         self.pending = None;
         self.resume_after = None;
         self.stats.resets = self.stats.resets.wrapping_add(1);
-        out.event(Event::Reset {
+        let _ = out.event(Event::Reset {
             at: self.now,
             watchdog,
         });
@@ -1106,7 +1122,7 @@ impl Machine {
             }
         };
         #[cfg(feature = "trace")]
-        out.event(Event::Bus {
+        let _ = out.event(Event::Bus {
             at: self.now,
             pc: self.cpu.instruction_pc(),
             address: a,
@@ -1140,6 +1156,8 @@ impl Machine {
         }
         Ok(())
     }
+    /// Advance through effects before `end`, returning earlier if output requests it.
+    /// Inputs at the returned exclusive horizon remain pending.
     pub fn run_until(
         &mut self,
         end: Time,
@@ -1157,27 +1175,28 @@ impl Machine {
         inputs: &[TimedInput],
         out: &mut dyn Output,
     ) -> Result<RunResult, Error> {
+        let mut out = Delivery { output: out, end };
         let mut consumed = 0;
-        while self.now < end {
+        while self.now < out.end {
             // Process causes pending at this exact time before admitting another
             // CPU action. Peripheral owners resolve their access conflicts within
             // this device, input, then CPU boundary order.
             if self.next_devices == Some(self.now) {
-                self.devices_at_boundary(out)?;
+                self.devices_at_boundary(&mut out)?;
             }
             if consumed < inputs.len() && inputs[consumed].at == self.now {
                 let start = consumed;
                 while consumed < inputs.len() && inputs[consumed].at == self.now {
                     consumed += 1;
                 }
-                self.apply_batch(&inputs[start..consumed], out)?;
+                self.apply_batch(&inputs[start..consumed], &mut out)?;
             }
             if self.pending_deadline()? == Some(self.now) {
-                self.complete_cpu(out)?;
+                self.complete_cpu(&mut out)?;
             }
-            self.queue_cpu(out)?;
+            self.queue_cpu(&mut out)?;
             let next = [
-                Some(end),
+                Some(out.end),
                 self.pending_deadline()?,
                 self.next_devices,
                 inputs.get(consumed).map(|i| i.at),

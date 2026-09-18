@@ -65,6 +65,30 @@ fn ordinary_run_has_no_heap_allocation() {
     result.unwrap();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
 
+    struct StopOnPower;
+    impl hs_core::Output for StopOnPower {
+        fn event(&mut self, event: hs_core::Event) -> std::ops::ControlFlow<()> {
+            if matches!(event, hs_core::Event::Power { .. }) {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        }
+    }
+    let change = hs_core::TimedInput {
+        at: hs_core::Time::from_micros(51_000),
+        input: hs_core::Input::Power(false),
+    };
+    ENABLED.store(true, Ordering::SeqCst);
+    let result = m.run_until(
+        hs_core::Time::from_micros(60_000),
+        &[change],
+        &mut StopOnPower,
+    );
+    ENABLED.store(false, Ordering::SeqCst);
+    assert_eq!(result.unwrap().now.raw(), change.at.raw() + 1);
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+
     // Construction and snapshots may allocate; executing custom programming
     // firmware after either operation must retain the same execution contract.
     let mut m = flash_guest::machine();

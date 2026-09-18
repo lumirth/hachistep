@@ -142,13 +142,13 @@ impl Bma150 {
                 now,
             );
             self.nonvolatile[index] = value;
-            output.event(Event::NvByte {
+            let _ = output.event(Event::NvByte {
                 at: now,
                 domain: NvDomain::Sensor,
                 address: u16::from(address),
                 value,
             });
-            output.event(Event::NvInterrupted {
+            let _ = output.event(Event::NvInterrupted {
                 at: now,
                 domain: NvDomain::Sensor,
                 address: u16::from(address),
@@ -314,13 +314,13 @@ impl Bma150 {
                 self.nonvolatile[usize::from(address - 0x2b)] = value;
                 self.nv_operation = None;
                 self.copy_image();
-                output.event(Event::NvByte {
+                let _ = output.event(Event::NvByte {
                     at: now,
                     domain: NvDomain::Sensor,
                     address: u16::from(address),
                     value,
                 });
-                output.event(Event::NvCommit {
+                let _ = output.event(Event::NvCommit {
                     at: now,
                     domain: NvDomain::Sensor,
                     address: u16::from(address),

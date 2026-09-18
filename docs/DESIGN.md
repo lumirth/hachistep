@@ -578,6 +578,11 @@ Use a synchronous borrowed sink. It may copy, consume or discard an output, but 
 re-enter the machine. Ordinary execution allocates nothing. Host consumers own any
 retained event history.
 
+The sink may request a return from the current run call. Finish all effects at the
+current timestamp, including the input batch and further output, before returning an
+exclusive horizon one representable time quantum later. Resume through the same
+executor. This request is host control and does not enter captured hardware state.
+
 Persistence events include the actual changed bytes or status and operation boundaries,
 so the caller can process several changes before its next inspection.
 
