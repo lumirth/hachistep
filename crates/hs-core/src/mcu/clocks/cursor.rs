@@ -1,44 +1,17 @@
 use super::{ClockWait, Clocks, Tap, WaitState};
 use crate::{time::Clock, Error, Time};
 
-/// CPU work permitted before the next device, input, or caller boundary.
-/// The local cursor is a disposable projection of the hardware clock phase.
-pub(crate) struct CpuBudget {
+/// Local cursor for consecutive CPU accesses. Reuse the rational clock phase
+/// while the CPU runs, and reproject it after a clock change or interruption.
+pub(crate) struct CpuCursor {
     clock: Clock,
     revision: u64,
-    end: Time,
-    last: Option<u64>,
 }
-impl CpuBudget {
+impl CpuCursor {
     pub fn new(clocks: &Clocks) -> Self {
         Self {
             clock: clocks.cpu.clock,
             revision: clocks.revision,
-            end: Time::ZERO,
-            last: None,
-        }
-    }
-    pub fn bound(&mut self, end: Time, clocks: &Clocks) {
-        self.end = end;
-        self.last = if clocks.cpu.running {
-            let clock = &clocks.cpu.clock;
-            Some(clock.ordinal().saturating_add(clock.edges_before(end)))
-        } else {
-            None
-        };
-    }
-    pub fn before_boundary(
-        &self,
-        wait: &ClockWait,
-        clocks: &Clocks,
-    ) -> Result<Option<Time>, Error> {
-        debug_assert_eq!(wait.tap, Tap::cpu());
-        match wait.state {
-            WaitState::Running { target, .. } if self.last.is_some_and(|last| target <= last) => {
-                wait.deadline(clocks)
-            }
-            WaitState::Ready(at) if at < self.end => Ok(Some(at)),
-            _ => Ok(None),
         }
     }
     pub fn after(&mut self, now: Time, edges: u64, clocks: &Clocks) -> Result<ClockWait, Error> {
@@ -75,7 +48,7 @@ mod tests {
     #[test]
     fn cursor_preserves_obligations_across_interruptions_and_clock_changes() {
         let mut clocks = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();
-        let mut cursor = CpuBudget::new(&clocks);
+        let mut cursor = CpuCursor::new(&clocks);
         let mut now = Time::ZERO;
         for i in 0..1000 {
             match i % 13 {
@@ -85,7 +58,7 @@ mod tests {
                 3 => clocks.select_cpu(now, false).unwrap(),
                 4 => clocks.select_system(now, Source::OnChip, 1).unwrap(),
                 5 => clocks.select_system(now, Source::Watch, 2).unwrap(),
-                6 => cursor = CpuBudget::new(&clocks),
+                6 => cursor = CpuCursor::new(&clocks),
                 _ => {}
             }
             if i % 17 == 0 {
@@ -99,34 +72,6 @@ mod tests {
             now = actual.deadline(&clocks).unwrap().unwrap();
             if i % 7 == 0 {
                 now = now.checked_add(crate::Duration::from_micros(2000)).unwrap();
-            }
-        }
-    }
-
-    #[test]
-    fn cycle_budget_excludes_the_boundary_and_accepts_distant_horizons() {
-        for hz in [7, 32_768, 3_686_400, u64::MAX] {
-            let mut clocks = Clocks::new(
-                Time::ZERO,
-                Frequencies {
-                    main_hz: hz,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let now = clocks.after(Time::ZERO, 19, Tap::cpu()).unwrap();
-            clocks.select_system(now, Source::Oscillator, 1).unwrap();
-            let mut cursor = CpuBudget::new(&clocks);
-            let wait = cursor.after(now, 7, &clocks).unwrap();
-            let at = wait.deadline(&clocks).unwrap().unwrap();
-            for (end, expected) in [
-                (Time::from_raw(at.raw() - 1), None),
-                (at, None),
-                (Time::from_raw(at.raw() + 1), Some(at)),
-                (Time::MAX, Some(at)),
-            ] {
-                cursor.bound(end, &clocks);
-                assert_eq!(cursor.before_boundary(&wait, &clocks).unwrap(), expected);
             }
         }
     }

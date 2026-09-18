@@ -1,13 +1,13 @@
 //! Shared clock phases. Each peripheral records how many divider edges it has
 //! consumed. Clocks keep their shared phase across consumer stops and restarts.
-mod budget;
+mod cursor;
 mod domain;
 mod prescaler;
 use crate::{
     error::Error,
     time::{Time, TimeError},
 };
-pub(crate) use budget::CpuBudget;
+pub(crate) use cursor::CpuCursor;
 use domain::Domain;
 use prescaler::Prescaler;
 

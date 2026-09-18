@@ -1,7 +1,7 @@
-//! Execute CPU actions within the next external boundary. Accesses and power
-//! transitions that change the schedule rebuild the local cycle budget.
+//! Execute CPU actions before the next device, input, or caller boundary.
+//! Reuse exact action deadlines while the clock configuration remains stable.
 use super::*;
-use crate::mcu::clocks::CpuBudget;
+use crate::mcu::clocks::CpuCursor;
 use core::ops::ControlFlow;
 
 // Output can shorten the horizon; owners finish the current timestamp first.
@@ -20,8 +20,8 @@ impl Output for Delivery<'_> {
 }
 
 impl Machine {
-    // Report schedule changes so the caller can rebuild its cycle budget.
-    fn queue_cpu(&mut self, clock: &mut CpuBudget, out: &mut dyn Output) -> Result<bool, Error> {
+    // Report schedule changes so the caller can recompute the next boundary.
+    fn queue_cpu(&mut self, clock: &mut CpuCursor, out: &mut dyn Output) -> Result<bool, Error> {
         if self.pending.is_some()
             || self.reset_asserted
             || self.reset_release.is_some()
@@ -137,7 +137,7 @@ impl Machine {
             }
         }
     }
-    fn queue_action(&mut self, action: Action, clock: &mut CpuBudget) -> Result<(), Error> {
+    fn queue_action(&mut self, action: Action, clock: &mut CpuCursor) -> Result<(), Error> {
         let (states, split) = match action {
             Action::Idle(states) => (u64::from(states), false),
             Action::Read { address, width, .. } | Action::Write { address, width, .. } => {
@@ -170,7 +170,7 @@ impl Machine {
             self.cpu.complete(value)
         }
     }
-    fn complete_cpu(&mut self, clock: &mut CpuBudget, out: &mut dyn Output) -> Result<bool, Error> {
+    fn complete_cpu(&mut self, clock: &mut CpuCursor, out: &mut dyn Output) -> Result<bool, Error> {
         self.last_effect = self.now;
         let mut pending = self
             .pending
@@ -291,7 +291,7 @@ impl Machine {
         out: &mut dyn Output,
     ) -> Result<RunResult, Error> {
         let mut out = Delivery { output: out, end };
-        let mut clock = CpuBudget::new(&self.mcu.clocks);
+        let mut clock = CpuCursor::new(&self.mcu.clocks);
         let mut consumed = 0;
         while self.now < out.end {
             // Settle simultaneous device and input causes before the CPU access.
@@ -307,7 +307,6 @@ impl Machine {
             }
             let input = inputs.get(consumed).map(|i| i.at);
             let mut boundary = self.execution_boundary(out.end, input)?;
-            clock.bound(boundary, &self.mcu.clocks);
             let mut cpu_due = self.pending_deadline()? == Some(self.now);
             loop {
                 let mut changed = false;
@@ -317,11 +316,8 @@ impl Machine {
                 changed |= self.queue_cpu(&mut clock, &mut out)?;
                 if changed || out.end < boundary {
                     boundary = self.execution_boundary(out.end, input)?;
-                    clock.bound(boundary, &self.mcu.clocks);
                 }
-                let next = self.pending.as_ref().map_or(Ok(None), |pending| {
-                    clock.before_boundary(&pending.wait, &self.mcu.clocks)
-                })?;
+                let next = self.pending_deadline()?.filter(|at| *at < boundary);
                 let at = next.unwrap_or(boundary);
                 if at <= self.now {
                     return Err(Error::Internal("non-advancing event loop"));
