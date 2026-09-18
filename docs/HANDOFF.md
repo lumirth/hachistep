@@ -37,6 +37,10 @@ in `out/analog-check2`. All retail workloads and native replay pass in
 `out/analog-retail-reviewed`, with three reviewed walking expectations changed.
 The model, numerical checks and regression review are in
 [analog response](research/bma150-analog-implementation.md).
+The subsequent decimal-adjust source audit found no executor defect. Three
+independent guests expand the suite to 128 passing cases
+(`out/decimal-conformance.json`), covering all printed rows and the manual's
+twenty omitted valid addition states; see [decimal adjustment](research/h8-decimal-adjust.md).
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their
