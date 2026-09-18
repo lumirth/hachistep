@@ -4,7 +4,7 @@ mod output;
 mod timeline;
 use hs_core::{Conditions, Duration, Images, Machine, Time};
 use std::{env, fs, io, path::PathBuf, process::ExitCode, time::Instant};
-const HELP:&str="HachiStep runnable development core\n\n  hachistep inspect --firmware FILE --eeprom FILE\n  hachistep run --firmware FILE --eeprom FILE [OPTIONS]\n\nOptions:\n  --milliseconds N   Exclusive emulated horizon (default 1000)\n  --input FILE       Physical input CSV; see docs/INPUTS.md\n  --out DIRECTORY    NEW directory: frame, persistent images, report\n  --frame FILE       NEW binary PGM screenshot\n  --trace FILE       NEW product event trace\n  --bus-trace        Include bus events (build with --features trace)\n  --trace-limit N    Bound trace records (default 100000)\n  --sensor-nv FILE   Optional 19-byte sensor nonvolatile image\n  --status BYTE      EEPROM status, decimal or 0x hex (default 0)\n  --supply-mv N      Physical supply witness (default 3000)\n  --chunk-us N       Host-call partition (default 1000)\n  --peek HEX         Side-effect-free final register inspection; repeatable\n\nThis is a runnable starter, not a completed silicon-accurate emulator.\nSee docs/STATUS.md. All outputs are separate from input files.\n";
+const HELP:&str="HachiStep runnable development core\n\n  hachistep inspect --firmware FILE --eeprom FILE\n  hachistep run --firmware FILE --eeprom FILE [OPTIONS]\n\nOptions:\n  --milliseconds N   Exclusive emulated horizon (default 1000)\n  --input FILE       Physical input CSV; see docs/INPUTS.md\n  --out DIRECTORY    NEW directory: frame, persistent images, report\n  --frame FILE       NEW binary PGM screenshot\n  --trace FILE       NEW product event trace\n  --bus-trace        Include bus events (build with --features trace)\n  --trace-limit N    Bound trace records (default 100000)\n  --sensor-nv FILE   Optional 19-byte sensor nonvolatile image\n  --status BYTE      EEPROM status, decimal or 0x hex (default 0)\n  --supply-mv N      Board supply (default 3000)\n  --avcc-mv N        External AVCC fixture (default: board supply)\n  --battery-drop-mv N  Effective battery-sense drop (default 600)\n  --chunk-us N       Host-call partition (default 1000)\n  --peek HEX         Side-effect-free final register inspection; repeatable\n\nThis is a runnable starter, not a completed silicon-accurate emulator.\nSee docs/STATUS.md. All outputs are separate from input files.\n";
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".into());
@@ -49,6 +49,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "--supply-mv" => conditions.supply_millivolts = value.parse()?,
+            "--avcc-mv" => conditions.avcc_override_millivolts = Some(value.parse()?),
+            "--battery-drop-mv" => conditions.battery_sense_drop_millivolts = value.parse()?,
             "--chunk-us" => chunk = value.parse()?,
             "--peek" => peeks.push(u16::from_str_radix(value.trim_start_matches("0x"), 16)?),
             _ => return Err(format!("unknown argument {key}").into()),

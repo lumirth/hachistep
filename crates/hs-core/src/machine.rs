@@ -27,8 +27,10 @@ pub struct Conditions {
     pub clocks: Frequencies,
     pub supply_millivolts: u16,
     pub temperature_millicelsius: i32,
-    /// Uncalibrated board transfer witness, not a measured Pokewalker constant.
-    pub adc_reference_millivolts: u16,
+    /// External analog-supply fixture. None connects AVCC to the board supply.
+    pub avcc_override_millivolts: Option<u16>,
+    /// Nominal effective drop in the P84-switched battery-sensing path.
+    pub battery_sense_drop_millivolts: u16,
 }
 impl Default for Conditions {
     fn default() -> Self {
@@ -36,7 +38,8 @@ impl Default for Conditions {
             clocks: Frequencies::default(),
             supply_millivolts: 3000,
             temperature_millicelsius: 20_000,
-            adc_reference_millivolts: 3300,
+            avcc_override_millivolts: None,
+            battery_sense_drop_millivolts: 600,
         }
     }
 }
@@ -118,8 +121,8 @@ impl Machine {
         conditions: Conditions,
         sensor_nonvolatile: Option<&[u8]>,
     ) -> Result<Self, Error> {
-        if conditions.adc_reference_millivolts == 0 {
-            return Err(Error::BadInput("ADC reference must be positive"));
+        if conditions.avcc_override_millivolts == Some(0) {
+            return Err(Error::BadInput("AVCC fixture must be positive"));
         }
         let mcu = Mcu::new(images.firmware, conditions.clocks)?;
         let cpu = Cpu::reset();
@@ -493,8 +496,12 @@ impl Machine {
         let mut pb = [0u16; 6];
         for (i, value) in pb.iter_mut().enumerate() {
             let board = if i == 3 {
-                if self.mcu.gpio.battery_switch() {
-                    supply
+                if self
+                    .mcu
+                    .gpio
+                    .battery_switch(self.mcu.timer_w.drives() & 8 != 0)
+                {
+                    supply.saturating_sub(self.conditions.battery_sense_drop_millivolts)
                 } else {
                     0
                 }
@@ -522,7 +529,14 @@ impl Machine {
             return None;
         }
         let (pb, _) = self.analog_values();
-        let reference = u32::from(self.conditions.adc_reference_millivolts);
+        let reference = u32::from(
+            self.conditions
+                .avcc_override_millivolts
+                .unwrap_or(self.conditions.supply_millivolts),
+        );
+        if reference == 0 {
+            return None;
+        }
         // Figure 17.6 places ideal transitions at half-LSB boundaries.
         Some(
             ((u32::from(pb[usize::from(channel - 4)]) * 2048 + reference) / (2 * reference))

@@ -19,7 +19,11 @@ execution rather than accepted because it resembles retail firmware.
 
 `Machine::new(images)` selects default `Conditions`.
 `with_conditions(images, conditions)` selects main/watch/on-chip frequencies,
-supply voltage and the explicit uncalibrated ADC reference witness.
+supply voltage, temperature and the nominal battery-sense voltage drop. AVCC
+follows supply by default; `avcc_override_millivolts` supplies an optional
+external analog-supply fixture. `battery_sense_drop_millivolts` defaults to 600;
+this inferred effective circuit parameter is independent of firmware and EEPROM
+calibration. P84 must actually drive high to enable the sense path.
 `with_persistent_state(images, conditions, Some(sensor_bytes))` additionally loads
 the 19-byte BMA nonvolatile image. `None` selects the canonical sensor image.
 
@@ -84,8 +88,8 @@ snapshot the machine, and record the corresponding input position together.
 `Input::ResetPin(false)` asserts active-low MCU reset; `true` releases it.
 External component lifetimes are not erased just because the MCU resets.
 `power_off(output)` and `power_on(output)` are whole-product lifecycle calls at
-the current boundary. They can return a model error; notably, power removal
-while external nonvolatile programming is active is unsupported and rejected.
+the current boundary. Power removal stops activity and preserves partial external nonvolatile
+programming through the same cell model used during normal progress.
 
 `Input::NmiPin(bool)` controls the dedicated NMI input, separate from IRQ enables
 and flags. It defaults high and preserves its physical level across MCU reset.
@@ -96,8 +100,9 @@ optional fixture drives (`None` releases them). The actual names/variant field
 spelling are defined in `signals.rs`; see INPUTS for the CLI equivalents. These
 fixtures flow through real routed owners, not host-created interrupt flags.
 
-A supply-voltage input is currently an analog-condition change, not an implicit
-power/reset call. Do not use a zero supply value as a substitute for `power_off`.
+Supply changes affect the analog network; zero supply removes board power and
+restoring a nonzero supply powers it on. Nonzero voltage changes do not invent
+a clean brownout reset.
 
 ## Concurrency and allocation
 

@@ -268,6 +268,46 @@ fn sci_pin_edges_and_buffered_characters_survive_partition_and_restore() {
     );
 }
 #[test]
+fn external_avcc_fixture_sets_the_adc_midpoint_transitions() {
+    // 2048 mV / 1024 gives 2 mV per code, with transitions at odd millivolts.
+    let code = [
+        0xf8, 0x13, 0x6a, 0x88, 0xff, 0xfa, // ADC module clock
+        0xf8, 4, 0x6a, 0x88, 0xff, 0xbe, // PB0, phi/4
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // module settling
+        0xf8, 0x80, 0x6a, 0x88, 0xff, 0xbf, 0x40, 0xfe,
+    ];
+    let base = machine(&code);
+    for (mv, expected) in [(0, 0), (1, 1), (2, 1), (3, 2), (2047, 1023)] {
+        let mut m = Machine::with_conditions(
+            Images {
+                firmware: base.firmware(),
+                eeprom: &base.eeprom(),
+                eeprom_status: 0,
+            },
+            hs_core::Conditions {
+                avcc_override_millivolts: Some(2048),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        m.run_until(
+            Time::from_micros(500),
+            &[TimedInput {
+                at: Time::ZERO,
+                input: Input::AnalogPin {
+                    pin: hs_core::AnalogPin::Pb0,
+                    millivolts: Some(mv),
+                },
+            }],
+            &mut (),
+        )
+        .unwrap();
+        let result = u16::from_be_bytes([m.peek(0xffbc).unwrap(), m.peek(0xffbd).unwrap()]);
+        assert_eq!(result, expected << 6, "input {mv} mV");
+    }
+}
+
+#[test]
 fn adc_trigger_and_held_sample_survive_partition_and_restore() {
     let mut code = vec![];
     for (a, v) in [

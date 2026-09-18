@@ -381,8 +381,8 @@ impl Gpio {
     pub fn piezo_levels(&self) -> (bool, bool) {
         (self.levels[2] & 4 != 0, self.levels[2] & 8 != 0)
     }
-    pub fn battery_switch(&self) -> bool {
-        self.levels[2] & 16 != 0
+    pub fn battery_switch(&self, timer_drive: bool) -> bool {
+        self.levels[2] & 16 != 0 && (timer_drive || self.direction[2] & 16 != 0)
     }
 }
 #[cfg(test)]

@@ -3,7 +3,7 @@
   "kind": "software-regression",
   "hardware_measured": false,
   "basis_revision": "4f7025362a3c4897ea9f3c48d3555eff6a9e19bf",
-  "basis": "Reviewed BMA150 factory defaults, staggered T/X/Y/Z acquisition, signed moving-average history, temperature and Bosch-derived offset scale. Additional sensor appointments exposed watch ticks dropped at oscillator-stabilization completion; the transition now synchronizes the old interval before changing gates. An isolated unchanged-data sensor experiment at 3 kHz versus 12 kHz now produces identical 10-second CPU, RAM, display, and persistent exports. The independent 8448-us watch-edge fixture fails before the fix (33 ticks) and passes after it (34). All four retail workloads and partition/snapshot replay pass without faults, resets, or persistent writes. These are software regression observations, not hardware measurements.",
+  "basis": "Reviewed BMA150 factory defaults, staggered T/X/Y/Z acquisition, signed moving-average history, temperature and Bosch-derived offset scale. Additional sensor appointments exposed watch ticks dropped at oscillator-stabilization completion; the transition now synchronizes the old interval before changing gates. An isolated unchanged-data sensor experiment at 3 kHz versus 12 kHz now produces identical 10-second CPU, RAM, display, and persistent exports. The independent 8448-us watch-edge fixture fails before the fix (33 ticks) and passes after it (34). All four retail workloads and partition/snapshot replay pass without faults, resets, or persistent writes. The ADC board revision replaces the fixed 3.3 V scaffold with supply-following AVCC and a P84-switched effective 600 mV drop; only initial condition metadata changes, with all execution and export expectations retained. These are software regression observations, not hardware measurements.",
   "change_policy": "Review independent hardware evidence before rebasing an expectation. The verifier never updates this file.",
   "inputs": {
     "firmware": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607",
@@ -22,7 +22,8 @@
         "initial_conditions": {
           "supply_millivolts": 3000,
           "temperature_millicelsius": 20000,
-          "adc_reference_millivolts": 3300,
+          "avcc_override_millivolts": null,
+          "battery_sense_drop_millivolts": 600,
           "main_hz": 3686400,
           "watch_hz": 32768,
           "on_chip_hz": 1310720
@@ -82,7 +83,8 @@
         "initial_conditions": {
           "supply_millivolts": 3000,
           "temperature_millicelsius": 20000,
-          "adc_reference_millivolts": 3300,
+          "avcc_override_millivolts": null,
+          "battery_sense_drop_millivolts": 600,
           "main_hz": 3686400,
           "watch_hz": 32768,
           "on_chip_hz": 1310720
@@ -142,7 +144,8 @@
         "initial_conditions": {
           "supply_millivolts": 3000,
           "temperature_millicelsius": 20000,
-          "adc_reference_millivolts": 3300,
+          "avcc_override_millivolts": null,
+          "battery_sense_drop_millivolts": 600,
           "main_hz": 3686400,
           "watch_hz": 32768,
           "on_chip_hz": 1310720
@@ -202,7 +205,8 @@
         "initial_conditions": {
           "supply_millivolts": 3000,
           "temperature_millicelsius": 20000,
-          "adc_reference_millivolts": 3300,
+          "avcc_override_millivolts": null,
+          "battery_sense_drop_millivolts": 600,
           "main_hz": 3686400,
           "watch_hz": 32768,
           "on_chip_hz": 1310720
