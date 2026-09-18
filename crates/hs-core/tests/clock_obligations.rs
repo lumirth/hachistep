@@ -105,16 +105,17 @@ fn adc_sample_and_result_obligations_survive_a_rate_change() {
     let mut c = clocks();
     let mut a = Adc::default();
     a.set_gate(true, Time::ZERO, &c).unwrap();
-    a.write(0xffbe, 0x27, Time::ZERO, &c).unwrap(); // 31 system clocks.
-    a.write(0xffbf, 0x80, Time::ZERO, &c).unwrap();
+    let start = c.edge(10, Tap::cpu()).unwrap();
+    a.write(0xffbe, 0x27, start, &c).unwrap(); // 31 converter steps.
+    a.write(0xffbf, 0x80, start, &c).unwrap();
     let sample_time = a.deadline(&c).unwrap().unwrap();
-    assert_eq!(sample_time, c.edge(4, Tap::system(1)).unwrap());
-    assert!(!a.advance(sample_time, 411, &c).unwrap());
-    let switch = c.edge(10, Tap::system(1)).unwrap();
+    assert_eq!(sample_time, c.edge(14, Tap::system(1)).unwrap());
+    assert!(!a.advance(sample_time, Some(411), &c).unwrap());
+    let switch = c.edge(20, Tap::system(1)).unwrap();
     c.select_system(switch, Source::Oscillator, 4).unwrap();
     let finish = a.deadline(&c).unwrap().unwrap();
-    assert_eq!(finish, c.edge(31, Tap::system(1)).unwrap());
-    assert!(a.advance(finish, 999, &c).unwrap());
+    assert_eq!(finish, c.edge(41, Tap::system(1)).unwrap());
+    assert!(a.advance(finish, Some(999), &c).unwrap());
     assert_eq!(a.result(), 411 << 6);
 }
 
@@ -135,7 +136,7 @@ fn adc_gate_keeps_both_sample_and_finish_progress() {
         Some(c.edge(102, Tap::system(1)).unwrap())
     );
     assert!(!a
-        .advance(a.deadline(&c).unwrap().unwrap(), 100, &c)
+        .advance(a.deadline(&c).unwrap().unwrap(), Some(100), &c)
         .unwrap());
     assert_eq!(
         a.deadline(&c).unwrap(),

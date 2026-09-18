@@ -449,6 +449,14 @@ impl Machine {
             .aec
             .input_pins(self.mcu.gpio.aec_inputs(), self.now, &self.mcu.clocks)?;
         self.mcu.collect_aec_requests();
+        let (selected, high) = self.mcu.gpio.adc_trigger();
+        self.mcu.adc.input_trigger(
+            selected,
+            high,
+            self.mcu.control.iegr & 0x20 != 0,
+            self.now,
+            &self.mcu.clocks,
+        )?;
         Ok(sampled)
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
@@ -506,15 +514,18 @@ impl Machine {
         };
         (pb, vcref)
     }
-    fn analog_code(&self) -> u16 {
+    fn analog_code(&self) -> Option<u16> {
         let channel = self.mcu.adc.channel();
         if !(4..=9).contains(&channel) {
-            return 0;
+            return None;
         }
         let (pb, _) = self.analog_values();
-        (u32::from(pb[usize::from(channel - 4)]) * 1023
-            / u32::from(self.conditions.adc_reference_millivolts))
-        .min(1023) as u16
+        let reference = u32::from(self.conditions.adc_reference_millivolts);
+        // Figure 17.6 places ideal transitions at half-LSB boundaries.
+        Some(
+            ((u32::from(pb[usize::from(channel - 4)]) * 2048 + reference) / (2 * reference))
+                .min(1023) as u16,
+        )
     }
     fn devices_at_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         self.last_effect = self.now;

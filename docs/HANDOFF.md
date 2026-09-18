@@ -74,7 +74,9 @@ AEC and comparators exist now: extend their existing owners and tests, not new
 parallel models. Resolve AEC module-stop ambiguity, clock polarity and gate-edge
 apertures; comparator delay/offset/noise and digital-read suppression witnesses.
 Timer W clock-mux glitches and exact sub-state input synchronization remain.
-ADC triggers/channel-change/retention are incomplete. Implement actual flash
+ADC trigger, live channel/clock changes, held sampling and result reset retention
+are implemented; board reference topology and acquisition placement need further
+physical evidence. Implement actual flash
 program/erase/verify controls and fetch restrictions, not a direct page-write API.
 
 Acceptance: all applicable control paths through guest accesses, invalid-mode

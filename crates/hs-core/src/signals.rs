@@ -155,6 +155,7 @@ pub enum DigitalPin {
     P91,
     P92,
     P93,
+    Adtrg,
 }
 impl DigitalPin {
     pub const fn index(self) -> usize {

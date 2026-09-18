@@ -268,6 +268,65 @@ fn sci_pin_edges_and_buffered_characters_survive_partition_and_restore() {
     );
 }
 #[test]
+fn adc_trigger_and_held_sample_survive_partition_and_restore() {
+    let mut code = vec![];
+    for (a, v) in [
+        (0xfffa_u16, 0x13),
+        (0xffca, 8),
+        (0xfff2, 0x20),
+        (0xffbe, 0x74),
+    ] {
+        code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+    }
+    code.extend([0x40, 0xfe]);
+    let analog = |us, millivolts| TimedInput {
+        at: Time::from_micros(us),
+        input: Input::AnalogPin {
+            pin: hs_core::AnalogPin::Pb0,
+            millivolts: Some(millivolts),
+        },
+    };
+    let trigger = |us, high| TimedInput {
+        at: Time::from_micros(us),
+        input: Input::DigitalPin {
+            pin: DigitalPin::Adtrg,
+            level: Some(high),
+        },
+    };
+    // Both input changes occur after acquisition, before conversion completes.
+    let inputs = [
+        analog(0, 0),
+        trigger(500, true),
+        analog(650, 5000),
+        trigger(1700, false),
+        trigger(2000, true),
+        analog(2300, 0),
+    ];
+    let mut whole = machine(&code);
+    let mut split = whole.clone();
+    let (mut a, mut b) = (vec![], vec![]);
+    let consumed = whole
+        .run_until(Time::from_micros(1800), &inputs, &mut a)
+        .unwrap()
+        .inputs_consumed;
+    assert_eq!(whole.peek(0xffbc).unwrap(), 0);
+    whole
+        .run_until(Time::from_micros(4000), &inputs[consumed..], &mut a)
+        .unwrap();
+    let mut consumed = 0;
+    for us in (1..4000).step_by(11).chain([4000]) {
+        consumed += split
+            .run_until(Time::from_micros(us), &inputs[consumed..], &mut b)
+            .unwrap()
+            .inputs_consumed;
+        split = Machine::from_snapshot(&split.snapshot());
+    }
+    assert_eq!(whole.peek(0xffbc).unwrap(), 0xff);
+    assert_eq!(whole.peek(0xffbd).unwrap(), 0xc0);
+    assert_eq!(whole, split);
+    assert_eq!(a, b);
+}
+#[test]
 fn invalid_timeline_is_rejected_before_mutation() {
     let mut m = machine(LOOP);
     let before = m.snapshot();

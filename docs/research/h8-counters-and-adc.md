@@ -353,6 +353,27 @@ conversion; ignoring it is the natural level-ADSF inference. Do not replace
 this with a host command that writes a conversion result. ([Manual §3.4.3,
 §8.5.2, §17.4.2, figure 17.2][adc-trigger])
 
+### ADC implementation checkpoint, 2026-09-18
+
+The converter now uses the 31-step model above, including live source/channel
+changes, retained open-mux charge, ten-CPU-cycle wake settling, and two sampled
+ADTRG stages. PMRB/AMR/IEGR qualify the physical trigger; a trigger while ADSF is
+already set does not restart it. A coincident completion clears ADSF after trigger
+detection. Reset retains ADRR. Partition/restoration tests stop inside both the
+trigger pipeline and the held-sample conversion.
+
+Figure 17.6 (p. 358) places ideal quantization transitions at half-LSB boundaries;
+§17.6 and table 21.7 specify the ±0.5-LSB quantization term. Conversion therefore
+rounds `1024 * Vin / AVCC` and clips to 0..1023, rather than scaling by 1023.
+AVCC is the external reference pin (§17.2, table 17.1), not an internal 3.3-V
+reference. The current fixed reference condition remains a board-model placeholder
+pending the separate battery-circuit investigation.
+
+Independent Hachiware guests exercise all four clocks, open-mux retention, both
+trigger edges, pin selection and interrupt vector 38. `out/adc-check` passed all
+76 diagnostics and the workspace checks; `out/adc-retail` passed home/menu and
+partition/restoration regression checks without changing their expectations.
+
 ## AEC: active reconfiguration
 
 The underlying counter/gate model already covers much of §13. Preserve that

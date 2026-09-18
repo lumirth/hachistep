@@ -63,6 +63,7 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
                     "p91" => DigitalPin::P91,
                     "p92" => DigitalPin::P92,
                     "p93" => DigitalPin::P93,
+                    "adtrg" => DigitalPin::Adtrg,
                     _ => return Err(fail("unknown digital fixture pin").into()),
                 };
                 let level = if p[3] == "release" {

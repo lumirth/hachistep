@@ -17,7 +17,7 @@ pub struct Gpio {
     open_drain9: u8,
     buttons: Buttons,
     analog_levels: [Option<bool>; 7],
-    digital_levels: [Option<bool>; 10],
+    digital_levels: [Option<bool>; 11],
     aec_pwm: Option<bool>,
     aec_pwm_enabled: bool,
     sci: super::sci::Pins,
@@ -48,6 +48,12 @@ impl Default for SerialLevels {
 impl Gpio {
     pub fn set_buttons(&mut self, buttons: Buttons) {
         self.buttons = buttons;
+    }
+    pub fn adc_trigger(&self) -> (bool, bool) {
+        (
+            self.pmr[2] & 8 != 0,
+            self.digital_levels[DigitalPin::Adtrg.index()].unwrap_or(false),
+        )
     }
     pub fn set_digital_level(&mut self, pin: DigitalPin, level: Option<bool>) {
         self.digital_levels[pin.index()] = level;

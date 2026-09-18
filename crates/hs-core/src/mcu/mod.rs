@@ -98,6 +98,7 @@ impl Mcu {
     /// flag requests an MCU reset; attached device owners are not reconstructed.
     pub fn sync(&mut self, now: Time) -> Result<bool, Error> {
         self.sci.sync(now, &self.clocks)?;
+        self.adc.sync(now, &self.clocks)?;
         self.comparators.sync(now)?;
         self.aec.sync(now, &self.clocks)?;
         self.collect_aec_requests();

@@ -79,7 +79,7 @@ The conformance IR fixture is an original software-generated pulse timeline.
 
 Analog fixture names are `pb0` through `pb5` and `vcref`; values are integer mV
 within the checked input envelope. Digital fixture names are `p10`–`p12`,
-`p30`–`p32`, and `p90`–`p93`, with `0`, `1`, or `release`. They drive input or
+`p30`–`p32`, `p90`–`p93`, and `adtrg`, with `0`, `1`, or `release`. They drive input or
 released open-drain nodes. These use actual pin-function routing rather
 than directly mutating a peripheral counter or flag. They are diagnostic seams,
 not a claim that an unmodified retail enclosure exposes those pads.
