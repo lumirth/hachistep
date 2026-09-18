@@ -730,7 +730,10 @@ impl Sci {
         input: bool,
         now: Time,
         c: &Clocks,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        if input == self.input && clock.is_none_or(|high| high == self.input_clock) {
+            return Ok(false);
+        }
         self.sync(now, c)?;
         let was_positive = self.input ^ (self.spcr & 1 != 0);
         self.input = input;
@@ -744,7 +747,7 @@ impl Sci {
                 self.refresh_sync_clock();
             }
         }
-        Ok(())
+        Ok(true)
     }
     fn process_basic(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
         if self.receive_pulse == Some(self.baud.half) {

@@ -42,13 +42,20 @@ struct Saved {
 }
 impl Saved {
     fn capture(m: &Machine) -> Result<Self, Error> {
+        // Express lazy counters at the observation point on an owned copy.
+        // The file describes hardware phase independently of earlier sync calls.
+        let mut mcu = m.mcu.clone();
+        require(
+            !mcu.sync(m.observation_time(), &mut ())?,
+            "unprocessed reset at capture",
+        )?;
         Ok(Self {
             firmware_origin: m.firmware_origin,
             now: m.now,
             last_effect: m.last_effect,
             cpu: m.cpu.save()?,
             boot: m.boot.clone(),
-            mcu: m.mcu.clone(),
+            mcu,
             eeprom: m.eeprom.clone(),
             sensor: m.sensor.clone(),
             lcd: m.lcd.clone(),
@@ -89,6 +96,8 @@ impl Saved {
             pending: self.pending,
             resume_after: self.resume_after,
             next_devices: None,
+            appointments: Appointments::default(),
+            changed_peripherals: 0,
             serial: self.serial,
             piezo: self.piezo,
             incident_light: self.incident_light,

@@ -241,12 +241,17 @@ impl TimerW {
         mut pins: [Option<bool>; 5],
         now: Time,
         clocks: &Clocks,
-    ) -> Result<(), Error> {
-        self.sync(now, clocks)?;
+    ) -> Result<bool, Error> {
         for (i, pin) in pins.iter_mut().enumerate() {
             if (i < 4 && !self.captures(i)) || (i == 4 && !self.uses_external()) {
                 *pin = None;
             }
+        }
+        if pins == self.pins {
+            return Ok(false);
+        }
+        self.sync(now, clocks)?;
+        for (i, pin) in pins.iter().enumerate() {
             if pin.is_none() || self.pins[i].is_none() {
                 for stage in &mut self.pipeline {
                     stage[i] = *pin;
@@ -254,7 +259,8 @@ impl TimerW {
             }
         }
         self.pins = pins;
-        self.schedule_input(now, clocks)
+        self.schedule_input(now, clocks)?;
+        Ok(true)
     }
     fn set_output(&mut self, i: usize, high: bool) {
         if high {

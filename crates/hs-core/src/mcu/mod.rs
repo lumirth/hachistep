@@ -7,6 +7,7 @@ pub mod flash;
 pub mod gpio;
 pub mod iic;
 pub mod rtc;
+pub(crate) mod schedule;
 pub mod sci;
 pub mod ssu;
 pub mod timer_b1;
@@ -93,24 +94,7 @@ impl Mcu {
     /// Synchronize clocked counters at an actual effect boundary. The return
     /// flag requests an MCU reset; attached device owners are not reconstructed.
     pub fn sync(&mut self, now: Time, out: &mut dyn Output) -> Result<bool, Error> {
-        if !self.startup.supplied() {
-            return Ok(false);
-        }
-        self.sci.sync(now, &self.clocks)?;
-        self.adc.sync(now, &self.clocks)?;
-        self.comparators.sync(now)?;
-        self.aec.sync(now, &self.clocks)?;
-        self.collect_aec_requests();
-        self.rtc.sync(now, &self.clocks)?;
-        if self.timer_b1.sync(now, &self.clocks) {
-            self.control.irr2 |= 4;
-        }
-        self.timer_w.sync(now, &self.clocks)?;
-        let reset = self.watchdog.sync(now, &self.clocks);
-        if self.startup.deadline() == Some(now) {
-            self.apply_gates(now, out)?;
-        }
-        Ok(reset)
+        self.sync_peripherals(schedule::ALL, now, out)
     }
     pub fn collect_aec_requests(&mut self) {
         let requests = self.aec.take_requests();
@@ -278,6 +262,8 @@ impl Mcu {
     pub fn reset(&mut self, now: Time, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         // RAM, flash, watch-source phase, RTC, and external chips survive an MCU
         // reset. Undefined MCU RAM is initialized only by cold construction.
+        // Settle retained counters before changing their clock reference points.
+        self.sync(now, out)?;
         self.flash.reset(now, out);
         if !self.control.main_running() {
             self.clocks.restart_oscillator(now)?;
@@ -349,27 +335,6 @@ impl Mcu {
             Some((tap, true)) => self.clocks.next_transition(now, tap),
             _ => Ok(None),
         }
-    }
-    pub fn deadline(&self) -> Result<Option<Time>, Error> {
-        if !self.startup.supplied() {
-            return Ok(None);
-        }
-        Ok([
-            self.startup.deadline(),
-            self.rtc.deadline(&self.clocks)?,
-            self.timer_b1.deadline(&self.clocks)?,
-            self.timer_w.deadline(&self.clocks)?,
-            self.watchdog.deadline(&self.clocks)?,
-            self.ssu.deadline(&self.clocks)?,
-            self.sci.deadline(&self.clocks)?,
-            self.iic.deadline(&self.clocks)?,
-            self.adc.deadline(&self.clocks)?,
-            self.comparators.deadline(),
-            self.aec.deadline(&self.clocks)?,
-        ]
-        .into_iter()
-        .flatten()
-        .min())
     }
     pub fn interrupt(&self) -> Option<u8> {
         if self.control.nmi_pending() {

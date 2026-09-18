@@ -160,8 +160,11 @@ impl Adc {
         rising: bool,
         now: Time,
         c: &Clocks,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let enabled = selected && self.mode & 0x40 != 0;
+        if (enabled, high, rising) == (self.trigger_enabled, self.trigger, self.trigger_rising) {
+            return Ok(false);
+        }
         if !enabled || !self.trigger_enabled {
             self.pipeline = [high; 2];
             self.trigger_next = None;
@@ -169,7 +172,8 @@ impl Adc {
         self.trigger = high;
         self.trigger_rising = rising;
         self.trigger_enabled = enabled;
-        self.schedule_trigger(now, c)
+        self.schedule_trigger(now, c)?;
+        Ok(true)
     }
     fn schedule_trigger(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
         if self.gate

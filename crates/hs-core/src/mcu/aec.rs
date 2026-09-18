@@ -258,9 +258,9 @@ impl Aec {
         pins: [Option<bool>; 3],
         now: Time,
         c: &Clocks,
-    ) -> Result<(), Error> {
-        if now == self.at && pins == self.pins {
-            return Ok(());
+    ) -> Result<bool, Error> {
+        if pins == self.pins {
+            return Ok(false);
         }
         self.sync(now, c)?;
         let old_gate = self.gate();
@@ -294,7 +294,7 @@ impl Aec {
                 }
             }
         }
-        Ok(())
+        Ok(true)
     }
     pub fn set_power(
         &mut self,

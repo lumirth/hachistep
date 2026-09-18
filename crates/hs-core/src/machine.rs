@@ -12,6 +12,7 @@ use crate::{
     mcu::{
         clocks::{ClockWait, Frequencies, Tap},
         gpio::SerialLevels,
+        schedule::{self, Appointments},
         Mcu,
     },
     power::Power,
@@ -106,6 +107,8 @@ pub struct Machine {
     pending: Option<Pending>,
     resume_after: Option<Resume>,
     next_devices: Option<Time>,
+    appointments: Appointments,
+    changed_peripherals: u16,
     serial: SerialLevels,
     piezo: Piezo,
     incident_light: bool,
@@ -155,6 +158,8 @@ impl Machine {
             pending: None,
             resume_after: None,
             next_devices: None,
+            appointments: Appointments::default(),
+            changed_peripherals: 0,
             serial: SerialLevels::default(),
             piezo: Piezo::Neutral,
             incident_light: false,
@@ -404,10 +409,16 @@ impl Machine {
         Ok(())
     }
     fn refresh_deadline(&mut self) -> Result<(), Error> {
+        self.refresh_peripherals(schedule::ALL)
+    }
+    fn refresh_peripherals(&mut self, changed: u16) -> Result<(), Error> {
+        self.appointments
+            .update(changed | self.changed_peripherals, &self.mcu)?;
+        self.changed_peripherals = 0;
         self.next_devices = [
             self.power.deadline(),
             self.lcd.deadline(),
-            self.mcu.deadline()?,
+            self.appointments.next(),
             self.mcu.clock_output_deadline(self.now)?,
             self.eeprom.deadline(),
             self.sensor.deadline(),
@@ -517,6 +528,7 @@ impl Machine {
         }
         let serial = self.mcu.gpio.serial_inputs();
         if let Some(edge) = self.mcu.ssu.input_pins(serial[0], serial[1]) {
+            self.changed_peripherals |= schedule::SSU;
             if edge.sample {
                 self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
             }
@@ -525,13 +537,21 @@ impl Machine {
         // Selection and an external clock edge can change the SSU's output
         // drivers. Resolve that electrical consequence at this same instant.
         let (sck, rxd) = self.mcu.gpio.sci_inputs();
-        self.mcu
+        if self
+            .mcu
             .sci
-            .input_pins(sck, rxd, self.now, &self.mcu.clocks)?;
+            .input_pins(sck, rxd, self.now, &self.mcu.clocks)?
+        {
+            self.changed_peripherals |= schedule::SCI;
+        }
         let [scl, sda] = self.mcu.gpio.iic_inputs();
-        self.mcu
+        if self
+            .mcu
             .iic
-            .input_pins(scl, sda, self.now, &self.mcu.clocks)?;
+            .input_pins(scl, sda, self.now, &self.mcu.clocks)?
+        {
+            self.changed_peripherals |= schedule::IIC;
+        }
         if self.mcu.ssu.pins() != pins
             || self.mcu.sci.pins() != sci_pins
             || self.mcu.iic.pins() != iic_pins
@@ -561,6 +581,7 @@ impl Machine {
             });
         }
         if self.mcu.comparators.enabled_mask() != 0 {
+            self.changed_peripherals |= schedule::COMPARATORS;
             let (pb, vcref) = self.analog_values();
             self.mcu.comparators.set_inputs(
                 self.now,
@@ -569,21 +590,31 @@ impl Machine {
                 [pb[4], pb[5]],
             )?;
         }
-        self.mcu
+        if self
+            .mcu
             .timer_w
-            .input_pins(self.mcu.gpio.timer_inputs(), self.now, &self.mcu.clocks)?;
-        self.mcu
+            .input_pins(self.mcu.gpio.timer_inputs(), self.now, &self.mcu.clocks)?
+        {
+            self.changed_peripherals |= schedule::TIMER_W;
+        }
+        if self
+            .mcu
             .aec
-            .input_pins(self.mcu.gpio.aec_inputs(), self.now, &self.mcu.clocks)?;
+            .input_pins(self.mcu.gpio.aec_inputs(), self.now, &self.mcu.clocks)?
+        {
+            self.changed_peripherals |= schedule::AEC;
+        }
         self.mcu.collect_aec_requests();
         let (selected, high) = self.mcu.gpio.adc_trigger();
-        self.mcu.adc.input_trigger(
+        if self.mcu.adc.input_trigger(
             selected,
             high,
             self.mcu.control.iegr & 0x20 != 0,
             self.now,
             &self.mcu.clocks,
-        )?;
+        )? {
+            self.changed_peripherals |= schedule::ADC;
+        }
         Ok(sampled)
     }
     fn reset_mcu(&mut self, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
@@ -669,6 +700,22 @@ impl Machine {
     fn devices_at_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         self.last_effect = self.now;
         self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
+        let mut due = self.appointments.due(self.now);
+        if due & schedule::STARTUP != 0
+            || self.power.deadline() == Some(self.now)
+            || self
+                .reset_release
+                .as_ref()
+                .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?
+                == Some(self.now)
+            || self
+                .watchdog_reset
+                .as_ref()
+                .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?
+                == Some(self.now)
+        {
+            due = schedule::ALL;
+        }
         if self.power.deadline() == Some(self.now) {
             if self.power.advance(self.now) {
                 self.mcu.lose_volatile(self.now, out)?;
@@ -693,7 +740,7 @@ impl Machine {
         if self.sensor.deadline() == Some(self.now) {
             self.sensor.at_deadline(self.now, out)?;
         }
-        let reset = self.mcu.sync(self.now, out)?;
+        let reset = self.mcu.sync_peripherals(due, self.now, out)?;
         if reset {
             self.reset_mcu(true, out)?;
         }
@@ -760,7 +807,7 @@ impl Machine {
         } else {
             self.resolve_board(out)?;
         }
-        self.refresh_deadline()
+        self.refresh_peripherals(due)
     }
     fn input_tag(input: Input) -> u8 {
         match input {

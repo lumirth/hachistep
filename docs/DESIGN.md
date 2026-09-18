@@ -247,6 +247,11 @@ Use fixed appointment slots and a cached minimum. An earlier appointment may rep
 minimum. Moving another slot later leaves it valid; cancelling or postponing the minimum
 requires recomputation. Collect slots due at the same timestamp together.
 
+Retain the owner of each appointment. Service the due owners and update appointments
+affected by the resulting connections. Register accesses synchronize their owning
+peripherals. Shared clock and power changes settle every affected consumer under its
+old configuration before establishing the new interval.
+
 ### 5.2 Execution
 
 1. Find the earliest input, peripheral or caller boundary.
@@ -260,6 +265,10 @@ requires recomputation. Collect slots due at the same timestamp together.
 A configuration write first settles elapsed work under the old configuration, resolves
 coincident activity, applies the write and updates retained phase and future
 appointments according to that register's rules.
+
+Pin delivery reports changes in levels or function selection. A repeated level leaves
+the owner's clock work pending until its next appointment or access. Reset settles
+retained counters before replacing clock references or prescaler state.
 
 ### 5.3 Simultaneous causes
 

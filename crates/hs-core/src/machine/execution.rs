@@ -78,6 +78,10 @@ impl Machine {
             }
             if self.mcu.control.sleeping() {
                 changed = true;
+                if self.mcu.sync(self.now, out)? {
+                    self.reset_mcu(true, out)?;
+                    return Ok(changed);
+                }
                 let wait = self.mcu.control.wake(self.now, &mut self.mcu.clocks)?;
                 self.mcu.apply_gates(self.now, out)?;
                 self.resolve_board(out)?;
@@ -189,7 +193,8 @@ impl Machine {
         let a = base.wrapping_add(u16::from(pending.lane));
         let w = if pending.split { Width::Byte } else { width };
         let memory = Mcu::is_memory(a);
-        if !memory && self.mcu.sync(self.now, out)? {
+        let affected = Mcu::access_peripherals(a, write);
+        if !memory && self.mcu.sync_peripherals(affected, self.now, out)? {
             self.reset_mcu(true, out)?;
             return Ok(true);
         }
@@ -239,7 +244,7 @@ impl Machine {
         let changed = !memory && (write || Mcu::read_starts_transfer(a));
         if changed {
             self.resolve_board(out)?;
-            self.refresh_deadline()?;
+            self.refresh_peripherals(affected)?;
         }
         if pending.split && pending.lane == 0 {
             pending.high = value as u8;

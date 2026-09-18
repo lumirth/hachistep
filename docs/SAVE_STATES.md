@@ -73,6 +73,10 @@ Projection caches and clock revision numbers are rebuilt. Lazy ADC settling and 
 capture-visibility waits may already be past, while an active appointment at the exact
 exclusive horizon is still pending.
 
+Encoding projects deferred MCU counters on an owned copy at the last observable instant.
+Their captured values and phase therefore describe that instant independently of earlier
+synchronization calls. The live machine and its pending boundary remain untouched.
+
 Flash/EEPROM/sensor programming retains original cells and its unfinished operation,
 rather than replacing them with a projected persistent image. Sensor filter sums are
 rebuilt from retained samples. Its analog output, normalized derivative and last

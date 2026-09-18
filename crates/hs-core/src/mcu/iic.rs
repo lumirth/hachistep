@@ -418,9 +418,13 @@ impl Iic {
         sda: bool,
         now: Time,
         clocks: &Clocks,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        if self.raw == [scl, sda] {
+            return Ok(false);
+        }
         self.raw = [scl, sda];
-        self.schedule_filter(now, clocks)
+        self.schedule_filter(now, clocks)?;
+        Ok(true)
     }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
         if !self.gate || !self.enabled() {

@@ -16,6 +16,11 @@ All destinations must be new. Check outputs record the source revision, commands
 toolchain, and results under ignored `out/`. Keep a reviewed expectation or supporting
 hardware capture with the test that uses it. Individual run reports stay local.
 
+Choose additional checks for the affected contract. Native/Wasm comparisons belong with
+changes that could behave differently by target, such as arithmetic representation,
+encoded layouts, target support or host integration, and with release validation. Reuse
+completed checks until a change, failure or unresolved concern warrants another run.
+
 The private Rust test compares the complete typed machine state and complete
 product-event vectors across randomized run partitions, then a further interval after
 snapshot restoration. The peripheral integration tests add clock/gate, analog-input,

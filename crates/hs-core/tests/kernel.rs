@@ -16,6 +16,41 @@ const LOOP: &[u8] = &[
     0x79, 0x07, 0xff, 0x80, 0xf8, 0x2a, 0x6a, 0x88, 0xf7, 0x80, 0x0a, 0x08, 0x40, 0xf8,
 ];
 #[test]
+fn timer_interrupts_preserve_elapsed_rtc_ticks_when_waking_from_sleep() {
+    let mut code = vec![0x79, 7, 0xff, 0x70];
+    for (a, v) in [
+        (0xffb1_u16, 0x10), // Permit the watchdog enable change, then stop it.
+        (0xffb1, 0),
+        (0xfffb, 0),
+        (0xfffa, 7),
+        (0xf06c, 0xc8), // Run the RTC from the watch oscillator.
+        (0xf0d0, 0xbf), // Timer B1 reloads every watch/256 edge.
+        (0xf0d1, 255),
+        (0xf0d0, 0xff),
+        (0xfff4, 4),
+    ] {
+        code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+    }
+    code.extend([0x06, 0x7f, 0x01, 0x80, 0x40, 0xfc]);
+    let mut rom = vec![0; 49152];
+    rom[..2].copy_from_slice(&0x100u16.to_be_bytes());
+    rom[66..68].copy_from_slice(&0x200u16.to_be_bytes());
+    rom[0x100..0x100 + code.len()].copy_from_slice(&code);
+    // Clear Timer B1's interrupt and return to the sleeping loop.
+    rom[0x200..0x208].copy_from_slice(&[0xf8, 0, 0x6a, 0x88, 0xff, 0xf7, 0x56, 0x70]);
+    let mut m = Machine::new(Images {
+        firmware: &rom,
+        eeprom: &[0xff; 65536],
+        eeprom_status: 0,
+    })
+    .unwrap();
+    m.run_until(Time::from_micros(1_100_000), &[], &mut ())
+        .unwrap();
+    assert_eq!(m.statistics().resets, 0);
+    assert!(m.interrupt_entries() > 100);
+    assert_eq!(m.peek(0xf068).unwrap(), 1);
+}
+#[test]
 fn watch_counter_keeps_the_last_tick_of_oscillator_stabilization() {
     // Timer B1 uses the independent watch source. NMI restarts the 1-MHz
     // main oscillator at 258 us; STS=000 ends its 8192-cycle wait at 8450 us.
