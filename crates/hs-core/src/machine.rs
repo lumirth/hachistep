@@ -268,6 +268,8 @@ impl Machine {
     pub fn lcd_icons(&self) -> &[u8; 256] {
         self.lcd.icons()
     }
+    /// Row-major 96x64 pixels, with programmed PWM/FRC drive averaged and scaled
+    /// to 0..255. Panel tint and response belong to the frontend.
     pub fn display(&self, pixels: &mut [u8; 6144]) {
         self.lcd.render(pixels);
     }

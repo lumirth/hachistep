@@ -35,6 +35,12 @@ Novatek pp. 46–49 gives 3-frame FRC, 9-step PWM, and nominal `122000 / (64 * 3
 70.60185 Hz`. These widths describe controller drive, not linear perceived brightness.
 `FD`/`FE` in that stream are firmware script directives, not controller commands.
 
+The pixel API averages each programmed palette entry's valid pulse widths over the
+selected FRC frames and normalizes the result to 0..255. Retail's 0/5/7/9 widths
+therefore produce 0/142/198/255. This view projects current RAM and geometry;
+`display_drive` provides the scan timing and latched output. Physical contrast and
+glass response need a frontend presentation model.
+
 The controller retains scan phase, frame/FRC index, line counter, latched start line,
 current output latch, inversion phase, and the clock/control projection. Settle the old
 projection before a mutation, then apply the command at its actual completion time. A

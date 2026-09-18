@@ -87,7 +87,7 @@ pub fn frame(m: &Machine) -> Vec<u8> {
     let mut pixels = [0u8; 6144];
     m.display(&mut pixels);
     let mut data = b"P5\n96 64\n255\n".to_vec();
-    data.extend(pixels.iter().map(|v| 255 - *v * 85));
+    data.extend(pixels.iter().map(|v| 255 - *v));
     data
 }
 pub struct RunMetadata<'a> {

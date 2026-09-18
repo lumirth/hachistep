@@ -103,7 +103,7 @@ def export(output: Path, requested: list[str]) -> None:
             if not pgm.startswith(header) or len(pgm) != len(header) + 6144:
                 raise ValueError("unexpected LCD raster export")
             with destination.open("xb") as stream:
-                stream.write(bytes((255 - value) // 85 for value in pgm[len(header) :]))
+                stream.write(bytes(255 - value for value in pgm[len(header) :]))
         elif source != destination:
             with source.open("rb") as incoming, destination.open("xb") as outgoing:
                 shutil.copyfileobj(incoming, outgoing)

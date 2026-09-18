@@ -1,7 +1,7 @@
 //! Analytic LCD scan. A stable interval has no machine-scheduler appointments;
 //! only its last quantum's output latch needs to be materialized. Geometry is
 //! latched per frame, PWM per row, and pixel/palette data per quantum.
-use super::Nt7508;
+use super::{Nt7508, LCD_HEIGHT, LCD_WIDTH};
 use crate::{
     error::Error,
     time::{Clock, Time},
@@ -143,11 +143,18 @@ impl Nt7508 {
             )
         }
     }
+    fn pulse_width(&self, shade: usize, frame: u8, pwm: u8) -> u8 {
+        let width = (self.palette[shade * 2 + usize::from(frame / 2)] >> ((frame & 1) * 4)) & 15;
+        // NT7508 p.47: encodings beyond the selected PWM range produce no pulse.
+        if width <= pwm {
+            width
+        } else {
+            0
+        }
+    }
     fn latch(&self, scan: Scan) -> [u64; 2] {
-        let widths: [u8; 4] = core::array::from_fn(|shade| {
-            (self.palette[shade * 2 + usize::from(scan.frc / 2)] >> ((scan.frc & 1) * 4)) & 15
-        });
-        let active = widths.map(|width| width <= scan.pwm && scan.step < width);
+        let active: [bool; 4] =
+            core::array::from_fn(|shade| scan.step < self.pulse_width(shade, scan.frc, scan.pwm));
         let row = if scan.row == scan.duty {
             128
         } else {
@@ -160,6 +167,37 @@ impl Nt7508 {
             }
         }
         segments
+    }
+    /// Project the programmed image with each palette entry averaged over its
+    /// FRC cycle. Values are normalized drive from 0 to 255. This view uses
+    /// current settings; `drive` exposes the scan and latch at a specific time.
+    pub fn render(&self, pixels: &mut [u8; LCD_WIDTH * LCD_HEIGHT]) {
+        if !self.enabled() || !self.oscillator_enabled || self.oscillator_control & 1 != 0 {
+            pixels.fill(0);
+            return;
+        }
+        let pwm = self.pwm();
+        let frames = self.frc_count();
+        let period = u16::from(pwm) * u16::from(frames);
+        let levels: [u8; 4] = core::array::from_fn(|shade| {
+            let active: u16 = (0..frames)
+                .map(|frame| u16::from(self.pulse_width(shade, frame, pwm)))
+                .sum();
+            ((active * 255 + period / 2) / period) as u8
+        });
+        for y in 0..LCD_HEIGHT {
+            // The panel occupies SEG0..95 and COM32..95. Direction commands
+            // address the complete 128-output controller before that crop.
+            let common = if self.common_reverse { 95 - y } else { y + 32 };
+            let line = (common + 128 - usize::from(self.initial_com)) & 127;
+            for x in 0..LCD_WIDTH {
+                pixels[y * LCD_WIDTH + x] = if line < usize::from(self.duty) {
+                    levels[usize::from(self.shade((line + usize::from(self.start_line)) & 127, x))]
+                } else {
+                    0
+                };
+            }
+        }
     }
     pub(super) fn project_scan(&self, now: Time) -> Result<Scan, Error> {
         let mut scan = self.scan;

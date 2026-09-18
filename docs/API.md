@@ -102,10 +102,16 @@ responsibilities are in [DESIGN
 with no guest read side effects. It may clone MCU state, so frequent inspection can be
 expensive.
 
-`display(&mut [u8; 6144])` returns row-major 96x64 shade codes 0..3 derived from
-controller RAM and settings. Frontends supply the panel's visual appearance.
-`display_enabled` and `display_start_line` expose useful controller state. Power-off
-display rendering is blank.
+`display(&mut [u8; 6144])` returns row-major 96x64 pixels. Each value is the
+programmed PWM drive averaged over the selected FRC frames and scaled to 0..255,
+rounded to the nearest integer. Zero is inactive and 255 is full drive. This includes
+the programmable grayscale palette. Frontends can map these values to grayscale or
+a panel tint and apply their chosen contrast response.
+
+The image projects current RAM and programmed geometry. It does not retain earlier
+scan rows or model the glass's response time. An inactive display or an undriven scan
+clock produces zero pixels. `display_enabled` and `display_start_line` expose useful
+controller state.
 
 `display_drive()` projects the LCD controller's digital output at the current
 observation point: selected COM (128 for the icon), two 64-bit SEG masks, and AC

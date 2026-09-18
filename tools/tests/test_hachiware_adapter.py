@@ -30,7 +30,7 @@ class Adapter(unittest.TestCase):
         report["requested_time_raw"] = str(end + 1)
         self.assertFalse(observations(report, 8, [])["completed"])
 
-    def test_requested_exports_preserve_controller_bytes_and_logical_shades(self):
+    def test_requested_exports_preserve_controller_bytes_and_pixel_drive(self):
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             (out / "lcd-ram.bin").write_bytes(bytes(range(256)) * 16)
@@ -43,7 +43,7 @@ class Adapter(unittest.TestCase):
             )
             export(out, ["pixels"])
             self.assertEqual(
-                (out / "pixels.bin").read_bytes(), bytes([0, 1, 2, 3]) * 1536
+                (out / "pixels.bin").read_bytes(), bytes([0, 85, 170, 255]) * 1536
             )
             with self.assertRaises(FileExistsError):
                 export(out, ["pixels"])

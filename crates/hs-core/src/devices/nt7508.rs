@@ -313,22 +313,6 @@ impl Nt7508 {
         });
         Ok(())
     }
-    /// Logical shade codes derived from controller RAM for the attached panel.
-    pub fn render(&self, pixels: &mut [u8; LCD_WIDTH * LCD_HEIGHT]) {
-        for y in 0..LCD_HEIGHT {
-            // The panel occupies SEG0..95 and COM32..95. Direction commands
-            // address the complete 128-output controller before that crop.
-            let common = if self.common_reverse { 95 - y } else { y + 32 };
-            let line = (common + 128 - usize::from(self.initial_com)) & 127;
-            for x in 0..LCD_WIDTH {
-                pixels[y * LCD_WIDTH + x] = if self.enabled() && line < usize::from(self.duty) {
-                    self.shade((line + usize::from(self.start_line)) & 127, x)
-                } else {
-                    0
-                };
-            }
-        }
-    }
     fn shade(&self, row: usize, segment: usize) -> u8 {
         if self.entire_on {
             return 3;
@@ -454,13 +438,13 @@ mod tests {
             .unwrap();
         l.write_counted_fixture(true, 1, Time::ZERO, &mut ())
             .unwrap();
-        for c in [0x44, 32, 0x40, 64, 0xaf] {
+        for c in [0x44, 32, 0x40, 64, 0x8e, 0x99, 0x8f, 0x99, 0xab, 0xaf] {
             l.write_counted_fixture(false, c, Time::ZERO, &mut ())
                 .unwrap();
         }
         let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT];
         l.render(&mut pixels);
-        assert_eq!(pixels[0], 3);
+        assert_eq!(pixels[0], 255);
         l.write_counted_fixture(false, 0xe2, Time::ZERO, &mut ())
             .unwrap();
         assert_eq!(l.ram()[2048], 1);
@@ -483,23 +467,65 @@ mod tests {
     #[test]
     fn controller_mapping_precedes_viewport_and_duty_gates_entire_on() {
         let mut lcd = Nt7508::new();
-        commands(&mut lcd, &[0x44, 32, 0x48, 16, 0xaf]);
+        commands(
+            &mut lcd,
+            &[
+                0x44, 32, 0x48, 16, 0xaf, 0xab, 0x8a, 0x33, 0x8b, 0x33, 0x8c, 0x66, 0x8d, 0x66,
+                0x8e, 0x99, 0x8f, 0x99,
+            ],
+        );
         data(&mut lcd, &[1, 0, 0, 1, 1, 1]);
         let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT];
         lcd.render(&mut pixels);
-        assert_eq!(&pixels[..4], &[2, 1, 3, 0]);
+        assert_eq!(&pixels[..4], &[170, 85, 255, 0]);
         commands(&mut lcd, &[0x17, 0x0f]);
         data(&mut lcd, &[1, 0]);
         commands(&mut lcd, &[0xa1]);
         lcd.render(&mut pixels);
-        assert_eq!(&pixels[..3], &[2, 0, 0]);
+        assert_eq!(&pixels[..3], &[170, 0, 0]);
         commands(&mut lcd, &[0xa7, 0xa5, 0x48, 0xff]);
         lcd.render(&mut pixels);
-        assert!(pixels[..16 * LCD_WIDTH].iter().all(|&shade| shade == 3));
+        assert!(pixels[..16 * LCD_WIDTH].iter().all(|&shade| shade == 255));
         assert!(pixels[16 * LCD_WIDTH..].iter().all(|&shade| shade == 0));
         commands(&mut lcd, &[0xae]);
         lcd.render(&mut pixels);
         assert!(pixels.iter().all(|&shade| shade == 0));
+    }
+    #[test]
+    fn rendering_uses_palette_widths_and_only_the_selected_frc_frames() {
+        let mut lcd = Nt7508::new();
+        commands(
+            &mut lcd,
+            &[
+                0x44, 32, 0x48, 64, 0xaf, 0xab, 0x88, 0x00, 0x89, 0x0f, 0x8a, 0x55, 0x8b, 0xf5,
+                0x8c, 0xaa, 0x8d, 0xfa, 0x8e, 0xff, 0x8f, 0xff,
+            ],
+        );
+        data(&mut lcd, &[0, 0, 0, 1, 1, 0, 1, 1]);
+        let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT];
+        // These include invalid pulse widths, which turn off rather than clamp,
+        // and a fourth frame whose widths differ from the preceding three.
+        for (mode, expected) in [
+            (0x95, [0, 142, 0, 0]),
+            (0x96, [0, 106, 213, 0]),
+            (0x97, [85, 85, 170, 255]),
+            (0x91, [0, 106, 0, 0]),
+            (0x92, [0, 80, 159, 0]),
+            (0x93, [64, 128, 191, 255]),
+        ] {
+            commands(&mut lcd, &[mode]);
+            lcd.render(&mut pixels);
+            assert_eq!(&pixels[..4], &expected, "mode {mode:02x}");
+        }
+        commands(&mut lcd, &[0xa7]);
+        lcd.render(&mut pixels);
+        assert_eq!(&pixels[..4], &[255, 191, 128, 64]);
+        commands(&mut lcd, &[0xa5]);
+        lcd.render(&mut pixels);
+        assert!(pixels.iter().all(|&pixel| pixel == 255));
+        commands(&mut lcd, &[0xf7, 1]); // OSC1 is undriven on this board.
+        lcd.render(&mut pixels);
+        assert!(pixels.iter().all(|&pixel| pixel == 0));
     }
     #[test]
     fn software_reset_preserves_drive_configuration_and_unassigned_bytes_do_not_eat_commands() {

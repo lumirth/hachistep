@@ -68,7 +68,7 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "8ce657735b1bb93554a88b08a838290701432af963342986f23f0440e26a123c",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "afc77cf3447f697c668422c0e73d2c8696cb47ebf6cb1f54a62dfe0a3e4b002b",
+        "frame.pgm": "06b73475e9aa6b57273665c39387fc197587b755085a95fd924b4392eb0dfd4e",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       },
       "timeline": null,
@@ -132,7 +132,7 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "a7e9d66ded8017adffac97890df3f650514783cce4dc86071ab089c06e437fb6",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "f58b0afec3915c2865c03f96e5070fcf82d6ff0a1d47a3a9cd1a857de5c08acb",
+        "frame.pgm": "dc18f82899cf549bfc1f5ffbfe098faa60d6374ef75d3504290c35348f2ca3b9",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       },
       "timeline": "menu.csv",
@@ -196,7 +196,7 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "28d013e23f2a54e34f34c6a2b8e167ef595ff8a486ab3a5488555605af63c699",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "cf8c83327dee7a27c43552e7f01b483a1cc36318bcad7f58f2a54d654b3f565d",
+        "frame.pgm": "952351fdcb65c44e82ce11e472c7d990e310c94d74e625ba3b9c29db0bc3a686",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       },
       "timeline": "walking.csv",
@@ -327,7 +327,7 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "8ce657735b1bb93554a88b08a838290701432af963342986f23f0440e26a123c",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "afc77cf3447f697c668422c0e73d2c8696cb47ebf6cb1f54a62dfe0a3e4b002b",
+        "frame.pgm": "06b73475e9aa6b57273665c39387fc197587b755085a95fd924b4392eb0dfd4e",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     },
@@ -392,7 +392,7 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "1c396f6652d715c9ce61e4770beac7db98b4435c7b9af17ae3ceefff3f5a0f47",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "008316f6ba56187707b7536e0710752c60b0c34286ceddf2d94909c752494bbd",
+        "frame.pgm": "21f838667fab96b8ca352576eac2281a0465e1b454ff76d4d8d7235da1fcb23a",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     },
@@ -457,7 +457,7 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "1c396f6652d715c9ce61e4770beac7db98b4435c7b9af17ae3ceefff3f5a0f47",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "008316f6ba56187707b7536e0710752c60b0c34286ceddf2d94909c752494bbd",
+        "frame.pgm": "21f838667fab96b8ca352576eac2281a0465e1b454ff76d4d8d7235da1fcb23a",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     },
@@ -522,7 +522,7 @@
         "sensor-nv.bin": "3351fdb4fbaac0665e13badfb8809f862190102b4b14b4d0eb79e0f856c3cc47",
         "lcd-ram.bin": "e108250a120611bd558f11cb4a6e06f93176fc052f638090d4c0dcf09882783a",
         "lcd-icons.bin": "5341e6b2646979a70e57653007a1f310169421ec9bdd9f1a5648f75ade005af1",
-        "frame.pgm": "c7b8a3df63217f586994a4c6abccf3f7bffa6b82c61ced19f721cf941bc1ea16",
+        "frame.pgm": "00ff2b2beb6f3d4ca1f4d27414e8712c3d6744d6a3c4f68b3cec358ff3c535bf",
         "flash.bin": "f9e210a3b74afbbd12c5a66a51cc05cb9fbac986805ff0a3bfb4be6074d15607"
       }
     },
