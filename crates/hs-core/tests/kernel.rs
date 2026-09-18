@@ -661,16 +661,19 @@ fn power_cycle_and_mcu_reset_are_distinct() {
     m.run_until(Time::from_micros(20), &[], &mut ()).unwrap();
     assert_ne!(m.ram()[0], 0);
     let saved = m.eeprom().to_vec();
+    let marker = m.ram()[0];
     m.power_off(&mut ()).unwrap();
     let retired = m.retired();
     m.run_until(Time::from_micros(100), &[], &mut ()).unwrap();
     assert_eq!(m.retired(), retired);
     assert!(!m.powered());
     m.power_on(&mut ()).unwrap();
-    assert_eq!(m.ram()[0], 0);
+    assert_eq!(m.ram()[0], marker);
     assert_eq!(m.eeprom().as_slice(), saved);
-    m.run_until(Time::from_micros(120), &[], &mut ()).unwrap();
-    assert!(m.retired() > 0);
+    m.run_until(Time::from_micros(400), &[], &mut ()).unwrap();
+    assert_eq!(m.retired(), retired); // main crystal is still starting
+    m.run_until(Time::from_micros(420), &[], &mut ()).unwrap();
+    assert!(m.retired() > retired);
 }
 
 #[test]

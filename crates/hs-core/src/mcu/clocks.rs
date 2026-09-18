@@ -97,6 +97,7 @@ pub struct Clocks {
     system_denominator: u64,
     revision: u64,
 }
+pub(crate) mod startup;
 pub(crate) struct SourcePower {
     pub main: bool,
     pub oscillator: bool,

@@ -22,6 +22,7 @@ pub mod cpu;
 pub mod devices;
 pub mod error;
 pub mod mcu;
+mod power;
 pub mod signals;
 pub mod time;
 pub use error::Error;

@@ -152,6 +152,10 @@ impl Default for Sci {
     }
 }
 impl Sci {
+    pub(crate) fn supply_lost(&mut self) {
+        // A mux's transient electrical excursion cannot outlive its supply.
+        self.mux_glitch = None;
+    }
     pub fn handles(a: u16) -> bool {
         matches!(a, 0xff91 | 0xff98..=0xff9d | 0xffa6 | 0xffa7)
     }

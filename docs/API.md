@@ -27,8 +27,12 @@ calibration. P84 must actually drive high to enable the sense path.
 `with_persistent_state(images, conditions, Some(sensor_bytes))` additionally loads
 the 19-byte BMA nonvolatile image. `None` selects the canonical sensor image.
 
-These parameters describe one model instance, not fast/accurate choices. Source
-and physical parameter limitations are documented in STATUS.
+Time zero is a powered, oscillator-ready board at reset-vector entry. This
+explicit initial state avoids imposing an arbitrary battery-insertion history.
+Set the initial supply to zero and supply a timestamped rail rise to exercise a
+discharged RES capacitor and cold oscillator startup through the same model.
+Cold RAM has the deterministic zero realization. Source and physical parameter
+choices are documented in STATUS.
 
 ## Advance and input consumption
 
@@ -95,10 +99,24 @@ snapshot the machine, and record the corresponding input position together.
 `Input::ResetPin(false)` asserts active-low MCU reset; `true` raises the pin.
 The internal reset releases after eight actual reference-clock edges. A new low
 level restarts qualification. WDT's separate 512-ROSC hold remains independent.
-External component lifetimes are not erased just because the MCU resets.
-`power_off(output)` and `power_on(output)` are whole-product lifecycle calls at
-the current boundary. Power removal stops activity and preserves partial nonvolatile
-programming through the same cell model used during normal progress.
+This fixture drives the actual package pin, overriding its ordinary RC voltage.
+With no fixture, the board's RES capacitor retains charge across rail segments
+and determines whether restoration causes a reset. External component lifetimes
+are not erased just because the MCU resets.
+
+`power_off(output)` disconnects the common rail; `power_on(output)` reconnects
+the configured voltage at the current boundary. Their timestamped equivalents
+are `Input::Power`. A supply input changes the configured voltage without
+reconnecting an explicitly disconnected battery. `powered()` means that the
+effective rail is nonzero, not that every chip or clock is ready.
+
+Physical time continues while the rail is absent. Short interruptions retain
+RAM, RTC state and unfinished CPU work; sustained undervoltage exhausts the
+selected volatile-cell retention budget. MCU, EEPROM, sensor and LCD availability
+follow their own supply domains. Oscillator startup prevents cold execution
+before main-clock readiness; the watch crystal can become ready later without
+holding the main CPU. Interrupted nonvolatile programming preserves partial
+cells through the same model used during normal progress.
 
 `Input::NmiPin(bool)` controls the dedicated NMI input, separate from IRQ enables
 and flags. It defaults high and preserves its physical level across MCU reset.
@@ -109,9 +127,11 @@ optional fixture drives (`None` releases them). The actual names/variant field
 spelling are defined in `signals.rs`; see INPUTS for the CLI equivalents. These
 fixtures flow through real routed owners, not host-created interrupt flags.
 
-Supply changes affect the analog network; zero supply removes board power and
-restoring a nonzero supply powers it on. Nonzero voltage changes do not invent
-a clean brownout reset.
+Supply changes affect the analog network and functional availability. Falling
+below a chip's operating range freezes or interrupts its physical work; this
+does not by itself assert a clean brownout reset. RES charge and retention are
+separate mechanisms. Their nominal constants and numerical witnesses are in
+[the power contract](research/power-startup-implementation.md).
 
 ## Concurrency and allocation
 

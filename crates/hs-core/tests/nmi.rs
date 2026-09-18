@@ -141,15 +141,14 @@ fn reset_strap_low_is_not_silently_executed_as_user_firmware() {
 }
 
 #[test]
-fn low_nmi_power_on_rejection_preserves_powered_off_state() {
+fn low_nmi_during_a_short_power_dip_is_neither_an_edge_nor_a_reset_strap() {
     let mut m = program(&[0x40, 0xfe]);
     m.power_off(&mut ()).unwrap();
     m.run_until(t(1), &[input(0, false)], &mut ()).unwrap();
-    let before = m.snapshot();
-    assert!(m.power_on(&mut ()).is_err());
-    assert_eq!(m.snapshot(), before);
-    m.run_until(t(2), &[input(1, true)], &mut ()).unwrap();
     m.power_on(&mut ()).unwrap();
-    m.run_until(t(50), &[], &mut ()).unwrap();
+    m.run_until(t(400), &[], &mut ()).unwrap();
+    assert!(m.powered());
+    assert_eq!(m.statistics().resets, 0);
     assert_eq!(m.interrupt_entries(), 0);
+    assert!(m.retired() > 0);
 }

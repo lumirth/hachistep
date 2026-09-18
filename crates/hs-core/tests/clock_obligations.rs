@@ -296,8 +296,16 @@ fn stopped_watch_crystal_can_be_replaced_by_rosc_without_losing_work() {
     m.sync(t(1215)).unwrap();
     m.write8(0xfff5, 0, WriteOrigin::MovByte, t(1215), &mut ())
         .unwrap();
-    assert_eq!(wait.deadline(&m.clocks).unwrap(), Some(t(1220)));
-    m.sync(t(1220)).unwrap();
+    assert_eq!(wait.deadline(&m.clocks).unwrap(), None);
+    // Newly started X1 has its own two-second cold readiness. No watch
+    // edges are backfilled for the time spent acquiring oscillation.
+    let ready = t(1200).checked_add(hs_core::Duration::seconds(2)).unwrap();
+    m.sync(ready).unwrap();
+    let first = ready
+        .checked_add(hs_core::Duration::from_micros(10))
+        .unwrap();
+    assert_eq!(wait.deadline(&m.clocks).unwrap(), Some(first));
+    m.sync(first).unwrap();
     assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 8);
 }
 
@@ -325,8 +333,18 @@ fn last_rosc_consumer_stops_the_oscillator_at_the_actual_write() {
     m.sync(t(999)).unwrap();
     m.write8(0xfff5, 0x20, WriteOrigin::MovByte, t(999), &mut ())
         .unwrap();
+    assert!(!m.clocks.available(Tap::on_chip(1)));
+    let ready = t(999)
+        .checked_add(hs_core::Duration::from_micros(15))
+        .unwrap();
+    m.sync(ready).unwrap();
     assert!(m.clocks.available(Tap::on_chip(1)));
-    assert_eq!(m.clocks.after(t(999), 1, Tap::on_chip(1)).unwrap(), t(1000));
+    assert_eq!(
+        m.clocks.after(ready, 1, Tap::on_chip(1)).unwrap(),
+        ready
+            .checked_add(hs_core::Duration::from_micros(1))
+            .unwrap()
+    );
 }
 
 #[test]

@@ -48,6 +48,9 @@ pub struct Bma150 {
     image_deadline: Option<Time>,
     interrupts: interrupts::Interrupts,
     data_ready: bool,
+    unpowered_since: Option<Time>,
+    cold: bool,
+    serial_ready: Option<Time>,
 }
 impl Bma150 {
     pub fn new(now: Time) -> Self {
@@ -93,6 +96,9 @@ impl Bma150 {
             image_deadline: None,
             interrupts,
             data_ready: false,
+            unpowered_since: None,
+            cold: false,
+            serial_ready: None,
         }
     }
     /// Restore the sensor's own 0x2b..=0x3d nonvolatile image before execution.
@@ -139,6 +145,8 @@ impl Bma150 {
             });
         }
         self.set_selected(false);
+        self.unpowered_since.get_or_insert(now);
+        self.cold = true;
     }
     pub fn power_on(&mut self, now: Time) {
         let image = self.nonvolatile;
@@ -149,6 +157,52 @@ impl Bma150 {
         self.input = input;
         self.temperature_millicelsius = temperature;
         self.copy_image();
+        self.serial_ready = now.checked_add(Duration::from_millis(3));
+    }
+    pub(crate) fn lose_volatile(&mut self) {
+        self.cold = true;
+    }
+    pub(crate) fn set_supply(
+        &mut self,
+        rail: u16,
+        now: Time,
+        output: &mut dyn Output,
+    ) -> Result<(), Error> {
+        if rail < 2400 {
+            if self.unpowered_since.is_none() {
+                self.power_off(now, output);
+                self.cold = rail == 0;
+            } else if rail == 0 {
+                self.cold = true;
+            }
+        } else if let Some(at) = self.unpowered_since {
+            if self.cold {
+                self.power_on(now);
+            } else {
+                let duration = now
+                    .duration_since(at)
+                    .ok_or(crate::time::TimeError::Reversed)?;
+                for deadline in [
+                    &mut self.quiet_deadline,
+                    &mut self.pause_deadline,
+                    &mut self.irq_hold,
+                    &mut self.image_deadline,
+                    &mut self.serial_ready,
+                ] {
+                    *deadline = deadline
+                        .map(|t| {
+                            t.checked_add(duration)
+                                .ok_or(crate::time::TimeError::Overflow)
+                        })
+                        .transpose()?;
+                }
+                self.unpowered_since = None;
+                if !self.asleep {
+                    self.start_acquisition(now, Duration::from_millis(1))?;
+                }
+            }
+        }
+        Ok(())
     }
     pub fn set_input(&mut self, input: Acceleration) -> Result<(), Error> {
         if [input.x, input.y, input.z]
@@ -182,14 +236,18 @@ impl Bma150 {
         image
     }
     pub fn next_sample(&self) -> Option<Time> {
-        if self.sleeping() || self.wake_deadline.is_some() {
+        if self.unpowered_since.is_some() || self.sleeping() || self.wake_deadline.is_some() {
             None
         } else {
             self.sample_clock.next().ok()
         }
     }
     pub fn deadline(&self) -> Option<Time> {
+        if self.unpowered_since.is_some() {
+            return None;
+        }
         [
+            self.serial_ready,
             self.next_sample(),
             self.wake_deadline,
             self.pause_deadline,
@@ -203,6 +261,9 @@ impl Bma150 {
         .min()
     }
     pub fn at_deadline(&mut self, now: Time, output: &mut dyn Output) -> Result<(), Error> {
+        if self.serial_ready == Some(now) {
+            self.serial_ready = None;
+        }
         let was_irq = self.interrupt();
         let hold_ended = self.irq_hold == Some(now);
         if hold_ended {
@@ -394,6 +455,7 @@ impl Bma150 {
         }
     }
     pub fn set_selected(&mut self, selected: bool) {
+        let selected = selected && self.unpowered_since.is_none();
         if self.selected != selected {
             self.selected = selected;
             self.serial = Serial::Address;
@@ -408,14 +470,24 @@ impl Bma150 {
         }
     }
     pub fn output(&self) -> Drive {
-        if self.selected && self.four_wire() && !self.sleeping() && self.quiet_deadline.is_none() {
+        if self.serial_ready.is_none()
+            && self.selected
+            && self.four_wire()
+            && !self.sleeping()
+            && self.quiet_deadline.is_none()
+        {
             self.driven
         } else {
             Drive::Floating
         }
     }
     pub fn data_output(&self) -> Drive {
-        if self.selected && !self.four_wire() && !self.sleeping() && self.quiet_deadline.is_none() {
+        if self.serial_ready.is_none()
+            && self.selected
+            && !self.four_wire()
+            && !self.sleeping()
+            && self.quiet_deadline.is_none()
+        {
             self.driven
         } else {
             Drive::Floating
@@ -425,6 +497,9 @@ impl Bma150 {
         self.registers[0x15] & 0x80 != 0
     }
     pub fn falling(&mut self) -> Drive {
+        if self.serial_ready.is_some() || self.unpowered_since.is_some() {
+            return Drive::Floating;
+        }
         if self.four_wire() {
             self.shift_output();
         }
@@ -453,7 +528,7 @@ impl Bma150 {
         self.tx_bit = self.tx_bit.saturating_add(1).min(8);
     }
     pub fn rising(&mut self, mosi: bool, now: Time) -> Result<(), Error> {
-        if !self.selected || self.quiet_deadline.is_some() {
+        if !self.selected || self.serial_ready.is_some() || self.quiet_deadline.is_some() {
             return Ok(());
         }
         if self.turnaround {
@@ -504,6 +579,39 @@ impl Bma150 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn undervoltage_preserves_configuration_and_cold_return_qualifies_serial() {
+        let mut b = Bma150::new(Time::ZERO);
+        write(&mut b, 0x14, 0x05);
+        b.set_supply(2000, Time::from_micros(100), &mut ()).unwrap();
+        assert_eq!(b.deadline(), None);
+        b.set_selected(true);
+        assert_eq!(b.output(), Drive::Floating);
+        b.set_supply(3000, Time::from_micros(1100), &mut ())
+            .unwrap();
+        assert_eq!(b.peek(0x14), Some(0x05));
+        let first = b.deadline().unwrap();
+        assert!(first > Time::from_micros(1700) && first < Time::from_micros(1800));
+        b.set_supply(0, Time::from_micros(1200), &mut ()).unwrap();
+        b.set_supply(3000, Time::from_micros(2200), &mut ())
+            .unwrap();
+        assert_eq!(b.peek(0x14), Some(0x0e)); // Factory working image reloaded.
+        b.set_selected(true);
+        for _ in 0..8 {
+            b.rising(true, Time::from_micros(2300)).unwrap();
+        }
+        assert_eq!(b.output(), Drive::Floating);
+        assert_eq!(b.serial, Serial::Address);
+        b.set_supply(1, Time::from_micros(2400), &mut ()).unwrap();
+        b.lose_volatile();
+        b.set_supply(3000, Time::from_micros(1_002_400), &mut ())
+            .unwrap();
+        assert_eq!(b.peek(0x14), Some(0x0e));
+        assert_eq!(
+            b.serial_ready,
+            Time::from_micros(1_002_400).checked_add(Duration::from_millis(3))
+        );
+    }
     fn xfer(b: &mut Bma150, v: u8) -> u8 {
         let mut r = 0;
         for n in (0..8).rev() {

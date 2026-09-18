@@ -212,34 +212,36 @@ counting, not by running the implementation and recording its output.
 | Functional gates | Hold rail at 2.0 V, then 1.7 V, then restore 3 V. | At 2.0 V MCU/EEPROM and LCD digital logic can operate; BMA and LCD analog drive cannot. At 1.7 V MCU/EEPROM also stop. Neither crossing is itself a universal POR or RAM clear. |
 | Causal snapshot | Snapshot during RC charging, after four release edges, during watch startup, and during retained rail absence. | Restore keeps the original charge, consumed edges, source deadlines, and retention dose. Subsequent effects and timestamps match; no timer restarts at restoration. |
 
-## Concrete current gaps and correction order
+## Implementation checkpoint
 
-Checkpoint: the external RES release counter now uses the existing `ClockWait`
-with eight reference-clock edges. Reassertion, exact exclusive endpoints,
-snapshot restoration and overlap with the independent WDT hold are tested.
-The remaining capacitor, supply readiness and retention work below is pending.
+Implemented in `power.rs`, `mcu/clocks/startup.rs` and their device owners:
+RC charge and threshold appointments, eight-edge RES release, independent WDT
+hold, source readiness, finite volatile retention and chip-specific functional
+gates. Resuming a short dip retains the interrupted CPU access and RTC state;
+cold reset reads the actual flash vector after its wake interval. The common
+retention exposure also invalidates BMA volatile state after deep nonzero dips.
+This extends the selected LCD retention inference to the sensor, without treating
+a minimum rated supply as a measured POR threshold.
 
-1. [`Machine` construction/power/reset](../../crates/hs-core/src/machine.rs)
-   admits execution for any nonzero rail, and pin release immediately removes
-   `hold_reset`. Add RES qualification and cold source availability before
-   accepting CPU work. Keep WDT and RES cause latches distinct.
-2. [`Mcu::power_on`](../../crates/hs-core/src/mcu/mod.rs) always rebuilds clocks,
-   clears RAM, and reconstructs RTC. Split rail recovery, actual reset, and
-   volatile loss so short dips and powered reset retain the correct domains.
-3. [`Clocks`](../../crates/hs-core/src/mcu/clocks.rs) creates/restarts sources
-   immediately. Add physical readiness to source demand, without changing
-   shared prescaler ownership or advancing clock obligations while absent.
-4. [`Machine::power_off/power_on`](../../crates/hs-core/src/machine.rs) globally
-   suspends scheduling and recreates the LCD; nonzero undervoltage only changes
-   conditions. Add the per-owner availability rules and preserve LCD RAM on
-   short interruption. The BMA already has a sample cold-start delay; its
-   serial availability and power return must use the same cold state.
+The constructor selects an already energized, clock-ready board at reset-vector
+entry. Initial zero supply selects a discharged board; a later rail rise takes
+the same RC/source path as subsequent physical power transitions. `ResetPin`
+remains an advanced strong package-voltage fixture, so its high drive overrides
+the capacitor rather than meaning an open-drain release. With no fixture, the
+ordinary board pull-up/capacitor applies. An explicit `Power(false)` disconnects
+the rail until `Power(true)`; supply inputs set the connected voltage.
 
-No production code, fixtures, tests, builds, or commits were changed for this
-investigation. The primary timing/counter rules can be implemented directly.
+Focused tests distinguish 1-ms retention without reset, 5-ms retention with
+reset, 10-ms zero-volt loss, and 30-ms loss at 1 V. They cover the exclusive
+first cold vector transfer at 16096.75 us on a 4-MHz unit, snapshot replay through
+rail absence/qualification, late watch startup without RTC backfill, per-device
+voltage behavior and interrupted LCD RESETB qualification. Seven independent
+hachiware guest programs observe boot count or RAM while the CPU is unavailable.
+Allocation monitoring includes a sustained collapse and cold recovery.
+
 Capacitance, absence of an extra RES discharge path, first-edge startup
-waveforms, and retention exposure are the specifically identified physical
-constants/approximations to replace when board measurements become available.
+waveforms, and retention exposure remain the explicitly chosen physical
+constants to refine with board measurements. No physical capture is implied.
 
 [h8-reset]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=403
 [h8-por]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=442

@@ -4,7 +4,7 @@
 use crate::{
     error::Error,
     signals::{Event, Output},
-    time::Time,
+    time::{Duration, Time, TimeError},
 };
 mod scan;
 pub use scan::LcdDrive;
@@ -47,6 +47,10 @@ pub struct Nt7508 {
     otp_control: u8,
     oscillator_enabled: bool,
     scan: scan::Scan,
+    supplied: bool,
+    analog: bool,
+    cold: bool,
+    ready: Option<Time>,
 }
 impl Default for Nt7508 {
     fn default() -> Self {
@@ -91,6 +95,54 @@ impl Nt7508 {
             otp_control: 0,
             oscillator_enabled: false,
             scan: scan::Scan::default(),
+            supplied: true,
+            analog: true,
+            cold: false,
+            ready: None,
+        }
+    }
+    pub(crate) fn set_supply(&mut self, rail: u16, now: Time) -> Result<(), Error> {
+        let supplied = rail >= 1650;
+        if self.supplied && !supplied {
+            self.scan = self.project_scan(now)?;
+            self.scan.stop();
+            self.select(false);
+            self.ready = None;
+        }
+        if rail == 0 {
+            self.cold = true;
+        }
+        if supplied && !self.supplied {
+            if self.cold {
+                let (ram, icons) = (self.ram, self.icons);
+                *self = Self::new();
+                self.ram = ram;
+                self.icons = icons;
+                self.cold = true;
+                self.ready = Some(
+                    now.checked_add(Duration::from_micros(21))
+                        .ok_or(TimeError::Overflow)?,
+                );
+            } else {
+                self.update_clock(now, true)?;
+            }
+        }
+        self.supplied = supplied;
+        self.analog = rail >= 2400;
+        Ok(())
+    }
+    pub(crate) fn lose_volatile(&mut self) {
+        self.ram.fill(0);
+        self.icons.fill(0);
+        self.cold = true;
+    }
+    pub(crate) fn deadline(&self) -> Option<Time> {
+        self.ready
+    }
+    pub(crate) fn at_deadline(&mut self, now: Time) {
+        if self.ready == Some(now) {
+            self.ready = None;
+            self.cold = false;
         }
     }
     pub fn select(&mut self, selected: bool) {
@@ -104,7 +156,7 @@ impl Nt7508 {
         self.data = data;
     }
     pub fn rising(&mut self, mosi: bool, now: Time, output: &mut dyn Output) -> Result<(), Error> {
-        if !self.selected {
+        if !self.selected || !self.supplied || self.ready.is_some() {
             return Ok(());
         }
         self.shift = self.shift << 1 | u8::from(mosi);
@@ -137,7 +189,7 @@ impl Nt7508 {
         self.start_line
     }
     pub fn enabled(&self) -> bool {
-        self.display_on && !self.power_save
+        self.supplied && self.analog && self.ready.is_none() && self.display_on && !self.power_save
     }
     pub fn write_counted_fixture(
         &mut self,
@@ -307,6 +359,47 @@ impl Nt7508 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn supply_domains_retain_ram_and_separate_scan_from_analog_drive() {
+        let mut lcd = Nt7508::new();
+        for command in [0xa5, 0xaf, 0xab] {
+            lcd.write_counted_fixture(false, command, Time::ZERO, &mut ())
+                .unwrap();
+        }
+        lcd.write_counted_fixture(true, 0xa5, Time::ZERO, &mut ())
+            .unwrap();
+        let mut reference = lcd.clone();
+        lcd.set_supply(2000, Time::from_micros(100)).unwrap();
+        assert_eq!(lcd.drive(Time::from_micros(200)).unwrap(), LcdDrive::OFF);
+        lcd.set_supply(3000, Time::from_micros(300)).unwrap();
+        assert_eq!(
+            lcd.drive(Time::from_micros(400)).unwrap(),
+            reference.drive(Time::from_micros(400)).unwrap()
+        );
+        assert_eq!(lcd.ram()[0], 0xa5);
+        lcd.set_supply(1600, Time::from_micros(400)).unwrap();
+        lcd.set_supply(3000, Time::from_micros(1400)).unwrap();
+        assert_eq!(lcd.ram()[0], 0xa5);
+        assert!(lcd.enabled()); // Nonzero dip does not invent RESETB.
+        lcd.set_supply(0, Time::from_micros(1500)).unwrap();
+        lcd.set_supply(3000, Time::from_micros(2500)).unwrap();
+        assert_eq!(lcd.ram()[0], 0xa5);
+        assert!(!lcd.enabled()); // Real rail removal invokes board RESETB.
+        lcd.write_counted_fixture(false, 0xaf, Time::from_micros(2510), &mut ())
+            .unwrap();
+        lcd.set_supply(1600, Time::from_micros(2510)).unwrap();
+        lcd.set_supply(3000, Time::from_micros(2511)).unwrap();
+        lcd.write_counted_fixture(false, 0xaf, Time::from_micros(2525), &mut ())
+            .unwrap();
+        assert_eq!(
+            lcd.deadline(),
+            Time::from_micros(2511).checked_add(Duration::from_micros(21))
+        );
+        lcd.at_deadline(lcd.deadline().unwrap());
+        assert!(!lcd.enabled(), "command inside the RESETB hold was ignored");
+        reference.lose_volatile();
+        assert_eq!(reference.ram()[0], 0);
+    }
     fn commands(lcd: &mut Nt7508, bytes: &[u8]) {
         for &byte in bytes {
             lcd.write_counted_fixture(false, byte, Time::ZERO, &mut ())

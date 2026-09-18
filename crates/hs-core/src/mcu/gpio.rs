@@ -48,6 +48,20 @@ impl Default for SerialLevels {
     }
 }
 impl Gpio {
+    /// Resolve the board's pull resistors and fixture drivers with all MCU
+    /// output stages unavailable, without discarding their retained latches.
+    pub(crate) fn resolve_unpowered(&mut self, external_data: [Option<bool>; 2]) -> SerialLevels {
+        let mut pins = Self {
+            buttons: self.buttons,
+            analog_levels: self.analog_levels,
+            digital_levels: self.digital_levels,
+            incident_light: self.incident_light,
+            ..Self::default()
+        };
+        let levels = pins.resolve(Pins::default(), 0, 0, external_data);
+        self.levels = pins.levels;
+        levels
+    }
     pub fn set_iic_pins(&mut self, pins: Option<[bool; 2]>) {
         self.iic = pins;
     }

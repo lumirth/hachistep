@@ -204,13 +204,13 @@ fn analog_input_collisions_are_checked_before_machine_mutation() {
 }
 
 #[test]
-fn inspection_after_explicit_power_on_does_not_project_before_reset() {
+fn inspection_after_an_instant_power_toggle_keeps_retained_comparator_state() {
     let mut a = fixture();
     a.run_until(at(1000), &[], &mut ()).unwrap();
     a.power_off(&mut ()).unwrap();
     a.power_on(&mut ()).unwrap();
     let before = a.clone();
-    assert_eq!(a.peek(0xf0dc).unwrap(), 0);
+    assert_eq!(a.peek(0xf0dc).unwrap(), 0xc8);
     assert_eq!(a, before);
 }
 

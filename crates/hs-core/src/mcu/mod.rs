@@ -55,6 +55,7 @@ pub struct Mcu {
     pub aec: Aec,
     pub comparators: Comparators,
     reset_held: bool,
+    startup: clocks::startup::Startup,
     /// Cleared enables still qualify surviving sources at this instruction's admission point.
     admission_enables: [u8; 10],
 }
@@ -77,6 +78,7 @@ impl Mcu {
             aec: Aec::default(),
             comparators: Comparators::default(),
             reset_held: false,
+            startup: Default::default(),
             admission_enables: [0; 10],
         };
         m.apply_gates(Time::ZERO, &mut ())?;
@@ -91,6 +93,9 @@ impl Mcu {
     /// Synchronize clocked counters at an actual effect boundary. The return
     /// flag requests an MCU reset; attached device owners are not reconstructed.
     pub fn sync(&mut self, now: Time) -> Result<bool, Error> {
+        if !self.startup.supplied() {
+            return Ok(false);
+        }
         self.sci.sync(now, &self.clocks)?;
         self.adc.sync(now, &self.clocks)?;
         self.comparators.sync(now)?;
@@ -101,7 +106,11 @@ impl Mcu {
             self.control.irr2 |= 4;
         }
         self.timer_w.sync(now, &self.clocks)?;
-        Ok(self.watchdog.sync(now, &self.clocks))
+        let reset = self.watchdog.sync(now, &self.clocks);
+        if self.startup.deadline() == Some(now) {
+            self.apply_gates(now, &mut ())?;
+        }
+        Ok(reset)
     }
     pub fn collect_aec_requests(&mut self) {
         let requests = self.aec.take_requests();
@@ -132,12 +141,6 @@ impl Mcu {
         Ok(())
     }
     pub fn apply_gates(&mut self, now: Time, _out: &mut dyn Output) -> Result<(), Error> {
-        self.flash.environment(
-            self.control.mode,
-            self.control.gate1 & 2 != 0,
-            self.control.main_running() && self.control.osc & 2 == 0,
-            now,
-        )?;
         let watch_mode = self.control.mode != Mode::Standby
             && self.control.stabilizing_from != Some(Mode::Standby);
         let main = self.control.main_running();
@@ -148,8 +151,7 @@ impl Mcu {
         let on_chip = self.reset_held
             || self.watchdog.rosc_for_module(self.control.gate2 & 4 != 0)
             || (self.control.mode != Mode::Standby && watch_on_chip);
-        self.clocks.power_sources(
-            now,
+        let power = self.startup.qualify(
             clocks::SourcePower {
                 main,
                 oscillator: main || self.control.stabilizing_from.is_some(),
@@ -158,6 +160,22 @@ impl Mcu {
                 on_chip,
                 watch_on_chip,
             },
+            now,
+            self.control.osc & 2 != 0,
+        )?;
+        self.clocks.power_sources(now, power)?;
+        // Physical rail loss freezes retained logic; it is not a register
+        // module-stop write and must not reset shifters or counters.
+        if !self.startup.supplied() {
+            return Ok(());
+        }
+        self.flash.environment(
+            self.control.mode,
+            self.control.gate1 & 2 != 0,
+            self.control.main_running()
+                && self.control.osc & 2 == 0
+                && self.clocks.available(Tap::oscillator()),
+            now,
         )?;
         self.clocks.set_prescalers(
             now,
@@ -235,8 +253,23 @@ impl Mcu {
         )?;
         Ok(())
     }
-    pub fn power_on(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
-        self.clocks = Clocks::new(now, self.clocks.frequencies)?;
+    pub(crate) fn set_supply(
+        &mut self,
+        millivolts: u16,
+        now: Time,
+        out: &mut dyn Output,
+    ) -> Result<(), Error> {
+        let was = self.startup.supplied();
+        self.startup.set_rail(millivolts);
+        let supplied = self.startup.supplied();
+        if was && !supplied {
+            self.flash.power_off(now);
+            self.sci.supply_lost();
+        }
+        self.comparators.set_supply(supplied, now)?;
+        self.apply_gates(now, out)
+    }
+    pub(crate) fn lose_volatile(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
         self.rtc = Rtc::default();
         self.ram.fill(0);
         self.reset(now, false, out)
@@ -305,7 +338,8 @@ impl Mcu {
         self.gpio.set_clock_output(level, floating);
     }
     pub fn clock_output_deadline(&self, now: Time) -> Result<Option<Time>, Error> {
-        if self.control.mode == Mode::Standby
+        if !self.startup.supplied()
+            || self.control.mode == Mode::Standby
             || self.control.stabilizing_from == Some(Mode::Standby)
         {
             return Ok(None);
@@ -316,7 +350,11 @@ impl Mcu {
         }
     }
     pub fn deadline(&self) -> Result<Option<Time>, Error> {
+        if !self.startup.supplied() {
+            return Ok(None);
+        }
         Ok([
+            self.startup.deadline(),
             self.rtc.deadline(&self.clocks)?,
             self.timer_b1.deadline(&self.clocks)?,
             self.timer_w.deadline(&self.clocks)?,

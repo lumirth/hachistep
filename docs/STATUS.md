@@ -29,7 +29,7 @@ listed explicitly below. An absence of model faults is not a completeness proof.
 | `cpu/alu.rs` | Explicit 8/16/32-bit arithmetic, register aliases, CCR updates; exhaustive byte add/sub input cases. Division continues on zero/overflow with documented N/Z flags; hachiware checks all signed/unsigned widths. | Undefined divide destination bits retain the dividend on zero and narrow quotient/remainder on overflow. Wider flag cases and unusual DAA/DAS incoming flags need broader independent evidence. |
 | `cpu/mod.rs` | One resumable interpreter with retained opcode prefetch and ordered physical accesses. Independent diagnostics cover RAM self-modification, call/stack aliases, predecrement, RTE/LDC admission, EEPMOV interruption, reset's first instruction, enable-clearing admission and duplicated exception CCR bytes. | Subcycle NMI timing and some internal commitment phases remain inferred. STC.W's unspecified odd byte is zero. See [execution research](research/h8-execution.md) and the [CPU audit](research/h8-cpu-completion-audit.md). |
 | `machine.rs` | Exclusive horizons, physical timelines, cached next-device boundary, callbacks, fault latching, snapshots, reset/power API. CPU, SSU, SCI, ADC and power-transition waits retain source-edge obligations. | Same-time ordering is currently devices, then input batch, then CPU; individual register conflict rules need further coverage. |
-| `mcu/clocks.rs` | Separate CPU and peripheral references, shared oscillator phases, resettable S/W prescalers with retained stop phases and monotonic edge ordinals. SSU's subclock uses the latched SA divider. | Nominal 3,686,400 / 32,768 / 1,310,720 Hz are model choices. OSCCR stop/mux controls and ROSC consumer gating are implemented. Oscillator startup envelopes and feedback analog behavior remain physical-model work. No arbitrary rational frequency through public `Conditions` yet. |
+| `mcu/clocks.rs` | Separate CPU and peripheral references, shared oscillator phases, resettable S/W prescalers with retained stop phases and monotonic edge ordinals. SSU's subclock uses the latched SA divider. | Nominal 3,686,400 / 32,768 / 1,310,720 Hz are model choices. OSCCR stop/mux controls and ROSC consumer gating are implemented. Cold readiness and watch/ROSC restarts use the nominal startup waveforms below; analog feedback behavior is not characterized. No arbitrary rational frequency through public `Conditions` yet. |
 | `mcu/control.rs` | Main/subactive/sleep/subsleep/watch/standby, direct-transition intermediate modes and one old-clock internal cycle, STS wait in undivided oscillator cycles, masked transitions, external IRQ/NMI. IRQ mux changes on low inputs set the request and protect its clear through one intervening instruction. | Mux clearing delay implements the documented instruction-level effect; it is not a characterized analog delay. The canonical board uses its main-oscillator reset strap. Bootstrap mode still needs an owner. |
 | `mcu/gpio.rs` | Port latches/directions, SSU package mux and IRQ priority, independent serial selects, P9 open-drain release, physical buttons and timer drive routing. Pull-ups require input direction even when an alternate input is selected; comparator-enabled PB pins retain their digital reads. | Electrical contention and some alternate functions remain incomplete. Timer W FTIOA/B/C/D/FTCI are routed through actual package pins. PCR readback remains a latch witness. No invented BMA interrupt wire. |
 | `mcu/timer_b1.rs` | Analytical interval/reload counting, distinct load state, overflow IRQ, gated clocks, live load/mode/source writes and mux-induced edges. | Accepting live writes and their mux edges follows the connected latch/counter model beyond the recommended stopped configuration sequence. |
@@ -41,7 +41,7 @@ listed explicitly below. An absence of model faults is not a completeness proof.
 | `mcu/sci.rs` | One clock-counted shift/holding owner for asynchronous and synchronous TX/RX, internal/external clocking, corrected five-bit formats, startup mark, stop/D7 preload, sampled start detection, errors/overrun, and IrDA. GPIO and SCI share P30 shutdown, P31 receive, and P32 transmit. | IR pulse launch/decoder and off-sequence clock/format transitions use the local circuit rules in the SCI research note. Analog optical response remains incomplete. HGSS peer interoperability has not been tested. |
 | `devices/m95512.rs` | Bit-level SPI commands, sequential reads, 128-byte page wrap, WEL through write completion, protection, exact WRSR length, POR selection qualification, and delayed commits. Power loss retains partial addressed cells; exports project the same cells without completing the write. | Five-millisecond programming time, equal erase/program phases and fixed per-cell thresholds describe the canonical part. Threshold distribution is inferred. Board HOLD/WP routes are not invented. |
 | `devices/bma150.rs` | Physical micro-g input, quantization, bounded filter history, register/shadow state, protected window, working/nonvolatile image, four-wire SPI, basic data-ready/any-motion state. | Exact filter window mapping, rounding, calibration effects, staggered axis publication, interrupt algorithms and physical parameters are not certified. See details below. |
-| `devices/nt7508.rs` | 4 KiB RAM plus icons, serial parser, persistent pending parameters across deselection, command/control state, addressing/bitplanes, logical 96x64 rendering. | Analog drive/FRC/PWM/scan timing and several retained analog control effects are not simulated. Panel COM mapping and terminal-column behavior are witnesses. |
+| `devices/nt7508.rs` | 4 KiB RAM plus icons, serial parser, pending parameters across deselection, full controller addressing, analytic scan with row/PWM/FRC/output latches, digital drive and logical 96x64 rendering; independent supply domains and retained RAM. | Analog glass response and several retained analog control effects are not simulated. Panel COM mapping and terminal-column behavior are witnesses. |
 | `mcu/flash.rs` | Target 48-KiB array and six erase blocks, register gates/protection, 128-byte page latch, cumulative programming/erase exposure, four-byte verify latch, reset/power retention and separate 20-µs wake. RAM-executed guest cases cover retry programming, both large erase blocks, FLER and early sense/wake reads. | Cell thresholds and setup/recovery behavior outside prescribed algorithms use the nominal physical model in [flash research](research/h8-flash-implementation.md). No wear or measured charge-pump voltage curve. Flash images project partial cells; per-pulse persistence callbacks are not yet emitted. Bootstrap execution remains separate work. |
 | Comparators | Both channels; correct P30 VCref route, ladder/external references, hysteresis, read-armed IRQ baseline, qualified flag clear, vector 36, module/reset behavior; guest wake/replay test and pin stimuli. | Response uses a 15 µs inertial witness (the manual specifies a maximum, not an exact delay). Non-hysteresis VIH follows Table 18.2/Fig.18.2 despite conflicting CRS prose. No characterized analog noise/offset. Only the ADC-selected PB pin suppresses its digital read. |
 | AEC | Independent 8-bit and cascaded 16-bit counters, external edge selection, analytical internal counts, gated clock-return edges, PWM gating/output, read-qualified overflow flags and separate vectors 18/32. Real P10/P11/P12 pin routing and digital fixture inputs; inactive work elision with tested rejoin to shared clock phases. | Reference-prescaler polarity, coincident gate/clock ordering, module-stop details and IRQ synchronizer aperture need physical characterization. Live period/duty/source writes retain counter phase, forced-low output traverses the shared gate, disconnected clock/edge selections park, and reserved writable fields retain values. Undefined ECPWDR reads return zero as the selected bus value. |
@@ -130,24 +130,42 @@ to the unbonded three-wire interface and does not consume a parameter here.
 
 ### Power
 
-`Input::ResetPin` is a package-level MCU reset drive. Its low assertion is
-asynchronous; raising it starts the documented eight-phi release counter.
-Reassertion discards partial qualification, and WDT's independent 512-ROSC hold
-does not gain a second release count. `Machine::power_off/on`
-acts on the whole product. Input supply voltage affects the modeled battery measurement; a zero-voltage
-interval also invokes board power loss/restoration. Nonzero voltage changes do
-not invent a clean brownout reset.
-Cold RAM/CPU unspecified values are initialized deterministically. NMI defaults high as the user-mode strap. A low NMI at reset release/power-on rejects unimplemented bootstrap modes rather than silently executing user firmware. The selected NMI edge is latched independently of IEN/IRR; short-pulse synchronizer behavior is not characterized. A zero-voltage rail or explicit power-off stops all activity and resolves partial
-EEPROM/sensor writes. Completed writes emit NvCommit; interrupted writes emit
-NvInterrupted after their persistent-byte observations. The shared cell model
-uses zero as its erased state (documented for ST; inferred for Bosch), fixed
-thresholds and equal erase/program phases. RES-capacitor discharge, chip-specific
-undervoltage availability and cold-start readiness still need integration; a
-minimum rated operating voltage is not treated as a clean reset threshold.
-The new flash wake window also exposes a power-on integration gap: a caller
-must currently hold RES through flash startup before raising it, or the early
-reset-vector read sees unavailable data. The board startup/reset owner is the
-next integration task; see the [flash audit](research/h8-flash-owner-audit.md).
+The common rail, RES capacitor, oscillator startup, reset holds and volatile
+retention are independent retained state. Construction selects an already
+energized, oscillator-ready board at reset-vector entry; starting with zero
+supply instead represents a discharged board. Both use the same execution path.
+
+The nominal RES network is 100 kOhm/100 nF with the documented typical 0.8 VCC
+threshold. Its fixed-point exponential retains charge through dips. Raising RES
+starts the documented eight-phi release counter; reassertion discards partial
+qualification. An electrical `ResetPin` fixture directly drives that voltage.
+The WDT hold remains 512 ROSC edges without an extra RES release delay. NMI is
+sampled as a strap at actual reset release; boot mode is the remaining reset
+interface work, not a reason to reject an otherwise retained power recovery.
+
+Loss of valid MCU supply stops all source edges and active MCU drive while
+retaining logic. Cold main readiness is 300/600 us or 50 ms by voltage band;
+ROSC uses 15 us and watch uses 2/4 s. A restarted watch crystal also reacquires
+oscillation. Warm main wake retains its existing STS-counted sequence. The
+source phase starts on readiness without backfilling elapsed time. A normal
+cold reset therefore reaches the real flash vector after flash availability.
+
+RAM and RTC survive reset and short dips. The selected retention exposure is
+15000 mV.ms accumulated below 1.5 V, giving 10 ms at zero rail and 30 ms at
+1 V before deterministic cold-state loss. LCD RAM and sensor volatile-state loss use the same exposure law.
+MCU/EEPROM availability starts at 1.8 V; BMA at 2.4 V; LCD digital at 1.65 V
+and analog drive at 2.4 V. A nonzero sensor dip keeps configuration; a full
+collapse reloads its nonvolatile image and qualifies serial startup. LCD cold
+RESETB qualification takes 21 us and retains RAM unless its cells lost charge.
+These gates are functional limits, not invented POR thresholds.
+
+EEPROM and sensor supply loss interrupts programming before changed chip-select
+levels can accept a new command. Persistent-byte events precede completion or
+interruption notices. The current shared external-cell realization has fixed
+thresholds and equal erase/program phases. Capacitance, retention law and the
+lumped oscillator waveform are explicit nominal inferences; see the
+[power contract](research/power-startup-implementation.md). No measured
+board transient or physical retention characterization is claimed.
 
 ## Performance boundary
 

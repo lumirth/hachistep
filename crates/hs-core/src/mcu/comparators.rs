@@ -32,6 +32,7 @@ pub struct Comparators {
     input_mv: [u16; 2],
     response: Duration,
     synchronized_at: Time,
+    unpowered_since: Option<Time>,
 }
 impl Default for Comparators {
     fn default() -> Self {
@@ -43,10 +44,29 @@ impl Default for Comparators {
             input_mv: [0; 2],
             response: Duration::from_micros(15),
             synchronized_at: Time::ZERO,
+            unpowered_since: None,
         }
     }
 }
 impl Comparators {
+    pub(crate) fn set_supply(&mut self, on: bool, now: Time) -> Result<(), Error> {
+        if on {
+            if let Some(at) = self.unpowered_since.take() {
+                let elapsed = now.duration_since(at).ok_or(TimeError::Reversed)?;
+                for c in &mut self.channels {
+                    c.due = c
+                        .due
+                        .map(|due| due.checked_add(elapsed).ok_or(TimeError::Overflow))
+                        .transpose()?;
+                }
+                self.synchronized_at = now;
+            }
+        } else if self.unpowered_since.is_none() {
+            self.sync(now)?;
+            self.unpowered_since = Some(now);
+        }
+        Ok(())
+    }
     pub fn with_response(response: Duration) -> Result<Self, Error> {
         if response == Duration::ZERO {
             return Err(Error::BadInput("comparator response must be positive"));
@@ -57,6 +77,7 @@ impl Comparators {
         })
     }
     pub fn reset(&mut self, now: Time) {
+        let unpowered_since = self.unpowered_since;
         let response = self.response;
         let input_mv = self.input_mv;
         let supply_mv = self.supply_mv;
@@ -67,6 +88,7 @@ impl Comparators {
             supply_mv,
             reference_mv,
             synchronized_at: now,
+            unpowered_since,
             ..Default::default()
         };
     }
@@ -152,9 +174,15 @@ impl Comparators {
         Ok(())
     }
     pub fn deadline(&self) -> Option<Time> {
+        if self.unpowered_since.is_some() {
+            return None;
+        }
         self.channels.iter().filter_map(|c| c.due).min()
     }
     pub fn sync(&mut self, now: Time) -> Result<(), Error> {
+        if self.unpowered_since.is_some() {
+            return Ok(());
+        }
         if now < self.synchronized_at {
             return Err(TimeError::Reversed.into());
         }

@@ -66,6 +66,9 @@ impl Default for Scan {
     }
 }
 impl Scan {
+    pub(super) fn stop(&mut self) {
+        self.clock = None;
+    }
     fn rows(self) -> u64 {
         u64::from(self.duty) + u64::from(self.icon)
     }

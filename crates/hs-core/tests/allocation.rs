@@ -43,6 +43,18 @@ fn ordinary_run_has_no_heap_allocation() {
     result.unwrap();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
 
+    ENABLED.store(true, Ordering::SeqCst);
+    let result = (|| -> Result<(), hs_core::Error> {
+        m.power_off(&mut ())?;
+        m.run_until(hs_core::Time::from_micros(30000), &[], &mut ())?;
+        m.power_on(&mut ())?;
+        m.run_until(hs_core::Time::from_micros(50000), &[], &mut ())?;
+        Ok(())
+    })();
+    ENABLED.store(false, Ordering::SeqCst);
+    result.unwrap();
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+
     // Construction and snapshots may allocate; executing custom programming
     // firmware after either operation must retain the same execution contract.
     let mut m = flash_guest::machine();

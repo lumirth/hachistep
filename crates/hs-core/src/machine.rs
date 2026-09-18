@@ -12,6 +12,7 @@ use crate::{
         gpio::SerialLevels,
         Mcu,
     },
+    power::Power,
     signals::{Drive, Event, Input, Output, Piezo, TimedInput},
     time::{Time, TimeError},
 };
@@ -103,7 +104,8 @@ pub struct Machine {
     reset_asserted: bool,
     reset_release: Option<ClockWait>,
     watchdog_reset: Option<ClockWait>,
-    powered: bool,
+    connected: bool,
+    power: Power,
     fault: Option<Error>,
     stats: Statistics,
 }
@@ -147,18 +149,21 @@ impl Machine {
             piezo: Piezo::Neutral,
             incident_light: false,
             emitting: false,
-            reset_asserted: false,
+            reset_asserted: conditions.supply_millivolts < 1800,
             reset_release: None,
             watchdog_reset: None,
-            powered: conditions.supply_millivolts != 0,
+            connected: true,
+            power: Power::new(conditions.supply_millivolts)?,
             fault: None,
             stats: Statistics::default(),
         };
         m.sensor
             .set_temperature(conditions.temperature_millicelsius);
-        if m.powered {
-            m.resolve_board(&mut ())?;
-        }
+        m.mcu.set_supply(m.power.rail, m.now, &mut ())?;
+        m.mcu.hold_reset(m.reset_asserted, m.now, &mut ())?;
+        m.sensor.set_supply(m.power.rail, m.now, &mut ())?;
+        m.lcd.set_supply(m.power.rail, m.now)?;
+        m.resolve_board(&mut ())?;
         m.refresh_deadline()?;
         Ok(m)
     }
@@ -211,21 +216,13 @@ impl Machine {
         self.lcd.icons()
     }
     pub fn display(&self, pixels: &mut [u8; 6144]) {
-        if self.powered {
-            self.lcd.render(pixels);
-        } else {
-            pixels.fill(0);
-        }
+        self.lcd.render(pixels);
     }
     pub fn display_enabled(&self) -> bool {
-        self.powered && self.lcd.enabled()
+        self.lcd.enabled()
     }
     pub fn display_drive(&self) -> Result<crate::devices::nt7508::LcdDrive, Error> {
-        if !self.powered {
-            return Ok(crate::devices::nt7508::LcdDrive::OFF);
-        }
-        let at = Time::from_raw(self.now.raw().saturating_sub(1)).max(self.last_effect);
-        self.lcd.drive(at)
+        self.lcd.drive(self.observation_time())
     }
     pub fn display_start_line(&self) -> u8 {
         self.lcd.start_line()
@@ -242,7 +239,7 @@ impl Machine {
         if address < 0xc000 {
             return Ok(self.mcu.flash.peek(address, self.observation_time()));
         }
-        if Mcu::is_memory(address) || !self.powered {
+        if Mcu::is_memory(address) || !self.power.mcu() {
             return self.mcu.peek8(address);
         }
         let mut view = self.mcu.clone();
@@ -269,81 +266,94 @@ impl Machine {
     }
 
     pub fn powered(&self) -> bool {
-        self.powered
+        self.power.rail != 0
     }
-    /// Remove board power, retaining partially programmed nonvolatile cells.
-    /// ResetPin is a different MCU-only input and leaves external chips powered.
+    /// Disconnect the common rail. Physical decay keeps advancing while off.
     pub fn power_off(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if !self.powered {
+        if !self.connected {
             return Ok(());
         }
+        self.settle_boundary(out)?;
+        self.connected = false;
+        self.change_rail(0, None, out)
+    }
+    pub fn power_on(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        if self.connected {
+            return Ok(());
+        }
+        self.settle_boundary(out)?;
+        self.connected = true;
+        self.fault = None;
+        self.change_rail(self.conditions.supply_millivolts, None, out)
+    }
+    fn settle_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         if self.next_devices == Some(self.now) {
             self.devices_at_boundary(out)?;
         }
-        self.eeprom.power_off(self.now, out);
-        self.sensor.power_off(self.now, out);
-        self.mcu.flash.power_off(self.now);
-        self.last_effect = self.now;
-        self.mcu
-            .sci
-            .set_power(false, false, false, false, self.now, &self.mcu.clocks)?;
-        if self.emitting {
-            self.emitting = false;
-            out.event(Event::Infrared {
-                at: self.now,
-                emitting: false,
-            });
+        if self.mcu.sync(self.now)? {
+            self.reset_mcu(true, out)?;
         }
-        if self.piezo != Piezo::Neutral {
-            self.piezo = Piezo::Neutral;
-            out.event(Event::Buzzer {
-                at: self.now,
-                drive: Piezo::Neutral,
-            });
-        }
-        self.powered = false;
-        self.reset_release = None;
-        self.watchdog_reset = None;
-        self.pending = None;
-        self.resume_after = None;
-        self.next_devices = None;
-        out.event(Event::Power {
-            at: self.now,
-            on: false,
-        });
         Ok(())
     }
-    pub fn power_on(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if self.powered || self.conditions.supply_millivolts == 0 {
-            return Ok(());
-        }
-        if !self.reset_asserted && !self.mcu.control.nmi_level() {
-            return Err(Self::boot_strap_error());
-        }
+    fn change_rail(
+        &mut self,
+        rail: u16,
+        reset_drive: Option<bool>,
+        out: &mut dyn Output,
+    ) -> Result<(), Error> {
         self.last_effect = self.now;
-        self.mcu.power_on(self.now, out)?;
-        self.mcu.hold_reset(self.reset_asserted, self.now, out)?;
-        self.sensor.power_on(self.now);
-        self.lcd = Nt7508::new();
-        self.cpu = Cpu::reset();
-        self.serial = SerialLevels::default();
-        self.powered = true;
-        self.fault = None;
-        self.pending = None;
-        self.resume_after = None;
-        out.event(Event::Power {
-            at: self.now,
-            on: true,
-        });
+        let old = self.power.rail;
+        let old_eeprom = self.power.eeprom();
+        self.power.set_rail(rail, self.now)?;
+        if let Some(high) = reset_drive {
+            self.power.drive_reset(high, self.now)?;
+        }
+        if old != rail {
+            // Interrupt programming before changed MCU drive can raise CS.
+            if old_eeprom && !self.power.eeprom() {
+                self.eeprom.power_off(self.now, out);
+            }
+            self.sensor.set_supply(rail, self.now, out)?;
+            self.lcd.set_supply(rail, self.now)?;
+            self.mcu.set_supply(rail, self.now, out)?;
+            if (old != 0) != (rail != 0) {
+                out.event(Event::Power {
+                    at: self.now,
+                    on: rail != 0,
+                });
+            }
+        }
+        self.update_reset(out)?;
         self.resolve_board(out)?;
         self.refresh_deadline()
     }
-    fn refresh_deadline(&mut self) -> Result<(), Error> {
-        if !self.powered {
-            self.next_devices = None;
+    fn update_reset(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        if !self.power.mcu() {
             return Ok(());
         }
+        let low = self.power.reset_low(self.now);
+        if low == self.reset_asserted {
+            return Ok(());
+        }
+        self.reset_asserted = low;
+        if low {
+            self.reset_release = None;
+            self.reset_mcu(false, out)?;
+        } else {
+            self.reset_release = Some(ClockWait::after(
+                self.now,
+                8,
+                Tap::system(1),
+                &self.mcu.clocks,
+            )?);
+            self.mcu.hold_reset(true, self.now, out)?;
+        }
+        Ok(())
+    }
+    fn refresh_deadline(&mut self) -> Result<(), Error> {
         self.next_devices = [
+            self.power.deadline(),
+            self.lcd.deadline(),
             self.mcu.deadline()?,
             self.mcu.clock_output_deadline(self.now)?,
             self.eeprom.deadline(),
@@ -396,15 +406,23 @@ impl Machine {
         let iic_pins = self.mcu.iic.pins();
         self.mcu.gpio.set_iic_pins(iic_pins);
         let data = self.serial_data()?;
-        let levels = self.mcu.gpio.resolve(pins, timer, timer_mask, data);
+        let levels = if self.power.mcu() {
+            self.mcu.gpio.resolve(pins, timer, timer_mask, data)
+        } else {
+            self.mcu.gpio.resolve_unpowered(data)
+        };
         let sampled = self.mcu.gpio.serial_inputs();
-        self.eeprom.set_selected(levels.eeprom_selected, self.now)?;
+        if self.power.eeprom() {
+            self.eeprom.set_selected(levels.eeprom_selected, self.now)?;
+        }
         self.sensor.set_selected(levels.sensor_selected);
         self.lcd.select(levels.lcd_selected);
         self.lcd.command_data(levels.data);
         if levels.clock != self.serial.clock {
             if levels.clock {
-                self.eeprom.rising(levels.mosi);
+                if self.power.eeprom() {
+                    self.eeprom.rising(levels.mosi);
+                }
                 self.sensor.rising(levels.mosi, self.now)?;
                 self.lcd.rising(levels.mosi, self.now, out)?;
             } else {
@@ -413,8 +431,27 @@ impl Machine {
             }
         }
         let data = self.serial_data()?;
-        self.mcu.gpio.resolve(pins, timer, timer_mask, data);
+        if self.power.mcu() {
+            self.mcu.gpio.resolve(pins, timer, timer_mask, data);
+        }
         self.serial = levels;
+        if !self.power.mcu() {
+            if self.emitting {
+                self.emitting = false;
+                out.event(Event::Infrared {
+                    at: self.now,
+                    emitting: false,
+                });
+            }
+            if self.piezo != Piezo::Neutral {
+                self.piezo = Piezo::Neutral;
+                out.event(Event::Buzzer {
+                    at: self.now,
+                    drive: Piezo::Neutral,
+                });
+            }
+            return Ok(sampled);
+        }
         let serial = self.mcu.gpio.serial_inputs();
         if let Some(edge) = self.mcu.ssu.input_pins(serial[0], serial[1]) {
             if edge.sample {
@@ -568,6 +605,22 @@ impl Machine {
     fn devices_at_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         self.last_effect = self.now;
         self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
+        if self.power.deadline() == Some(self.now) {
+            if self.power.advance(self.now) {
+                self.mcu.lose_volatile(self.now, out)?;
+                self.lcd.lose_volatile();
+                self.sensor.lose_volatile();
+                self.cpu = Cpu::reset();
+                self.pending = None;
+                self.resume_after = None;
+                self.watchdog_reset = None;
+                self.reset_release = None;
+                self.reset_asserted = true;
+                self.mcu.hold_reset(true, self.now, out)?;
+            }
+            self.update_reset(out)?;
+        }
+        self.lcd.at_deadline(self.now);
         // External nonvolatile and sensor clocks do not vanish on an MCU reset.
         if self.eeprom.deadline() == Some(self.now) {
             self.eeprom.complete(self.now, out)?;
@@ -697,14 +750,13 @@ impl Machine {
     }
     fn apply_batch(&mut self, changes: &[TimedInput], out: &mut dyn Output) -> Result<(), Error> {
         self.last_effect = self.now;
-        if self.powered && self.mcu.sync(self.now)? {
+        if self.power.mcu() && self.mcu.sync(self.now)? {
             self.reset_mcu(true, out)?;
         }
         let mut ir = None;
         let mut reset = None;
         let mut nmi = None;
         let mut power = None;
-        let prior_supply = self.conditions.supply_millivolts;
         for change in changes {
             match change.input {
                 Input::Power(on) => power = Some(on),
@@ -716,69 +768,44 @@ impl Machine {
                     self.sensor.set_temperature(v);
                 }
                 Input::InfraredLevel(v) => ir = Some(v),
-                Input::ResetPin(high) => reset = Some(!high),
+                Input::ResetPin(high) => reset = Some(high),
                 Input::NmiPin(high) => nmi = Some(high),
                 Input::AnalogPin { pin, millivolts } => self.analog_pins[pin.index()] = millivolts,
                 Input::DigitalPin { pin, level } => self.mcu.gpio.set_digital_level(pin, level),
             }
         }
-        if self.conditions.supply_millivolts == 0 {
-            power = Some(false);
-        } else if prior_supply == 0 && power != Some(false) {
-            power = Some(true);
+        if let Some(on) = power {
+            self.connected = on;
         }
+        let rail = if self.connected {
+            self.conditions.supply_millivolts
+        } else {
+            0
+        };
         self.mcu.gpio.set_analog_levels(
             self.analog_pins.map(|v| {
                 v.map(|v| u32::from(v) * 2 > u32::from(self.conditions.supply_millivolts))
             }),
         );
         let was_reset = self.reset_asserted;
-        let will_reset = reset.unwrap_or(was_reset);
+        let will_reset = reset.map_or(was_reset, |high| !high);
         if let Some(high) = nmi {
             // An edge simultaneous with reset assertion/release is not treated
             // as a user-mode interrupt. Pins in that aperture are reset straps.
             self.mcu.control.nmi_input(
                 high,
-                self.powered
-                    && power != Some(false)
+                self.power.mcu()
+                    && rail >= 1800
                     && !was_reset
                     && !will_reset
                     && self.reset_release.is_none()
                     && self.watchdog_reset.is_none(),
             );
         }
-        if power == Some(false) {
-            self.power_off(out)?;
-        }
-        if let Some(asserted) = reset {
-            self.reset_asserted = asserted;
-            if asserted {
-                self.reset_release = None;
-            }
-            if self.powered && asserted && !was_reset {
-                self.reset_mcu(false, out)?;
-            } else if self.powered && !asserted && was_reset {
-                // Section 19's three-bit counter qualifies release over eight
-                // actual phi edges. WDT's independent hold does not restart it.
-                self.reset_release = Some(ClockWait::after(
-                    self.now,
-                    8,
-                    Tap::system(1),
-                    &self.mcu.clocks,
-                )?);
-            }
-        }
-        if power == Some(true) {
-            self.power_on(out)?;
-        }
         if let Some(light) = ir {
             self.incident_light = light;
         }
-        if !self.powered {
-            return Ok(());
-        }
-        self.resolve_board(out)?;
-        self.refresh_deadline()
+        self.change_rail(rail, reset, out)
     }
     fn pending_deadline(&self) -> Result<Option<Time>, Error> {
         self.pending
@@ -818,7 +845,8 @@ impl Machine {
             || self.reset_asserted
             || self.reset_release.is_some()
             || self.watchdog_reset.is_some()
-            || !self.powered
+            || !self.power.mcu()
+            || (!self.mcu.clocks.available(Tap::cpu()) && !self.cpu.sleeping())
         {
             return Ok(());
         }

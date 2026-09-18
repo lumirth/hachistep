@@ -52,7 +52,7 @@ assignment to each property is allowed at a timestamp. There is no header row.
 | `100,ir,1` | Incident optical emission present. |
 | `103,ir,0` | Incident emission absent. |
 | `1000,reset,0` | Assert the MCU's active-low reset input. |
-| `1010,reset,1` | Release reset. |
+| `1010,reset,1` | Drive RES high; internal release follows eight reference-clock edges. |
 | `100,nmi,0` | Drive NMI low; the selected edge is latched even while CCR.I is set. |
 | `300,nmi,1` | Drive NMI high (also the default user-mode reset strap). |
 | `100,analog,pb4,1900` | Apply 1,900 mV to a comparator/ADC fixture node. |
@@ -84,9 +84,9 @@ released open-drain nodes. These use actual pin-function routing rather
 than directly mutating a peripheral counter or flag. They are diagnostic seams,
 not a claim that an unmodified retail enclosure exposes those pads.
 
-NMI starts high. IEGR bit 7 selects its edge. A low level at reset release or
-power-on requests an unimplemented bootstrap/debug mode and is rejected; it is
-not treated as ordinary user-firmware startup. Held levels do not continuously
+NMI starts high. IEGR bit 7 selects its edge. A low level at actual RES release
+requests the currently unimplemented boot mode. A retained supply dip without
+RES assertion does not sample a new reset strap. Held levels do not continuously
 reassert NMI. Short-pulse/subcycle synchronizer behavior remains uncharacterized.
 
 ## Exclusive timing
