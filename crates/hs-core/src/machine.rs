@@ -761,7 +761,7 @@ impl Machine {
     }
     fn input_tag(input: Input) -> u8 {
         match input {
-            Input::Power(_) => 22,
+            Input::Power(_) => 24,
             Input::Buttons(_) => 0,
             Input::Acceleration(_) => 1,
             Input::SupplyMillivolts(_) => 2,

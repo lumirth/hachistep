@@ -475,6 +475,27 @@ fn rtc_clock_output_is_a_physical_pin_even_with_the_counter_stopped() {
     state::assert_same_state(&whole, &split);
 }
 #[test]
+fn power_and_adc_trigger_can_change_at_the_same_time() {
+    let mut m = machine(LOOP);
+    let inputs = [
+        TimedInput {
+            at: Time::ZERO,
+            input: Input::Power(false),
+        },
+        TimedInput {
+            at: Time::ZERO,
+            input: Input::DigitalPin {
+                pin: DigitalPin::Adtrg,
+                level: Some(false),
+            },
+        },
+    ];
+    let result = m.run_until(Time::from_micros(1), &inputs, &mut ()).unwrap();
+    assert_eq!(result.inputs_consumed, inputs.len());
+    assert!(!m.powered());
+}
+
+#[test]
 fn invalid_timeline_is_rejected_before_mutation() {
     let mut m = machine(LOOP);
     let before = m.snapshot();
