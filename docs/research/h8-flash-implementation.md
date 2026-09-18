@@ -24,8 +24,11 @@ hachiware cases. Page programming computes retry and strengthening masks;
 block erasure verifies rather than assuming a fixed attempt count. Local tests
 cover cumulative partial exposure, clock/reset/power effects, projections,
 partitioned execution, mid-pulse restoration and allocation after restoration.
-Boot-ROM sequencing and per-pulse persistence callbacks remain outside this
-checkpoint; no silent boot-mode support is claimed.
+The subsequent manufacturer service implements boot sequencing through this
+same owner. Per-pulse persistence callbacks are now connected: changed bytes
+are delivered when physical progress settles, before a normal pulse ending
+emits its committed range or protection/power/reset/retargeting interrupts it.
+Inspection and snapshots remain silent; no shadow image or event queue is used.
 
 Validation: `out/flash-full-check` passes formatting, debug/release/trace tests,
 Clippy, Python contracts and all 109 independent diagnostics.

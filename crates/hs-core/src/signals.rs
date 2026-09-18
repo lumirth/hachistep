@@ -82,9 +82,10 @@ pub enum Event {
         watchdog: bool,
     },
 }
-/// Events are delivered synchronously. NvByte records precede NvCommit or NvInterrupted
-/// at one timestamp, so consumers never have to infer intermediate writes from
-/// a later memory image. No re-entry is allowed.
+/// Events are delivered synchronously. NvByte reports persistent data when an
+/// operation's physical progress is settled; NvCommit/NvInterrupted close its
+/// affected range after all changed bytes have been delivered. A flash pulse can
+/// report progress before it ends. No polling or re-entry is required or allowed.
 pub trait Output {
     fn event(&mut self, event: Event);
 }

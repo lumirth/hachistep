@@ -22,6 +22,9 @@ retail observations and native replay in `out/boot-retail`. Comparator routing,
 live configuration and RTC free-counter admission then passed the full gates
 and all 122 guests in `out/comparator-check`; `out/comparator-retail` confirms
 unchanged home/menu workloads and partition/native replay.
+The persistence, terminal-fault and sensor acknowledgement changes pass the
+full gates and 123 independent guests in `out/persistence-check2`; all four
+retail workloads and native replay remain unchanged in `out/persistence-retail`.
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their
@@ -49,7 +52,9 @@ in SAVE_STATES. The exact owner limitations remain in STATUS.
    remaining nominal ROM overhead/physical parameters from new evidence. Its
    tests cover transmitted echoes and final stop, erase/restore, odd uploads,
    invalid lengths, reset interruption and zero ordinary-run allocation.
-2. **Owner completion.** Internal flash needs persistent-byte/commit callbacks.
+2. **Owner completion.** Internal flash delivers changed bytes and per-pulse
+   commit/interruption events. Faulted sessions remain stopped across every
+   lifecycle entry point; explicit healthy restoration provides recovery.
    Comparator gating and external-reference selections now follow the retained
    latch/mux model, with independently routed channel interrupts. Continue to
    model guest-configuration consequences from the connected hardware.

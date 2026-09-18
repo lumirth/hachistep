@@ -53,6 +53,19 @@ re-enter the machine. The callback is synchronous and cannot return an I/O error
 a host sink may latch its error and stop issuing further run calls. The CLI
 implements this pattern. A no-op sink is `&mut ()`.
 
+Persistent updates carry their data in `NvByte`; `NvCommit` or `NvInterrupted`
+then closes the affected range. Internal flash reports settled cell changes
+during a pulse and closes that pulse when software ends it or hardware
+interrupts it. A pulse commit does not assert that the guest's complete
+program/erase-and-verify algorithm succeeded. Inspection and capture emit no
+events; ordinary reads retain the direct array path.
+
+A core fault stops that session, including immediate power operations. It may
+have occurred after part of a hardware effect, so reconnecting cannot safely
+resume it. Observation and capture remain available; explicitly restore a
+healthy checkpoint or construct a new machine to recover. Input validation and
+failed restore are checked before mutation and do not poison a healthy machine.
+
 ## Observation
 
 `registers`, `instruction_pc`, `phase_name`, `statistics`, `retired` and
@@ -123,7 +136,9 @@ cells through the same model used during normal progress.
 
 `Input::NmiPin(bool)` controls the dedicated NMI input, separate from IRQ enables
 and flags. It defaults high and preserves its physical level across MCU reset.
-Low-at-reset bootstrap/debug behavior is explicitly unsupported.
+NMI low with TEST low at external reset release admits the manufacturer boot
+service; TEST high selects the quiescent test state. See the boot protocol in
+[INPUTS](INPUTS.md).
 
 `Input::AnalogPin { pin, millivolts }` and `Input::DigitalPin { pin, level }` accept
 optional fixture drives (`None` releases them). The actual names/variant field

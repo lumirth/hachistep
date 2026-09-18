@@ -109,6 +109,10 @@ fn faulted_instruction_capture_stays_stopped() {
     assert!(m.run_until(Time::from_micros(100), &[], &mut ()).is_err());
     let mut loaded = state::restore_file(&m.snapshot());
     let time = loaded.now();
+    let mut events = vec![];
+    assert!(loaded.power_on(&mut events).is_err());
+    assert!(loaded.power_off(&mut events).is_err());
+    assert!(events.is_empty());
     assert!(loaded
         .run_until(Time::from_micros(200), &[], &mut ())
         .is_err());

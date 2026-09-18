@@ -275,37 +275,37 @@ fn stopped_watch_crystal_can_be_replaced_by_rosc_without_losing_work() {
     for (a, v) in [(0xfffb, 0x44), (0xf0f1, 0x40), (0xf0f0, 0x80)] {
         m.write8(a, v, WriteOrigin::MovByte, t(0), &mut ()).unwrap();
     }
-    m.sync(t(35)).unwrap();
+    m.sync(t(35), &mut ()).unwrap();
     m.write8(0xfff5, 0x82, WriteOrigin::MovByte, t(35), &mut ())
         .unwrap();
-    assert_eq!(m.read8(0xfff5, t(35)).unwrap(), 0x80); // OSCF is read-only.
+    assert_eq!(m.read8(0xfff5, t(35), &mut ()).unwrap(), 0x80); // OSCF is read-only.
     assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 3);
     assert!(!m.clocks.available(Tap::watch(1)));
     let wait = ClockWait::after(t(35), 5, Tap::watch(1), &m.clocks).unwrap();
     assert_eq!(wait.deadline(&m.clocks).unwrap(), None);
-    m.sync(t(1000)).unwrap();
+    m.sync(t(1000), &mut ()).unwrap();
     assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 3);
     m.write8(0xfff5, 0xa0, WriteOrigin::MovByte, t(1000), &mut ())
         .unwrap();
     assert_eq!(wait.deadline(&m.clocks).unwrap(), Some(t(1250)));
-    m.sync(t(1200)).unwrap();
+    m.sync(t(1200), &mut ()).unwrap();
     assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 7);
     // Starting X1 does not replace the selected ROSC/32 watch source.
     m.write8(0xfff5, 0x20, WriteOrigin::MovByte, t(1200), &mut ())
         .unwrap();
-    m.sync(t(1215)).unwrap();
+    m.sync(t(1215), &mut ()).unwrap();
     m.write8(0xfff5, 0, WriteOrigin::MovByte, t(1215), &mut ())
         .unwrap();
     assert_eq!(wait.deadline(&m.clocks).unwrap(), None);
     // Newly started X1 has its own two-second cold readiness. No watch
     // edges are backfilled for the time spent acquiring oscillation.
     let ready = t(1200).checked_add(hs_core::Duration::seconds(2)).unwrap();
-    m.sync(ready).unwrap();
+    m.sync(ready, &mut ()).unwrap();
     let first = ready
         .checked_add(hs_core::Duration::from_micros(10))
         .unwrap();
     assert_eq!(wait.deadline(&m.clocks).unwrap(), Some(first));
-    m.sync(first).unwrap();
+    m.sync(first, &mut ()).unwrap();
     assert_eq!(m.timer_w.read_word(0xf0f6, &m.clocks).unwrap(), 8);
 }
 
@@ -325,19 +325,19 @@ fn last_rosc_consumer_stops_the_oscillator_at_the_actual_write() {
         m.write8(0xffb1, v, WriteOrigin::MovByte, t(0), &mut ())
             .unwrap();
     }
-    m.sync(t(123)).unwrap();
+    m.sync(t(123), &mut ()).unwrap();
     m.write8(0xfffb, 0, WriteOrigin::MovByte, t(123), &mut ())
         .unwrap();
     assert!(!m.clocks.available(Tap::on_chip(1)));
     assert_eq!(m.clocks.ticks(t(999), Tap::on_chip(1)), 123);
-    m.sync(t(999)).unwrap();
+    m.sync(t(999), &mut ()).unwrap();
     m.write8(0xfff5, 0x20, WriteOrigin::MovByte, t(999), &mut ())
         .unwrap();
     assert!(!m.clocks.available(Tap::on_chip(1)));
     let ready = t(999)
         .checked_add(hs_core::Duration::from_micros(15))
         .unwrap();
-    m.sync(ready).unwrap();
+    m.sync(ready, &mut ()).unwrap();
     assert!(m.clocks.available(Tap::on_chip(1)));
     assert_eq!(
         m.clocks.after(ready, 1, Tap::on_chip(1)).unwrap(),
@@ -359,17 +359,17 @@ fn standby_holds_prescaler_w_without_stopping_the_enabled_watch_crystal() {
     )
     .unwrap();
     let t = Time::from_micros;
-    m.sync(t(85)).unwrap();
+    m.sync(t(85), &mut ()).unwrap();
     m.control.mode = Mode::Standby;
     m.apply_gates(t(85), &mut ()).unwrap();
     assert_eq!(m.clocks.ticks(t(1015), Tap::watch(1)), 101);
     assert_eq!(m.clocks.ticks(t(1015), Tap::watch(16)), 0);
     assert_eq!(m.clocks.ticks(t(1015), Tap::oscillator()), 85);
-    m.sync(t(1015)).unwrap();
+    m.sync(t(1015), &mut ()).unwrap();
     m.control.wake(t(1015), &mut m.clocks).unwrap();
     m.apply_gates(t(1015), &mut ()).unwrap();
     assert_eq!(m.clocks.ticks(t(2000), Tap::watch(16)), 0);
-    m.sync(t(2000)).unwrap();
+    m.sync(t(2000), &mut ()).unwrap();
     m.control.stabilizing_from = None;
     m.apply_gates(t(2000), &mut ()).unwrap();
     // W retained its first two phiW/4 inputs (40,80 us). X1 continued.

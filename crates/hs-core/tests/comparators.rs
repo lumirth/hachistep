@@ -101,14 +101,14 @@ fn independent_channels_external_reference_and_interrupt_vector() {
         .unwrap();
     m.write8(0xf0dd, 0xe0, WriteOrigin::MovByte, at(0), &mut ())
         .unwrap();
-    m.sync(at(20)).unwrap();
-    assert_eq!(m.read8(0xf0de, at(20)).unwrap() & 3, 2);
+    m.sync(at(20), &mut ()).unwrap();
+    assert_eq!(m.read8(0xf0de, at(20), &mut ()).unwrap() & 3, 2);
     m.comparators
         .set_inputs(at(21), 3000, 1700, [0, 1600])
         .unwrap();
-    m.sync(at(40)).unwrap();
+    m.sync(at(40), &mut ()).unwrap();
     assert_eq!(m.interrupt(), Some(22));
-    assert_eq!(m.read8(0xf0de, at(40)).unwrap() & 0x30, 0x20);
+    assert_eq!(m.read8(0xf0de, at(40), &mut ()).unwrap() & 0x30, 0x20);
     m.write8(0xf0de, 0x10, WriteOrigin::MovByte, at(40), &mut ())
         .unwrap();
     assert_eq!(m.interrupt(), None);

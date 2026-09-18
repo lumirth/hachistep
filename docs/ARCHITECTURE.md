@@ -112,7 +112,10 @@ run. Original files are not silently synchronized.
 Internal flash owns its array, page latch, control qualification, pulse exposure
 and verify sense state. Guest software executes the documented programming
 sequence, including RAM execution while flash is busy. Each bit retains charge
-through interrupted pulses. Flash byte/commit callbacks remain to be connected.
+through interrupted pulses. Settling delivers changed bytes to the borrowed
+sink; a normally lowered P/E pulse commits its range, while reset, protection,
+retargeting or lost bias interrupts it. These events require no shadow array,
+allocation or polling; capture/inspection projects a silent copy.
 
 `Machine::with_persistent_state` can restore the external EEPROM/status and the
 sensor's 19-byte nonvolatile image without restoring volatile session state.

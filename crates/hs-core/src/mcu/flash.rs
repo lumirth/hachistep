@@ -3,6 +3,7 @@
 use super::{control::Mode, FLASH_SIZE};
 use crate::{
     error::Error,
+    signals::{Event, NvDomain, Output},
     time::{Duration, Time, TimeError},
 };
 
@@ -17,6 +18,7 @@ const E: u8 = 2;
 const P: u8 = 1;
 // 7 ms of programming or 100 ms of erasing traverses the nominal charge range.
 const FULL: u64 = (100 * ((7u128 << 64) / 1000)) as u64;
+type Pulse = (bool, usize, usize, Time);
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 struct ChargePage {
@@ -190,7 +192,13 @@ impl Flash {
             _ => 0,
         }
     }
-    pub fn write_register(&mut self, a: u16, value: u8, now: Time) -> Result<(), Error> {
+    pub fn write_register(
+        &mut self,
+        a: u16,
+        value: u8,
+        now: Time,
+        out: &mut dyn Output,
+    ) -> Result<(), Error> {
         if a == 0xf02b {
             self.enabled = value & 0x80 != 0;
             return Ok(());
@@ -198,7 +206,8 @@ impl Flash {
         if !self.enabled {
             return Ok(());
         }
-        self.settle(now);
+        let previous = self.pulse();
+        self.settle(now, out);
         match a {
             0xf020 => {
                 let value = if value & SWE != 0 { value & 0x7f } else { 0 };
@@ -235,9 +244,16 @@ impl Flash {
             }
             _ => {}
         }
+        // A normal pulse ends by lowering P/E while retaining its setup bias.
+        // Retargeting or abruptly removing the bias interrupts that pulse.
+        let complete = a == 0xf020
+            && previous.is_some_and(|(program, _, _, _)| {
+                self.control & (SWE | PSU | ESU | 15) == SWE | if program { PSU } else { ESU }
+            });
+        self.finish_pulse(previous, now, complete, out);
         Ok(())
     }
-    fn pulse(&self) -> Option<(bool, usize, usize, Time)> {
+    fn pulse(&self) -> Option<Pulse> {
         if self.error
             || !self.oscillator
             || self.supply != Supply::Normal
@@ -271,7 +287,7 @@ impl Flash {
             ready.max(self.swe_ready).max(self.ready).max(self.recovery),
         ))
     }
-    fn settle(&mut self, now: Time) {
+    fn settle(&mut self, now: Time, out: &mut dyn Output) {
         if let Some((program, start, end, ready)) = self.pulse() {
             let elapsed = now.raw().saturating_sub(self.pulse_since.max(ready).raw());
             let amount = (elapsed.min(u128::from(FULL)) * if program { 100 } else { 7 })
@@ -292,7 +308,15 @@ impl Flash {
                             }
                             sensed |= u8::from(sensed_bit(address + byte, bit, *q, 0)) << bit;
                         }
-                        self.bytes[address + byte] = sensed;
+                        if self.bytes[address + byte] != sensed {
+                            self.bytes[address + byte] = sensed;
+                            out.event(Event::NvByte {
+                                at: now,
+                                domain: NvDomain::InternalFlash,
+                                address: (address + byte) as u16,
+                                value: sensed,
+                            });
+                        }
                     }
                 }
             }
@@ -316,10 +340,44 @@ impl Flash {
             }
         }
     }
-    pub(crate) fn protect(&mut self, now: Time) -> Result<(), Error> {
-        if let Some((program, _, _, _)) = self.pulse() {
-            self.settle(now);
+    fn finish_pulse(
+        &self,
+        previous: Option<Pulse>,
+        now: Time,
+        complete: bool,
+        out: &mut dyn Output,
+    ) {
+        let Some((_, start, end, _)) = previous.filter(|old| Some(*old) != self.pulse()) else {
+            return;
+        };
+        if start == end {
+            return;
+        }
+        let domain = NvDomain::InternalFlash;
+        let address = start as u16;
+        let length = (end - start) as u16;
+        out.event(if complete {
+            Event::NvCommit {
+                at: now,
+                domain,
+                address,
+                length,
+            }
+        } else {
+            Event::NvInterrupted {
+                at: now,
+                domain,
+                address,
+                length,
+            }
+        });
+    }
+    pub(crate) fn protect(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
+        let previous = self.pulse();
+        if let Some((program, _, _, _)) = previous {
+            self.settle(now, out);
             self.error = true;
+            self.finish_pulse(previous, now, false, out);
             self.recovery = self.recovery.max(after(now, if program { 5 } else { 10 })?);
         }
         Ok(())
@@ -329,15 +387,15 @@ impl Flash {
             && self.supply != Supply::Stopped
             && now >= self.ready.max(self.recovery)
     }
-    pub fn read8(&mut self, address: u16, now: Time) -> Result<u8, Error> {
+    pub fn read8(&mut self, address: u16, now: Time, out: &mut dyn Output) -> Result<u8, Error> {
         if self.normal(now) {
             return Ok(self.bytes[usize::from(address)]);
         }
         let pulse = self.pulse().is_some();
         if pulse {
-            self.protect(now)?;
+            self.protect(now, out)?;
         } else {
-            self.settle(now);
+            self.settle(now, out);
         }
         if !pulse
             && self.supply != Supply::Stopped
@@ -348,18 +406,24 @@ impl Flash {
         }
         Ok(0xff)
     }
-    pub fn read16(&mut self, address: u16, now: Time) -> Result<u16, Error> {
+    pub fn read16(&mut self, address: u16, now: Time, out: &mut dyn Output) -> Result<u16, Error> {
         if self.normal(now) {
             let i = usize::from(address);
             return Ok(u16::from_be_bytes([self.bytes[i], self.bytes[i + 1]]));
         }
         Ok(u16::from_be_bytes([
-            self.read8(address, now)?,
-            self.read8(address + 1, now)?,
+            self.read8(address, now, out)?,
+            self.read8(address + 1, now, out)?,
         ]))
     }
-    pub fn write8(&mut self, address: u16, value: u8, now: Time) -> Result<(), Error> {
-        self.settle(now);
+    pub fn write8(
+        &mut self,
+        address: u16,
+        value: u8,
+        now: Time,
+        out: &mut dyn Output,
+    ) -> Result<(), Error> {
+        self.settle(now, out);
         if self.control & SWE == 0
             || now < self.swe_ready
             || self.supply != Supply::Normal
@@ -389,9 +453,11 @@ impl Flash {
         self.erase = 0;
         self.verify_pending = None;
     }
-    pub fn reset(&mut self, now: Time) {
-        self.settle(now);
+    pub fn reset(&mut self, now: Time, out: &mut dyn Output) {
+        let previous = self.pulse();
+        self.settle(now, out);
         self.initialize_control();
+        self.finish_pulse(previous, now, false, out);
         self.enabled = false;
         self.power_down_disabled = false;
         self.latch = [0xff; PAGE];
@@ -399,8 +465,8 @@ impl Flash {
         self.sensed = [0xff; 4];
         self.recovery = now;
     }
-    pub fn power_off(&mut self, now: Time) {
-        self.reset(now);
+    pub fn power_off(&mut self, now: Time, out: &mut dyn Output) {
+        self.reset(now, out);
         self.supply = Supply::Stopped;
         self.oscillator = false;
         self.module = false;
@@ -411,6 +477,7 @@ impl Flash {
         module: bool,
         oscillator: bool,
         now: Time,
+        out: &mut dyn Output,
     ) -> Result<(), Error> {
         let supply = if !module || matches!(mode, Mode::Subsleep | Mode::Watch | Mode::Standby) {
             Supply::Stopped
@@ -426,7 +493,8 @@ impl Flash {
         {
             return Ok(());
         }
-        self.settle(now);
+        let previous = self.pulse();
+        self.settle(now, out);
         if (!module && self.module)
             || (mode != self.mode && !matches!(mode, Mode::Active | Mode::Sleep))
         {
@@ -444,13 +512,14 @@ impl Flash {
         self.oscillator = oscillator;
         self.mode = mode;
         self.module = module;
+        self.finish_pulse(previous, now, false, out);
         Ok(())
     }
     /// Physical nonvolatile image, including unfinished exposure, without a
     /// guest read, error-protection event, or completion of the active pulse.
     pub fn image(&self, now: Time) -> Box<[u8; FLASH_SIZE]> {
         let mut view = self.clone();
-        view.settle(now);
+        view.settle(now, &mut ());
         view.bytes
     }
     pub fn peek(&self, address: u16, now: Time) -> u8 {
@@ -458,7 +527,7 @@ impl Flash {
             return self.bytes[usize::from(address)];
         }
         let mut view = self.clone();
-        view.settle(now);
+        view.settle(now, &mut ());
         view.bytes[usize::from(address)]
     }
     pub(crate) fn settled_byte(&self, address: u16) -> u8 {

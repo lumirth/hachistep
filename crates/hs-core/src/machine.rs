@@ -263,7 +263,7 @@ impl Machine {
         let mut view = self.mcu.clone();
         // Exclude effects exactly at the caller's unprocessed horizon.
         let t = self.observation_time();
-        view.sync(t)?;
+        view.sync(t, &mut ())?;
         view.peek8(address)
     }
     fn observation_time(&self) -> Time {
@@ -300,27 +300,45 @@ impl Machine {
     }
     /// Disconnect the common rail. Physical decay keeps advancing while off.
     pub fn power_off(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if !self.connected {
-            return Ok(());
-        }
-        self.settle_boundary(out)?;
-        self.connected = false;
-        self.change_rail(0, None, out)
+        self.set_connected(false, out)
     }
     pub fn power_on(&mut self, out: &mut dyn Output) -> Result<(), Error> {
-        if self.connected {
+        self.set_connected(true, out)
+    }
+    fn set_connected(&mut self, connected: bool, out: &mut dyn Output) -> Result<(), Error> {
+        self.check_fault()?;
+        if self.connected == connected {
             return Ok(());
         }
-        self.settle_boundary(out)?;
-        self.connected = true;
-        self.fault = None;
-        self.change_rail(self.conditions.supply_millivolts, None, out)
+        let result = (|| {
+            self.settle_boundary(out)?;
+            self.connected = connected;
+            self.change_rail(
+                if connected {
+                    self.conditions.supply_millivolts
+                } else {
+                    0
+                },
+                None,
+                out,
+            )
+        })();
+        self.latch_error(result)
+    }
+    fn check_fault(&self) -> Result<(), Error> {
+        self.fault.clone().map_or(Ok(()), Err)
+    }
+    fn latch_error<T>(&mut self, result: Result<T, Error>) -> Result<T, Error> {
+        if let Err(error) = &result {
+            self.fault = Some(error.clone());
+        }
+        result
     }
     fn settle_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         if self.next_devices == Some(self.now) {
             self.devices_at_boundary(out)?;
         }
-        if self.mcu.sync(self.now)? {
+        if self.mcu.sync(self.now, out)? {
             self.reset_mcu(true, out)?;
         }
         Ok(())
@@ -665,7 +683,7 @@ impl Machine {
         if self.sensor.deadline() == Some(self.now) {
             self.sensor.at_deadline(self.now, out)?;
         }
-        let reset = self.mcu.sync(self.now)?;
+        let reset = self.mcu.sync(self.now, out)?;
         if reset {
             self.reset_mcu(true, out)?;
         }
@@ -782,7 +800,7 @@ impl Machine {
     }
     fn apply_batch(&mut self, changes: &[TimedInput], out: &mut dyn Output) -> Result<(), Error> {
         self.last_effect = self.now;
-        if self.power.mcu() && self.mcu.sync(self.now)? {
+        if self.power.mcu() && self.mcu.sync(self.now, out)? {
             self.reset_mcu(true, out)?;
         }
         let mut ir = None;
@@ -853,7 +871,7 @@ impl Machine {
         // A clock transition is itself an effect boundary. Peripherals which
         // keep running through it must consume the old clock/gate interval,
         // even when no other device happened to schedule an appointment here.
-        if self.mcu.sync(self.now)? {
+        if self.mcu.sync(self.now, out)? {
             return self.reset_mcu(true, out);
         }
         self.mcu.control.sleep(self.now, &mut self.mcu.clocks)?;
@@ -904,7 +922,7 @@ impl Machine {
             match resume {
                 Resume::Sleep(_) => self.enter_sleep(out)?,
                 Resume::Wake { direct, .. } => {
-                    if self.mcu.sync(self.now)? {
+                    if self.mcu.sync(self.now, out)? {
                         self.reset_mcu(true, out)?;
                     } else {
                         self.mcu.control.stabilizing_from = None;
@@ -947,7 +965,7 @@ impl Machine {
                 self.mcu.instruction_boundary();
             }
             if let Some(vector) = self.cpu.take_accepted_vector() {
-                self.mcu.flash.protect(self.now)?;
+                self.mcu.flash.protect(self.now, out)?;
                 if vector == 7 {
                     self.mcu.control.acknowledge_nmi();
                 }
@@ -957,8 +975,8 @@ impl Machine {
                     if self.mcu.control.sleeping() {
                         return Ok(());
                     }
-                    self.mcu.flash.protect(self.now)?;
-                    if self.mcu.sync(self.now)? {
+                    self.mcu.flash.protect(self.now, out)?;
+                    if self.mcu.sync(self.now, out)? {
                         self.reset_mcu(true, out)?;
                         continue;
                     }
@@ -1037,7 +1055,7 @@ impl Machine {
         let a = base.wrapping_add(u16::from(pending.lane));
         let w = if pending.split { Width::Byte } else { width };
         let memory = Mcu::is_memory(a);
-        if !memory && self.mcu.sync(self.now)? {
+        if !memory && self.mcu.sync(self.now, out)? {
             self.reset_mcu(true, out)?;
             return Ok(());
         }
@@ -1062,15 +1080,15 @@ impl Machine {
                     self.now,
                     out,
                 )?,
-                Width::Word => self.mcu.write16(a, v, self.now)?,
+                Width::Word => self.mcu.write16(a, v, self.now, out)?,
             };
             self.stats.bus_writes = self.stats.bus_writes.wrapping_add(1);
             v
         } else {
             self.stats.bus_reads = self.stats.bus_reads.wrapping_add(1);
             match w {
-                Width::Byte => u16::from(self.mcu.read8(a, self.now)?),
-                Width::Word => self.mcu.read16(a, self.now)?,
+                Width::Byte => u16::from(self.mcu.read8(a, self.now, out)?),
+                Width::Word => self.mcu.read16(a, self.now, out)?,
             }
         };
         #[cfg(feature = "trace")]
@@ -1114,15 +1132,10 @@ impl Machine {
         inputs: &[TimedInput],
         out: &mut dyn Output,
     ) -> Result<RunResult, Error> {
-        if let Some(error) = &self.fault {
-            return Err(error.clone());
-        }
+        self.check_fault()?;
         self.validate_inputs(end, inputs)?;
         let result = self.run_inner(end, inputs, out);
-        if let Err(error) = &result {
-            self.fault = Some(error.clone());
-        }
-        result
+        self.latch_error(result)
     }
     fn run_inner(
         &mut self,

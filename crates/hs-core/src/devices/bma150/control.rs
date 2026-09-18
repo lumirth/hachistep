@@ -41,7 +41,7 @@ impl Bma150 {
     pub(super) fn automatic_control(
         &mut self,
         now: Time,
-        was_irq: bool,
+        was_criterion: bool,
         verify: bool,
     ) -> Result<(), Error> {
         if !self.automatic() {
@@ -52,7 +52,12 @@ impl Bma150 {
         if self.asleep && self.pause_deadline.is_none() {
             self.pause(now)?;
         }
-        if !was_irq && self.interrupt() {
+        // New-data is independently read-acknowledged. Only nonlatched
+        // criterion interrupts receive the automatic mode's minimum width.
+        if !was_criterion
+            && self.registers[0x15] & 0x10 == 0
+            && self.interrupts.output(&self.registers)
+        {
             self.irq_hold = Some(
                 now.checked_add(Duration::from_micros(330))
                     .ok_or(crate::time::TimeError::Overflow)?,
@@ -128,7 +133,7 @@ impl Bma150 {
             }
             return Ok(());
         }
-        let was_irq = self.interrupt();
+        let was_criterion = self.interrupts.output(&self.registers);
         match address {
             0x0a if value & 2 != 0 => self.soft_reset(now)?,
             0x0a => {
@@ -183,7 +188,7 @@ impl Bma150 {
             }
             _ => self.registers[i] = value,
         }
-        self.automatic_control(now, was_irq, false)
+        self.automatic_control(now, was_criterion, false)
     }
 }
 

@@ -266,7 +266,7 @@ impl Bma150 {
         if self.serial_ready == Some(now) {
             self.serial_ready = None;
         }
-        let was_irq = self.interrupt();
+        let was_criterion = self.interrupts.output(&self.registers);
         let hold_ended = self.irq_hold == Some(now);
         if hold_ended {
             self.irq_hold = None;
@@ -316,11 +316,13 @@ impl Bma150 {
                 self.interrupts.millisecond(&self.registers);
             }
         }
-        self.automatic_control(now, was_irq, cycle_ended || hold_ended)
+        self.automatic_control(now, was_criterion, cycle_ended || hold_ended)
     }
     fn copy_image(&mut self) {
         self.registers[0x0b..=0x1d].copy_from_slice(&self.nonvolatile);
-        self.shadows = [None; 3];
+        if self.registers[0x15] & 8 != 0 {
+            self.shadows = [None; 3];
+        }
         self.filter.select(self.registers[0x14] & 7);
         self.interrupts.configure(&self.registers);
     }
@@ -713,6 +715,47 @@ mod tests {
         assert_eq!(read(&mut b, 7), 64);
         read(&mut b, 6);
         assert_eq!(read(&mut b, 7), 192);
+    }
+    #[test]
+    fn image_reload_preserves_the_pair_held_by_an_acceleration_read() {
+        let mut b = Bma150::new(Time::ZERO); // Factory ±4 g.
+        sample_cycle(&mut b);
+        assert_eq!(read(&mut b, 6), 1);
+        b.set_input(Acceleration {
+            x: 0,
+            y: 0,
+            z: -1_000_000,
+        })
+        .unwrap();
+        write(&mut b, 0x0a, 0x20); // Reload the same factory configuration.
+        while let Some(at) = b.deadline().filter(|at| *at <= Time::from_micros(5000)) {
+            b.at_deadline(at, &mut ()).unwrap();
+        }
+        assert_eq!(
+            read(&mut b, 7),
+            32,
+            "finish the previously captured +1 g pair"
+        );
+        read(&mut b, 6);
+        assert_eq!(read(&mut b, 7), 224, "the next pair sees -1 g");
+    }
+    #[test]
+    fn automatic_new_data_interrupt_acknowledges_without_a_minimum_width() {
+        for latch in [0, 0x10] {
+            let mut b = Bma150::new(Time::ZERO);
+            for (address, value) in [(0x0b, 0), (0x14, 6), (0x15, 0xa1 | latch), (0x0a, 1)] {
+                write(&mut b, address, value);
+            }
+            while !b.interrupt() {
+                let at = b.deadline().unwrap();
+                assert!(at < Time::from_micros(23000));
+                b.at_deadline(at, &mut ()).unwrap();
+            }
+            // Reading one acceleration byte acknowledges this independent
+            // latched source, even at the instant the full vector arrives.
+            read(&mut b, 2);
+            assert!(!b.interrupt());
+        }
     }
     #[test]
     fn writes_are_address_data_pairs_and_unclocked_read_bytes_have_no_effect() {

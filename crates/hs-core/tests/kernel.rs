@@ -521,12 +521,47 @@ fn instruction_fetches_from_ram_follow_the_same_executor() {
 fn invalid_instruction_latches_a_fault_without_erasing_prior_store() {
     let code = [0xf8, 0x5a, 0x6a, 0x88, 0xf7, 0x80, 0x57, 0xff];
     let mut m = machine(&code);
-    assert!(m.run_until(Time::from_micros(100), &[], &mut ()).is_err());
+    let healthy = m.snapshot();
+    let error = m
+        .run_until(Time::from_micros(100), &[], &mut ())
+        .unwrap_err();
     assert_eq!(m.ram()[0], 0x5a);
     assert!(m.fault().is_some());
-    let t = m.now();
-    assert!(m.run_until(Time::from_micros(200), &[], &mut ()).is_err());
-    assert_eq!(m.now(), t);
+    let stopped = m.snapshot();
+    let mut events = vec![];
+    assert_eq!(m.power_on(&mut events), Err(error.clone())); // Even a redundant call.
+    assert_eq!(m.power_off(&mut events), Err(error.clone()));
+    let reset = [TimedInput {
+        at: m.now(),
+        input: Input::ResetPin(false),
+    }];
+    assert_eq!(
+        m.run_until(Time::from_micros(200), &reset, &mut events),
+        Err(error)
+    );
+    assert_eq!(m.snapshot(), stopped);
+    assert!(events.is_empty());
+    m.restore(&healthy).unwrap();
+    assert_eq!(m.fault(), None);
+    assert_eq!(m.snapshot(), healthy);
+    m.run_until(Time::ZERO, &[], &mut ()).unwrap();
+}
+
+#[test]
+fn immediate_power_failure_latches_before_any_further_transition() {
+    let mut m = machine(LOOP);
+    m.power_off(&mut ()).unwrap();
+    m.run_until(Time::MAX, &[], &mut ()).unwrap();
+    let mut events = vec![];
+    let error = m.power_on(&mut events).unwrap_err();
+    assert_eq!(m.fault(), Some(&error));
+    let stopped = m.snapshot();
+    events.clear();
+    assert_eq!(m.power_off(&mut events), Err(error.clone()));
+    assert_eq!(m.power_on(&mut events), Err(error.clone()));
+    assert_eq!(m.run_until(Time::MAX, &[], &mut events), Err(error));
+    assert_eq!(m.snapshot(), stopped);
+    assert!(events.is_empty());
 }
 #[test]
 fn reset_pin_aborts_cpu_work_but_keeps_existing_ram() {

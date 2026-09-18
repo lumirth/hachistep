@@ -92,7 +92,7 @@ impl Mcu {
     }
     /// Synchronize clocked counters at an actual effect boundary. The return
     /// flag requests an MCU reset; attached device owners are not reconstructed.
-    pub fn sync(&mut self, now: Time) -> Result<bool, Error> {
+    pub fn sync(&mut self, now: Time, out: &mut dyn Output) -> Result<bool, Error> {
         if !self.startup.supplied() {
             return Ok(false);
         }
@@ -108,7 +108,7 @@ impl Mcu {
         self.timer_w.sync(now, &self.clocks)?;
         let reset = self.watchdog.sync(now, &self.clocks);
         if self.startup.deadline() == Some(now) {
-            self.apply_gates(now, &mut ())?;
+            self.apply_gates(now, out)?;
         }
         Ok(reset)
     }
@@ -140,7 +140,7 @@ impl Mcu {
         self.collect_aec_requests();
         Ok(())
     }
-    pub fn apply_gates(&mut self, now: Time, _out: &mut dyn Output) -> Result<(), Error> {
+    pub fn apply_gates(&mut self, now: Time, out: &mut dyn Output) -> Result<(), Error> {
         let watch_mode = self.control.mode != Mode::Standby
             && self.control.stabilizing_from != Some(Mode::Standby);
         let main = self.control.main_running();
@@ -176,6 +176,7 @@ impl Mcu {
                 && self.control.osc & 2 == 0
                 && self.clocks.available(Tap::oscillator()),
             now,
+            out,
         )?;
         self.clocks.set_prescalers(
             now,
@@ -263,7 +264,7 @@ impl Mcu {
         self.startup.set_rail(millivolts);
         let supplied = self.startup.supplied();
         if was && !supplied {
-            self.flash.power_off(now);
+            self.flash.power_off(now, out);
             self.sci.supply_lost();
         }
         self.comparators.set_supply(supplied, now)?;
@@ -277,7 +278,7 @@ impl Mcu {
     pub fn reset(&mut self, now: Time, watchdog: bool, out: &mut dyn Output) -> Result<(), Error> {
         // RAM, flash, watch-source phase, RTC, and external chips survive an MCU
         // reset. Undefined MCU RAM is initialized only by cold construction.
-        self.flash.reset(now);
+        self.flash.reset(now, out);
         if !self.control.main_running() {
             self.clocks.restart_oscillator(now)?;
         }
@@ -452,9 +453,9 @@ impl Mcu {
             2
         }
     }
-    pub fn read8(&mut self, a: u16, now: Time) -> Result<u8, Error> {
+    pub fn read8(&mut self, a: u16, now: Time, out: &mut dyn Output) -> Result<u8, Error> {
         if a < 0xc000 {
-            return self.flash.read8(a, now);
+            return self.flash.read8(a, now, out);
         }
         if (RAM_START..=0xff7f).contains(&a) {
             return Ok(self.ram[usize::from(a - RAM_START)]);
@@ -498,10 +499,10 @@ impl Mcu {
             _ => Ok(0),
         }
     }
-    pub fn read16(&mut self, a: u16, now: Time) -> Result<u16, Error> {
+    pub fn read16(&mut self, a: u16, now: Time, out: &mut dyn Output) -> Result<u16, Error> {
         let a = a & !1;
         if a < 0xc000 {
-            return self.flash.read16(a, now);
+            return self.flash.read16(a, now, out);
         }
         self.word_value(a)
     }
@@ -560,7 +561,7 @@ impl Mcu {
             return Ok(());
         }
         if a < 0xc000 {
-            return self.flash.write8(a, v, now);
+            return self.flash.write8(a, v, now, out);
         }
         // These latches require a native word write strobe. Byte stores do
         // not synthesize a read-modify-write of an unspecified other lane.
@@ -641,7 +642,7 @@ impl Mcu {
             }
             0xf078..=0xf07f => self.iic.write(a, v, now, &self.clocks),
             0xf020..=0xf023 | 0xf02b => {
-                self.flash.write_register(a, v, now)?;
+                self.flash.write_register(a, v, now, out)?;
                 if a == 0xf022 {
                     self.apply_gates(now, out)?;
                 }
@@ -650,12 +651,18 @@ impl Mcu {
             _ => Ok(()),
         }
     }
-    pub fn write16(&mut self, a: u16, v: u16, now: Time) -> Result<(), Error> {
+    pub fn write16(
+        &mut self,
+        a: u16,
+        v: u16,
+        now: Time,
+        out: &mut dyn Output,
+    ) -> Result<(), Error> {
         let a = a & !1;
         if a < 0xc000 {
             let bytes = v.to_be_bytes();
-            self.flash.write8(a, bytes[0], now)?;
-            return self.flash.write8(a + 1, bytes[1], now);
+            self.flash.write8(a, bytes[0], now, out)?;
+            return self.flash.write8(a + 1, bytes[1], now, out);
         }
         if (RAM_START..=0xff7e).contains(&a) {
             let i = usize::from(a - RAM_START);
@@ -761,7 +768,7 @@ mod tests {
                 .unwrap();
         }
         let now = Time::from_micros(1000);
-        mcu.sync(now).unwrap();
+        mcu.sync(now, &mut ()).unwrap();
         assert_eq!(mcu.peek8(0xf067).unwrap() & 0x80, 0x80);
         assert_eq!(mcu.interrupt(), Some(30));
         mcu.write8(0xf06d, 0, WriteOrigin::Other, now, &mut ())
