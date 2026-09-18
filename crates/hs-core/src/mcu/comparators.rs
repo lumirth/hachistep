@@ -105,9 +105,8 @@ impl Comparators {
         if c.control & 0x20 != 0 {
             return self.input_mv[i] > self.reference_mv;
         }
-        // Table 18.2 and Fig.18.2 explicitly select VIH without hysteresis.
-        // The CRS prose on p.363 says VIL instead; that inconsistency is retained
-        // in the evidence notes. Do not present its resolution as a capture.
+        // Table18.2/Fig18.2 and the internal-reference application note select
+        // VIH without hysteresis, resolving the contrary CRS prose on p.363.
         let n = if c.control & 0x10 != 0 && c.result {
             9
         } else {
@@ -160,13 +159,6 @@ impl Comparators {
             return Ok(());
         }
         self.sync(now)?;
-        if !gate && self.channels.iter().any(|c| c.control & 0x80 != 0) {
-            return Err(Error::Unsupported {
-                component: "comparators",
-                detail: "clear CME before module standby (§18.5)",
-                address: 0xfffb,
-            });
-        }
         self.gate = gate;
         for i in 0..2 {
             self.reevaluate(i, now, gate)?;
@@ -203,16 +195,21 @@ impl Comparators {
         }
         Ok(())
     }
-    pub fn interrupt(&self) -> bool {
+    pub fn interrupt(&self) -> Option<u8> {
         self.interrupt_with_enable([0; 2])
     }
-    pub(crate) fn interrupt_with_enable(&self, retained: [u8; 2]) -> bool {
-        self.gate
-            && self
-                .channels
-                .iter()
-                .zip(retained)
-                .any(|(c, old)| c.control & 0x80 != 0 && (c.control | old) & 0x40 != 0 && c.flag)
+    pub(crate) fn interrupt_with_enable(&self, retained: [u8; 2]) -> Option<u8> {
+        if !self.gate {
+            return None;
+        }
+        self.channels
+            .iter()
+            .zip(retained)
+            .enumerate()
+            .find_map(|(i, (c, old))| {
+                (c.control & 0x80 != 0 && (c.control | old) & 0x40 != 0 && c.flag)
+                    .then_some(21 + i as u8)
+            })
     }
     pub fn peek(&self, address: u16) -> u8 {
         match address {
@@ -243,16 +240,12 @@ impl Comparators {
         self.sync(now)?;
         match address {
             0xf0dc | 0xf0dd => {
-                if value & 0x30 == 0x30 {
-                    return Err(Error::Unsupported {
-                        component: "comparators",
-                        detail: "external reference with hysteresis is prohibited",
-                        address,
-                    });
-                }
                 let i = usize::from(address - 0xf0dc);
                 let c = &mut self.channels[i];
-                let changed = (c.control ^ value) & 0xbf != 0;
+                // CMR bypasses the internal ladder. Its CMLS/CRS bits remain
+                // stored, but cannot postpone a live external comparison.
+                let changed = (c.control ^ value) & 0xa0 != 0
+                    || (value & 0x20 == 0 && (c.control ^ value) & 0x1f != 0);
                 c.control = value;
                 if value & 0xc0 != 0xc0 {
                     c.armed = false;

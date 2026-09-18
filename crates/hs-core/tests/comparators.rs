@@ -53,20 +53,23 @@ fn hysteresis_keeps_history_in_the_deadband() {
 #[test]
 fn interrupts_are_read_armed_not_unconditionally_edge_triggered() {
     let mut c = init(0xc8, 2000);
-    assert!(!c.interrupt(), "CME+CMIE alone must not arm the latch");
+    assert!(
+        c.interrupt().is_none(),
+        "CME+CMIE alone must not arm the latch"
+    );
     c.read(0xf0de);
     c.set_inputs(at(21), 3000, 0, [1000, 0]).unwrap();
     settled(&mut c, 40);
-    assert!(c.interrupt());
+    assert!(c.interrupt().is_some());
     c.write(0xf0de, 0, at(40)).unwrap(); // No read of CMF=1 yet.
-    assert!(c.interrupt());
+    assert!(c.interrupt().is_some());
     assert_eq!(c.read(0xf0de) & 0x11, 0x10);
     c.write(0xf0de, 0, at(40)).unwrap();
-    assert!(!c.interrupt());
+    assert!(c.interrupt().is_none());
     c.set_inputs(at(41), 3000, 0, [2000, 0]).unwrap();
     settled(&mut c, 60);
     assert!(
-        c.interrupt(),
+        c.interrupt().is_some(),
         "read-to-clear also rearms at the new CDR baseline"
     );
 }
@@ -78,10 +81,10 @@ fn same_time_read_masks_new_interrupt_but_keeps_older_flag() {
     let due = c.deadline().unwrap();
     c.sync(due).unwrap();
     assert_eq!(c.read(0xf0de) & 0x11, 1);
-    assert!(!c.interrupt());
+    assert!(c.interrupt().is_none());
     c.set_inputs(at(50), 3000, 0, [0, 0]).unwrap();
     settled(&mut c, 70);
-    assert!(c.interrupt());
+    assert!(c.interrupt().is_some());
     c.set_inputs(at(71), 3000, 0, [2000, 0]).unwrap();
     c.sync(c.deadline().unwrap()).unwrap();
     assert_eq!(c.read(0xf0de) & 0x10, 0x10);
@@ -104,24 +107,21 @@ fn independent_channels_external_reference_and_interrupt_vector() {
         .set_inputs(at(21), 3000, 1700, [0, 1600])
         .unwrap();
     m.sync(at(40)).unwrap();
-    assert_eq!(m.interrupt(), Some(36));
+    assert_eq!(m.interrupt(), Some(22));
     assert_eq!(m.read8(0xf0de, at(40)).unwrap() & 0x30, 0x20);
     m.write8(0xf0de, 0x10, WriteOrigin::MovByte, at(40), &mut ())
         .unwrap();
     assert_eq!(m.interrupt(), None);
-    assert!(m
-        .write8(0xf0dc, 0xb0, WriteOrigin::MovByte, at(40), &mut ())
-        .is_err());
+    m.write8(0xf0dc, 0xb0, WriteOrigin::MovByte, at(40), &mut ())
+        .unwrap();
+    assert_eq!(m.peek8(0xf0dc).unwrap(), 0xb0);
 }
 #[test]
 fn module_stop_is_distinct_from_standby_and_reset() {
     let mut c = init(0xc8, 0);
     c.read(0xf0de);
-    assert!(
-        c.set_gate(false, at(20)).is_err(),
-        "§18.5 requires CME clear first"
-    );
-    c.write(0xf0dc, 0, at(20)).unwrap();
+    c.set_gate(false, at(20)).unwrap();
+    assert_eq!(c.peek(0xf0dc), 0xc8);
     c.set_gate(false, at(20)).unwrap();
     assert_eq!(c.deadline(), None);
     c.reset(at(30));
@@ -132,7 +132,7 @@ fn module_stop_is_distinct_from_standby_and_reset() {
 fn fixture() -> Machine {
     let mut rom = vec![0; 49152];
     rom[..2].copy_from_slice(&0x100u16.to_be_bytes());
-    rom[72..74].copy_from_slice(&0x200u16.to_be_bytes()); // Comparator vector 36.
+    rom[42..44].copy_from_slice(&0x200u16.to_be_bytes()); // COMP0 vector 21.
     let mut code = vec![
         0x7a, 0x07, 0, 0, 0xff, 0x70, 0xf8, 6, 0x38, 0xfb, 0xf8, 0xc8, 0x6a, 0x88, 0xf0, 0xdc,
     ];
@@ -232,4 +232,44 @@ fn vcref_is_p30_not_the_p32_transmit_pin() {
     g.set_analog_levels(levels);
     g.resolve(Default::default(), 0, 0, [None; 2]);
     assert_eq!(g.read(0xffd6) & 5, 5);
+}
+
+#[test]
+fn gating_retains_latches_and_restarts_one_full_response() {
+    let mut c = init(0xe0, 1000);
+    c.read(0xf0de);
+    c.set_inputs(at(21), 3000, 1500, [2000, 0]).unwrap();
+    c.set_gate(false, at(26)).unwrap();
+    c.set_inputs(at(100), 3000, 1500, [2100, 0]).unwrap();
+    assert_eq!(c.peek(0xf0dc), 0xe0);
+    assert_eq!(c.peek(0xf0de), 0);
+    assert_eq!(c.deadline(), None);
+    c.set_gate(true, at(110)).unwrap();
+    settled(&mut c, 124);
+    assert_eq!(c.peek(0xf0de), 0);
+    settled(&mut c, 126);
+    assert_eq!(c.peek(0xf0de), 0x11);
+    c.set_gate(false, at(130)).unwrap();
+    assert_eq!(c.interrupt(), None);
+    assert_eq!(c.peek(0xf0de), 0x11);
+    c.set_gate(true, at(150)).unwrap();
+    assert_eq!(c.interrupt(), Some(21), "retained CMF is already eligible");
+}
+
+#[test]
+fn external_ladder_writes_store_bits_without_postponing_a_crossing() {
+    let mut c = init(0xbf, 2000);
+    assert_eq!(c.peek(0xf0de), 1);
+    c.set_inputs(at(21), 3000, 1500, [1000, 0]).unwrap();
+    for (us, value) in [(24, 0xa0), (27, 0xaf), (30, 0xb5)] {
+        c.write(0xf0dc, value, at(us)).unwrap();
+        assert_eq!(c.peek(0xf0dc), value);
+    }
+    settled(&mut c, 37);
+    assert_eq!(c.peek(0xf0de), 0);
+    // Restored internal hysteresis now uses stored CRS=5: VIH=1600 mV.
+    c.write(0xf0dc, 0x95, at(40)).unwrap();
+    c.set_inputs(at(41), 3000, 1500, [1601, 0]).unwrap();
+    settled(&mut c, 57);
+    assert_eq!(c.peek(0xf0de), 1);
 }

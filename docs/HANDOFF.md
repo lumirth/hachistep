@@ -18,7 +18,10 @@ The native codec checkpoint passed these checks and Rust 1.95.0 workspace tests;
 its local receipts are `out/state-check2`, `out/state-retail` and
 `out/state-msrv-tests.log`. Audit corrections have additional named regressions. Boot mode then passed the
 full gates and all 120 independent guests in `out/boot-check`, with unchanged
-retail observations and native replay in `out/boot-retail`.
+retail observations and native replay in `out/boot-retail`. Comparator routing,
+live configuration and RTC free-counter admission then passed the full gates
+and all 122 guests in `out/comparator-check`; `out/comparator-retail` confirms
+unchanged home/menu workloads and partition/native replay.
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their
@@ -47,8 +50,9 @@ in SAVE_STATES. The exact owner limitations remain in STATUS.
    tests cover transmitted echoes and final stop, erase/restore, odd uploads,
    invalid lengths, reset interruption and zero ordinary-run allocation.
 2. **Owner completion.** Internal flash needs persistent-byte/commit callbacks.
-   Revisit guest-configuration host faults, especially comparator gating and
-   reference selections: model the physical consequence when it can be inferred.
+   Comparator gating and external-reference selections now follow the retained
+   latch/mux model, with independently routed channel interrupts. Continue to
+   model guest-configuration consequences from the connected hardware.
    Extend same-time register and pin conflict coverage at each affected owner.
 3. **CPU coverage.** Broaden independently stated encoding, flags and bus timing
    cases beyond the current alias, displacement, divide, prefetch and admission

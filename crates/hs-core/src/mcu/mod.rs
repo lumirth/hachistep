@@ -412,11 +412,11 @@ impl Mcu {
         if self.timer_w.interrupt_with_enable(retained[6]) {
             push(35);
         }
-        if self
+        if let Some(vector) = self
             .comparators
             .interrupt_with_enable([retained[7], retained[8]])
         {
-            push(36);
+            push(vector);
         }
         if self.sci.interrupt_with_enable(retained[9]) {
             push(37);
@@ -528,7 +528,7 @@ impl Mcu {
         let field = match a {
             0xfff3 => Some((0, 0x87)),
             0xfff4 => Some((1, 0x45)),
-            0xf06d => Some((2, 0x7f)),
+            0xf06d => Some((2, 0xff)),
             0xffb2 => Some((3, 8)),
             0xf0e3 => Some((4, 15)),
             0xf07b => Some((5, 0xf8)),
@@ -746,5 +746,30 @@ impl Mcu {
         self.comparators.validate(now)?;
         self.startup.validate(now)?;
         crate::state::future(self.deadline()?, now)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rtc_free_counter_enable_survives_its_clearing_instruction() {
+        let mut mcu = Mcu::new(&[0; FLASH_SIZE], Frequencies::default()).unwrap();
+        for (address, value) in [(0xfff3, 0x80), (0xf06f, 0), (0xf06d, 0x80), (0xf06c, 0x80)] {
+            mcu.write8(address, value, WriteOrigin::Other, Time::ZERO, &mut ())
+                .unwrap();
+        }
+        let now = Time::from_micros(1000);
+        mcu.sync(now).unwrap();
+        assert_eq!(mcu.peek8(0xf067).unwrap() & 0x80, 0x80);
+        assert_eq!(mcu.interrupt(), Some(30));
+        mcu.write8(0xf06d, 0, WriteOrigin::Other, now, &mut ())
+            .unwrap();
+        assert_eq!(mcu.peek8(0xf06d).unwrap(), 0);
+        assert_eq!(mcu.interrupt(), Some(30));
+        mcu.instruction_boundary();
+        assert_eq!(mcu.interrupt(), None);
+        assert_eq!(mcu.peek8(0xf067).unwrap() & 0x80, 0x80);
     }
 }

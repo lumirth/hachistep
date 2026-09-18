@@ -29,7 +29,7 @@ representation/replay consistency, not agreement with silicon.
 | `hachiware/spec/register_access.tsv`, `tests/register_access.rs` | Independent register reference data in hachiware; local guest-access boundary regression. |
 | `tests/cpu_regressions.rs` | 120 aliased predecrement combinations, partial long stores, RTE/LDC admission, 192 displacement-24 cases, EEPMOV/NMI and stable issued actions. |
 | `tests/clock_obligations.rs` | CPU/SSU/ADC source-edge waits, downstream gating, source changes, ordinary GPIO pull writes. |
-| `tests/comparators.rs` | Dual-channel hysteresis/reference/arming/clear behavior, actual guest vector 36, peek and pin-routing tests. |
+| `tests/comparators.rs` | Dual-channel hysteresis/reference/arming/clear behavior, guest wake, live gating, ignored external ladder selections and channel vectors 21/22, peek and pin-routing tests. |
 | `tests/timer_w_modes.rs` | Buffers, capture, external clock, local conflicts, PWM boundary, stabilization gating and guest vector 35. |
 | `tests/aec.rs` | Counter/PWM/gate recurrence, 8/16-bit behavior, separate flags/requests, guest vectors 18/32, shared phases and replay. |
 | `tests/nmi.rs` | Dedicated edge latch, masked wake, held-input behavior, standby replay, reset straps and failed power-on nonmutation. |

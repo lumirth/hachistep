@@ -28,7 +28,7 @@ Source: REJ09B0152-0300 §18, §21.2.5 and register/reset tables. Both comparato
 have explicit result, baseline latch, read-armed enable, interrupt flag and
 read-before-clear qualification. A same-time CDR read masks a newly generated
 comparison interrupt without losing an older flag. This is local read-strobe
-resolution, not CPU rollback. Comparator requests route to vector 36 and remain
+resolution, not CPU rollback. Comparator requests route to vectors 21/22 and remain
 operational in watch/standby when the module is enabled. Module standby while
 CME remains set is rejected under §18.5's required software sequence.
 
@@ -39,7 +39,7 @@ conversion delay is the documented maximum used as a reproducible witness;
 physical delay, offset and short-pulse response are not certified.
 
 A complete guest program configures the comparator, arms its latch, sleeps,
-wakes through vector 36 after an analog pin change, writes a RAM result, clears
+wakes through vector 21 after an analog pin change, writes a RAM result, clears
 and rearms the comparator, and executes RTE. The complete run equals 1,000
 short partitions, including restoration during the pending analog transition.
 
