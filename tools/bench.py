@@ -106,7 +106,7 @@ def main() -> None:
                                      'binaries': {k: digest(v) for k, v in variants.items()},
                                      'milliseconds': a.milliseconds, 'samples': results,
                                      'summary': summaries, 'endpoint': endpoint, 'untimed_equivalence': equivalence,
-                                     'limitation': 'Untimed preflight compares exported state and complete product history. It is not hidden-state or physical-hardware conformance. Measured runs compare endpoints/counts without tracing.'})
+                                     'limitation': 'Untimed preflight compares native causal state, exported observations and complete product history. It is not physical-hardware conformance. Measured runs compare endpoints/counts without tracing.'})
 if __name__ == '__main__':
     try:
         main()

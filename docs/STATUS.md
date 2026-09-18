@@ -196,3 +196,12 @@ inputs use the documented midpoint quantizer against external AVCC, with the
 nominal battery circuit described in [ADC board research](research/adc-board-transfer.md). All these inputs
 are retained in typed and encoded save states and validated before a batch mutates the
 machine. CMOS contention, clamps and loading from forced voltages are not modeled.
+
+## Clock arithmetic measurement
+
+The exact clock-inversion reduction lowered measured simulation time by 9.0%
+for retail home, 7.9% for retail idle, and 9.2% for a running custom flash eraser
+on the local Apple M1. Paired runs preserved complete native state and event
+history; the change adds no runtime storage. See the [derivation and raw-receipt
+locations](research/clock-inversion-performance.md). This is a workload result,
+not a comparison against other emulator cores.

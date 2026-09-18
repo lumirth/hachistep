@@ -25,6 +25,9 @@ unchanged home/menu workloads and partition/native replay.
 The persistence, terminal-fault and sensor acknowledgement changes pass the
 full gates and 123 independent guests in `out/persistence-check2`; all four
 retail workloads and native replay remain unchanged in `out/persistence-retail`.
+Exact clock inversion then passed `out/clock-reduction-check` and
+`out/clock-reduction-retail`; paired measurements and the derivation are in
+[clock inversion](research/clock-inversion-performance.md).
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their

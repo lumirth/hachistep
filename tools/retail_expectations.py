@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from _support import digest
-from compare_runs import EXPORTS, REPORT_KEYS
+from compare_runs import OBSERVATION_FILES, REPORT_KEYS
 
 
 def load(path: Path, inputs: dict) -> dict:
@@ -19,7 +19,9 @@ def load(path: Path, inputs: dict) -> dict:
     for name, case in data['cases'].items():
         if set(case['report']) != set(REPORT_KEYS):
             raise ValueError(f'{name}: missing or unknown semantic report field')
-        if set(case['exports']) != set(EXPORTS):
+        # A reviewed behavioral baseline does not freeze the private native
+        # encoding. Cross-run equivalence separately compares complete states.
+        if set(case['exports']) != set(OBSERVATION_FILES):
             raise ValueError(f'{name}: missing or unknown exported file')
         if type(case['milliseconds']) is not int or case['milliseconds'] < 1:
             raise ValueError(f'{name}: invalid run duration')

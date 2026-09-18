@@ -20,7 +20,8 @@ REPORT_KEYS = (
     'events', 'lcd_events', 'nv_commits', 'buzzer_events', 'ir_events',
     'serial_tx', 'serial_rx', 'bus_reads', 'bus_writes', 'resets', 'fault',
 )
-EXPORTS = ('flash.bin', 'ram.bin', 'eeprom.bin', 'eeprom.status', 'sensor-nv.bin', 'lcd-ram.bin', 'lcd-icons.bin', 'frame.pgm')
+OBSERVATION_FILES = ('flash.bin', 'ram.bin', 'eeprom.bin', 'eeprom.status', 'sensor-nv.bin', 'lcd-ram.bin', 'lcd-icons.bin', 'frame.pgm')
+EXPORTS = ('state.bin', *OBSERVATION_FILES)
 
 
 def compare(left: Path, right: Path, left_trace: Path | None = None,
@@ -68,7 +69,7 @@ def compare(left: Path, right: Path, left_trace: Path | None = None,
             errors.append(f'product history: first difference at record {first}')
     return {'schema': 1, 'equivalent': not errors, 'differences': errors,
             'exports_sha256': hashes, 'history': history,
-            'scope': 'Exported state and requested product history; not complete hidden state or hardware conformance.'}
+            'scope': 'Native causal state, exported observations and requested product history; not hardware conformance.'}
 
 
 def main() -> None:

@@ -160,7 +160,12 @@ impl Clock {
         let delta = limit.0 - self.at.0;
         if let Some(scaled) = delta.checked_mul(u128::from(self.denominator)) {
             let p = self.whole * u128::from(self.denominator) + u128::from(self.remainder);
-            return ((scaled - 1 - u128::from(self.fraction)) / p).min(u128::from(u64::MAX)) as u64;
+            // The period numerator is an integer multiple of 2^64: new()
+            // starts with denominator-Hz * 2^64, and dividers multiply it.
+            // floor(n / (d * 2^64)) == floor((n >> 64) / d). Retaining the
+            // fraction subtraction before shifting preserves exclusive edges.
+            let whole = ((scaled - 1 - u128::from(self.fraction)) >> 64) as u64;
+            return whole / (p >> 64) as u64;
         }
         let upper = ((delta - 1) / self.whole).min(u128::from(u64::MAX)) as u64;
         let (mut lo, mut hi) = (0u64, upper);
@@ -193,7 +198,7 @@ impl Clock {
                     .whole
                     .checked_mul(u128::from(self.denominator))
                     .and_then(|v| v.checked_add(u128::from(self.remainder)))
-                    .is_some()
+                    .is_some_and(|period| period != 0 && period as u64 == 0)
                 && self.at <= now,
             "invalid rational clock",
         )?;
@@ -254,5 +259,28 @@ mod inversion_tests {
                 assert_eq!(c.edges_before(Time::from_raw(edge.raw() + 1)), k);
             }
         }
+    }
+    #[test]
+    fn inversion_handles_full_width_periods_and_overflowing_scaled_horizons() {
+        for (n, d) in [(1, 1), (1, u64::MAX), (u64::MAX, 1), (3_686_400, 17)] {
+            let c = Clock::new(Time::ZERO, n, d).unwrap();
+            for count in [1, 19, 65536, u64::MAX / 2, u64::MAX] {
+                if let Ok(edge) = c.after(count) {
+                    assert_eq!(c.edges_before(edge), count - 1);
+                    if edge.raw() < u128::MAX {
+                        assert_eq!(c.edges_before(Time::from_raw(edge.raw() + 1)), count);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            Clock::new(Time::ZERO, 3_686_400, 1)
+                .unwrap()
+                .edges_before(Time::MAX),
+            u64::MAX
+        );
+        let mut invalid = Clock::new(Time::ZERO, 7, 3).unwrap();
+        invalid.remainder += 1;
+        assert!(invalid.validate(Time::ZERO).is_err());
     }
 }

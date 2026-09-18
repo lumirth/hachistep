@@ -334,6 +334,14 @@ impl Clocks {
             return Err(TimeError::ZeroFrequency.into());
         }
         let mut clock = source.clock;
+        // A divided clock must still have a representable rational period,
+        // including its remainder, not only a representable whole component.
+        clock
+            .whole
+            .checked_mul(u128::from(clock.denominator))
+            .and_then(|v| v.checked_add(u128::from(clock.remainder)))
+            .and_then(|v| v.checked_mul(u128::from(divide)))
+            .ok_or(TimeError::Overflow)?;
         let time = source.time(now);
         let edges = clock.edges_before(Time::from_raw(time.raw().saturating_add(1)));
         clock.advance(edges / divide * divide)?;

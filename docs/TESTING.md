@@ -82,7 +82,7 @@ python3 tools/bench.py --left /path/to/baseline --right /path/to/candidate \
   --repeats 4 --out out/paired
 ```
 
-The comparator checks semantic report fields, actual exported bytes and, when
+The comparator checks semantic report fields, canonical native state, exported bytes and, when
 requested, every product-event record. It identifies the first difference and
 rejects truncated, missing, mixed bus/product, or report-length-mismatched
 histories. It does not equate endpoint equality with history equality. It does
