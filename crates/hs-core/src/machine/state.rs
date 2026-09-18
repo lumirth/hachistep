@@ -20,6 +20,7 @@ struct Saved {
     now: Time,
     last_effect: Time,
     cpu: SavedCpu,
+    boot: Option<Boot>,
     mcu: Mcu,
     eeprom: M95512,
     sensor: Bma150,
@@ -46,6 +47,7 @@ impl Saved {
             now: m.now,
             last_effect: m.last_effect,
             cpu: m.cpu.save()?,
+            boot: m.boot.clone(),
             mcu: m.mcu.clone(),
             eeprom: m.eeprom.clone(),
             sensor: m.sensor.clone(),
@@ -77,6 +79,7 @@ impl Saved {
             now: self.now,
             last_effect: self.last_effect,
             cpu: self.cpu.restore(self.stopped_by_core_fault)?,
+            boot: self.boot,
             mcu: self.mcu,
             eeprom: self.eeprom,
             sensor: self.sensor,
@@ -117,10 +120,17 @@ impl Saved {
         m.eeprom.validate(m.now)?;
         m.sensor.validate(m.now)?;
         m.lcd.validate(m.now)?;
+        if let Some(boot) = &m.boot {
+            boot.validate(m.now, &m.mcu)?;
+        }
         if let Some(p) = m.pending {
             p.wait.validate()?;
+            let action = match &m.boot {
+                Some(boot) => boot.action(m.mcu.clocks.frequencies.main_hz)?,
+                None => m.cpu.issued_action(),
+            };
             require(
-                p.wait.uses(Tap::cpu()) && m.cpu.issued_action() == Some(p.action),
+                p.wait.uses(Tap::cpu()) && action == Some(p.action),
                 "saved request differs from CPU progress",
             )?;
             let split = match p.action {
@@ -258,8 +268,9 @@ mod tests {
         // Cover CPU, clock/control, serial, sensor and board scalar regions;
         // random mutations of ROM/RAM bytes alone would barely exercise loading.
         let cpu_end = HEADER + 64 + borsh::to_vec(&saved.cpu).unwrap().len();
-        let flash_end = cpu_end + borsh::to_vec(&saved.mcu.flash).unwrap().len();
-        let mcu_end = cpu_end + borsh::to_vec(&saved.mcu).unwrap().len();
+        let boot_end = cpu_end + borsh::to_vec(&saved.boot).unwrap().len();
+        let flash_end = boot_end + borsh::to_vec(&saved.mcu.flash).unwrap().len();
+        let mcu_end = boot_end + borsh::to_vec(&saved.mcu).unwrap().len();
         let eeprom_end = mcu_end + borsh::to_vec(&saved.eeprom).unwrap().len();
         let ranges = [
             HEADER + 64..cpu_end,

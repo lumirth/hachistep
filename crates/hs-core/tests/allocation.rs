@@ -66,4 +66,43 @@ fn ordinary_run_has_no_heap_allocation() {
     result.unwrap();
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
     assert_eq!(m.firmware()[0x9000], 0);
+
+    let mut boot = hs_core::Machine::new(hs_core::Images {
+        firmware: &[0; 49152],
+        eeprom: &[255; 65536],
+        eeprom_status: 0,
+    })
+    .unwrap();
+    use hs_core::{DigitalPin, Input, Time, TimedInput};
+    let mut rows = vec![
+        TimedInput {
+            at: Time::ZERO,
+            input: Input::ResetPin(false),
+        },
+        TimedInput {
+            at: Time::ZERO,
+            input: Input::NmiPin(false),
+        },
+        TimedInput {
+            at: Time::from_micros(100),
+            input: Input::ResetPin(true),
+        },
+    ];
+    for (start, byte) in [(1000, 0u8), (20_000, 0x55)] {
+        for bit in 0..10 {
+            rows.push(TimedInput {
+                at: Time::from_micros(start + bit * 1250 / 3),
+                input: Input::DigitalPin {
+                    pin: DigitalPin::P31,
+                    level: Some(bit == 9 || (bit != 0 && byte & (1 << (bit - 1)) != 0)),
+                },
+            });
+        }
+    }
+    ENABLED.store(true, Ordering::SeqCst);
+    let result = boot.run_until(Time::from_micros(1_000_000), &rows, &mut ());
+    ENABLED.store(false, Ordering::SeqCst);
+    result.unwrap();
+    assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
+    assert!(boot.firmware().iter().all(|v| *v == 255));
 }

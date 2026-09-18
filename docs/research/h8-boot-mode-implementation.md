@@ -8,6 +8,18 @@ their PDF page numbers. **Documented** protocol requirements and **chosen**
 implementable boundaries are distinguished below; neither requires withholding
 working boot support.
 
+## Implementation
+
+`machine/boot.rs` now implements this contract. Its pending accesses share the
+CPU's existing bus-completion machinery; the SCI and flash owners are unchanged
+by protocol intent. Original tests check the complete TXD waveform, full stop-bit
+handoff, retained baud, reset during upload, native restoration within erasure
+and the maximum materialized flash-state file. The independent hachiware cases
+exercise blank/nonblank flash, all six blocks, odd upload length and invalid
+length containment. Ordinary boot erasure is covered by the allocation gate.
+The 100-state readiness interval comprises 25 setup-access states and a retained
+75-state wait. Other private ROM instruction overhead remains unspecified.
+
 ## What is being supplied
 
 The manufacturer's program receives a small **RAM programming-control program**,

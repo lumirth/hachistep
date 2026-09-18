@@ -44,7 +44,7 @@ The sole variable-size record is a bounded list of up to 384 touched internal
 flash pages; each has a 16-bit aligned address and 1024 cell-charge values.
 
 The maximum payload is 4 MiB, accommodating every flash page plus fixed memory
-and owner records. Counts are checked before allocation; the large flash/EEPROM
+and owner records, including boot-service handshake/upload progress. Counts are checked before allocation; the large flash/EEPROM
 byte arrays are read directly into fixed-size heap buffers. Frontends can use
 `Snapshot::MAX_ENCODED_SIZE` to bound file reads. Decoding rejects trailing bytes,
 bad checksums/tags, invalid indices/divisors/progress and missed active
@@ -104,3 +104,10 @@ Validation covers quarter-cycle CPU captures, split SFR lanes, copy and exceptio
 progress, flash pulses, EEPROM interruption, clock/reset/power transitions,
 private retail replay, malformed candidates and continuation without ordinary-run
 allocation. Debug and release decoding are tested with a 1 MiB thread stack.
+
+Manufacturer boot captures retain autobaud's source-edge start, the current
+protocol/erase/setup stage, pending physical bus access, response byte,
+length/cursor and block/verify progress. SCI and flash retain the actual shift
+and cell state; loading does not repeat a response or programming pulse. The
+boot erase regression materializes all 384 charged flash pages and verifies the
+resulting file remains inside the physical payload bound.

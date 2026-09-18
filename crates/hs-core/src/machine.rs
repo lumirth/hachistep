@@ -3,9 +3,10 @@
 //! The starter retains partial CPU and serial work. Its hardware coverage and
 //! timing witnesses are enumerated in docs/STATUS.md; successful execution is
 //! not a claim of complete silicon conformance.
+mod boot;
 mod state;
 use crate::{
-    cpu::{alu::I, Action, Cpu, Registers, Width},
+    cpu::{alu::I, Action, Cpu, Registers, Width, WriteOrigin},
     devices::{bma150::Bma150, m95512::M95512, nt7508::Nt7508},
     error::Error,
     mcu::{
@@ -17,6 +18,7 @@ use crate::{
     signals::{Drive, Event, Input, Output, Piezo, TimedInput},
     time::{Time, TimeError},
 };
+use boot::Boot;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, Debug)]
@@ -93,6 +95,7 @@ pub struct Machine {
     now: Time,
     last_effect: Time,
     cpu: Cpu,
+    boot: Option<Boot>,
     mcu: Mcu,
     eeprom: M95512,
     sensor: Bma150,
@@ -139,6 +142,7 @@ impl Machine {
             now: Time::ZERO,
             last_effect: Time::ZERO,
             cpu,
+            boot: None,
             mcu,
             eeprom: M95512::new(images.eeprom, images.eeprom_status)?,
             sensor: match sensor_nonvolatile {
@@ -190,7 +194,11 @@ impl Machine {
         self.cpu.instruction_pc()
     }
     pub fn phase_name(&self) -> &'static str {
-        self.cpu.phase_name()
+        if self.boot.is_some() {
+            "boot-service"
+        } else {
+            self.cpu.phase_name()
+        }
     }
     pub fn retired(&self) -> u64 {
         self.cpu.retired
@@ -338,6 +346,11 @@ impl Machine {
             self.sensor.set_supply(rail, self.now, out)?;
             self.lcd.set_supply(rail, self.now)?;
             self.mcu.set_supply(rail, self.now, out)?;
+            if rail < 1800 && self.boot.take().is_some() {
+                self.cpu = Cpu::reset();
+                self.boot = None;
+                self.pending = None;
+            }
             if (old != 0) != (rail != 0) {
                 out.event(Event::Power {
                     at: self.now,
@@ -561,6 +574,7 @@ impl Machine {
             out,
         )?;
         self.cpu = Cpu::reset();
+        self.boot = None;
         self.pending = None;
         self.resume_after = None;
         self.stats.resets = self.stats.resets.wrapping_add(1);
@@ -633,6 +647,7 @@ impl Machine {
                 self.lcd.lose_volatile();
                 self.sensor.lose_volatile();
                 self.cpu = Cpu::reset();
+                self.boot = None;
                 self.pending = None;
                 self.resume_after = None;
                 self.watchdog_reset = None;
@@ -673,8 +688,11 @@ impl Machine {
             .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?
             == Some(self.now)
         {
-            if !self.mcu.control.nmi_level() {
-                return Err(Self::boot_strap_error());
+            // TEST shares the ADTRG package input. The fixed board's E7_0
+            // boot-enable strap is modeled high; TEST-high is inactive test state.
+            let test = self.mcu.gpio.adc_trigger().1;
+            if test || !self.mcu.control.nmi_level() {
+                self.boot = Some(Boot::new(test));
             }
             self.reset_release = None;
             self.mcu.hold_reset(
@@ -762,14 +780,6 @@ impl Machine {
         }
         Ok(())
     }
-    fn boot_strap_error() -> Error {
-        Error::Unsupported {
-            component: "reset straps",
-            address: 0,
-            detail:
-                "NMI low at reset release requires unimplemented boot-mode/strap behavior (§6.3)",
-        }
-    }
     fn apply_batch(&mut self, changes: &[TimedInput], out: &mut dyn Output) -> Result<(), Error> {
         self.last_effect = self.now;
         if self.power.mcu() && self.mcu.sync(self.now)? {
@@ -818,6 +828,7 @@ impl Machine {
                 high,
                 self.power.mcu()
                     && rail >= 1800
+                    && self.boot.is_none()
                     && !was_reset
                     && !will_reset
                     && self.reset_release.is_none()
@@ -871,6 +882,19 @@ impl Machine {
             || (!self.mcu.clocks.available(Tap::cpu()) && !self.cpu.sleeping())
         {
             return Ok(());
+        }
+        if let Some(boot) = &mut self.boot {
+            let action = boot.next(self.now, &self.mcu)?;
+            if boot.done() {
+                self.boot = None;
+                self.cpu = Cpu::new(0xfb80);
+                self.mcu.instruction_boundary();
+            } else {
+                if let Some(action) = action {
+                    self.queue_action(action)?;
+                }
+                return Ok(());
+            }
         }
         if let Some(resume) = self.resume_after {
             if self.resume_deadline()? != Some(self.now) {
@@ -950,44 +974,44 @@ impl Machine {
                     }
                     return Ok(());
                 }
-                Action::Idle(states) => {
-                    self.pending = Some(Pending {
-                        action,
-                        wait: ClockWait::after(
-                            self.now,
-                            u64::from(states),
-                            Tap::cpu(),
-                            &self.mcu.clocks,
-                        )?,
-                        split: false,
-                        lane: 0,
-                        high: 0,
-                    });
-                    return Ok(());
-                }
-                Action::Read { address, width, .. } | Action::Write { address, width, .. } => {
-                    let address = if width == Width::Word {
-                        address & !1
-                    } else {
-                        address
-                    };
-                    let split = width == Width::Word && !Mcu::native_word(address);
-                    let physical_width = if split { Width::Byte } else { width };
-                    self.pending = Some(Pending {
-                        action,
-                        wait: ClockWait::after(
-                            self.now,
-                            Mcu::access_states(address, physical_width),
-                            Tap::cpu(),
-                            &self.mcu.clocks,
-                        )?,
-                        split,
-                        lane: 0,
-                        high: 0,
-                    });
+                action => {
+                    self.queue_action(action)?;
                     return Ok(());
                 }
             }
+        }
+    }
+    fn queue_action(&mut self, action: Action) -> Result<(), Error> {
+        let (states, split) = match action {
+            Action::Idle(states) => (u64::from(states), false),
+            Action::Read { address, width, .. } | Action::Write { address, width, .. } => {
+                let address = if width == Width::Word {
+                    address & !1
+                } else {
+                    address
+                };
+                let split = width == Width::Word && !Mcu::native_word(address);
+                (
+                    Mcu::access_states(address, if split { Width::Byte } else { width }),
+                    split,
+                )
+            }
+            Action::Sleep => return Err(Error::Internal("scheduled SLEEP access")),
+        };
+        self.pending = Some(Pending {
+            action,
+            wait: ClockWait::after(self.now, states, Tap::cpu(), &self.mcu.clocks)?,
+            split,
+            lane: 0,
+            high: 0,
+        });
+        Ok(())
+    }
+    fn complete_action(&mut self, value: u16) -> Result<(), Error> {
+        if let Some(boot) = &mut self.boot {
+            boot.complete(value, self.mcu.clocks.frequencies.main_hz)
+        } else {
+            self.cpu.complete(value)
         }
     }
     fn complete_cpu(&mut self, out: &mut dyn Output) -> Result<(), Error> {
@@ -998,7 +1022,7 @@ impl Machine {
             .ok_or(Error::Internal("CPU completion without pending access"))?;
         let (address, width, write) = match pending.action {
             Action::Idle(_) => {
-                self.cpu.complete(0)?;
+                self.complete_action(0)?;
                 return Ok(());
             }
             Action::Read { address, width, .. } => (address, width, false),
@@ -1027,10 +1051,17 @@ impl Machine {
                 value
             };
             match w {
-                Width::Byte => {
-                    self.mcu
-                        .write8(a, v as u8, self.cpu.write_origin(mov_byte), self.now, out)?
-                }
+                Width::Byte => self.mcu.write8(
+                    a,
+                    v as u8,
+                    if self.boot.is_some() {
+                        WriteOrigin::MovByte
+                    } else {
+                        self.cpu.write_origin(mov_byte)
+                    },
+                    self.now,
+                    out,
+                )?,
                 Width::Word => self.mcu.write16(a, v, self.now)?,
             };
             self.stats.bus_writes = self.stats.bus_writes.wrapping_add(1);
@@ -1073,7 +1104,7 @@ impl Machine {
             } else {
                 value
             };
-            self.cpu.complete(value)?;
+            self.complete_action(value)?;
         }
         Ok(())
     }

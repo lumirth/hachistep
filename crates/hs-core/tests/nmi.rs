@@ -124,7 +124,7 @@ fn nmi_wake_respects_standby_stabilization_and_partitioning() {
 }
 
 #[test]
-fn reset_strap_low_is_not_silently_executed_as_user_firmware() {
+fn reset_strap_low_enters_the_manufacturer_service() {
     let mut m = program(&[0x40, 0xfe]);
     let events = [
         TimedInput {
@@ -137,8 +137,9 @@ fn reset_strap_low_is_not_silently_executed_as_user_firmware() {
             input: Input::ResetPin(true),
         },
     ];
-    assert!(m.run_until(t(200), &events, &mut ()).is_err());
-    assert!(m.fault().unwrap().to_string().contains("reset release"));
+    m.run_until(t(200), &events, &mut ()).unwrap();
+    assert_eq!(m.phase_name(), "boot-service");
+    assert_eq!(m.peek(0xffb1).unwrap() & 4, 0);
     assert_eq!(m.interrupt_entries(), 0);
 }
 

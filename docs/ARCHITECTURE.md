@@ -44,6 +44,15 @@ word effects. The first completed lane is never undone because a later phase
 fails. Exception entry writes the saved PC before the CCR word. The current
 nominal timing and prefetch omissions remain listed in STATUS.
 
+The unavailable manufacturer boot ROM has a bounded functional service for its
+documented serial protocol. It issues physical accesses through the same pending
+bus machinery, SCI and flash owners. Autobaud measures actual RXD edges; no
+completed-byte host injection is accepted. Flash erasure follows pulse/verify
+cycles. After the final acknowledgement's stop bit completes, the service sets
+the specified SCI/GPIO handoff state and starts the sole CPU at FB80. This is a
+model of the hidden boot program's documented effects, with explicit nominal
+overhead; it does not claim its private instruction schedule or RAM workspace.
+
 ## Time and appointment semantics
 
 `Time` and `Duration` use 64.64 fixed-point seconds in `u128`. `Clock` retains

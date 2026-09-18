@@ -89,7 +89,10 @@ than directly mutating a peripheral counter or flag. They are diagnostic seams,
 not a claim that an unmodified retail enclosure exposes those pads.
 
 NMI starts high. IEGR bit 7 selects its edge. A low level at actual RES release
-requests the currently unimplemented boot mode. A retained supply dip without
+selects manufacturer boot mode when TEST/ADTRG is low. The host supplies ordinary
+8N1 UART levels on `digital,p31`, beginning with repeated zero frames; SCI echoes
+and transfers the uploaded RAM program through the documented handshake. The
+fixed board models E7_0 high. TEST/ADTRG high holds an inactive test state. A retained supply dip without
 RES assertion does not sample a new reset strap. Held levels do not continuously
 reassert NMI. Short-pulse/subcycle synchronizer behavior remains uncharacterized.
 

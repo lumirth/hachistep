@@ -16,7 +16,9 @@ requires private images, checks they remain unchanged, compares reviewed
 workloads and verifies complete event histories and resumed causal state.
 The native codec checkpoint passed these checks and Rust 1.95.0 workspace tests;
 its local receipts are `out/state-check2`, `out/state-retail` and
-`out/state-msrv-tests.log`. Audit corrections have additional named regressions.
+`out/state-msrv-tests.log`. Audit corrections have additional named regressions. Boot mode then passed the
+full gates and all 120 independent guests in `out/boot-check`, with unchanged
+retail observations and native replay in `out/boot-retail`.
 
 Commit and push coherent verified changes regularly. Stage only owned source,
 documentation and publishable fixture material. Keep private inputs and their
@@ -38,11 +40,12 @@ in SAVE_STATES. The exact owner limitations remain in STATUS.
 
 ## Remaining work
 
-1. **Manufacturer boot mode.** Implement the source-backed protocol in
-   [boot research](research/h8-boot-mode-implementation.md), using existing SCI,
-   flash, clock and GPIO owners. Handoff executes arbitrary uploaded RAM code
-   through the ordinary CPU. Cover autobaud, erase, finite buffering, reset and
-   interrupted upload with independent serial fixtures and native restoration.
+1. **Manufacturer boot characterization.** The documented protocol now runs
+   through existing SCI, flash, clock and GPIO owners and hands arbitrary RAM
+   code to the ordinary CPU. Preserve that implementation while improving the
+   remaining nominal ROM overhead/physical parameters from new evidence. Its
+   tests cover transmitted echoes and final stop, erase/restore, odd uploads,
+   invalid lengths, reset interruption and zero ordinary-run allocation.
 2. **Owner completion.** Internal flash needs persistent-byte/commit callbacks.
    Revisit guest-configuration host faults, especially comparator gating and
    reference selections: model the physical consequence when it can be inferred.
