@@ -84,7 +84,8 @@ pub enum Event {
 }
 /// Events are delivered synchronously. NvByte reports persistent data when an
 /// operation's physical progress is settled; NvCommit/NvInterrupted close its
-/// affected range after all changed bytes have been delivered. A flash pulse can
+/// enclosing address range after all affected bytes have been delivered. A
+/// wrapped EEPROM write encloses the whole page. A flash pulse can
 /// report progress before it ends. No polling or re-entry is required or allowed.
 pub trait Output {
     fn event(&mut self, event: Event);

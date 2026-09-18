@@ -324,9 +324,8 @@ impl M95512 {
         Ok(())
     }
     fn settle_cells(&mut self, now: Time, output: &mut dyn Output, complete: bool) {
-        let (domain, base, count) = match self.programming {
+        let (domain, address, length) = match self.programming {
             Programming::Page { cycle, base } => {
-                let mut count = 0u16;
                 for index in 0..PAGE_SIZE {
                     if self.written[index / 64] & (1u64 << (index % 64)) != 0 {
                         let address = base + index as u16;
@@ -343,10 +342,12 @@ impl M95512 {
                             address,
                             value,
                         });
-                        count += 1;
                     }
                 }
-                (NvDomain::EepromArray, base, count)
+                let selected = u128::from(self.written[0]) | (u128::from(self.written[1]) << 64);
+                let first = selected.trailing_zeros() as u16;
+                let end = PAGE_SIZE as u16 - selected.leading_zeros() as u16;
+                (NvDomain::EepromArray, base + first, end - first)
             }
             Programming::Status { .. } => {
                 let value = self.persistent_status(now);
@@ -365,15 +366,15 @@ impl M95512 {
             Event::NvCommit {
                 at: now,
                 domain,
-                address: base,
-                length: count,
+                address,
+                length,
             }
         } else {
             Event::NvInterrupted {
                 at: now,
                 domain,
-                address: base,
-                length: count,
+                address,
+                length,
             }
         });
         self.programming = Programming::None;
@@ -410,6 +411,7 @@ impl M95512 {
             Programming::None => Ok(()),
             Programming::Page { cycle, base } => {
                 require(base & 127 == 0, "unaligned EEPROM write page")?;
+                require(self.written != [0; 2], "empty EEPROM write operation")?;
                 cycle.validate(now)
             }
             Programming::Status { cycle, value } => {
@@ -460,6 +462,60 @@ mod tests {
         );
         assert!(!e.busy());
         assert_eq!(e.status() & 3, 0);
+    }
+    #[test]
+    fn persistent_event_ranges_enclose_offset_and_wrapped_writes() {
+        for (start, payload, range) in [
+            (0x0156u16, &[0xa5, 0x5a][..], (0x0156, 2)),
+            (0x017fu16, &[0xa5, 0x5a][..], (0x0100, 128)),
+            (0xffffu16, &[0xa5][..], (0xffff, 1)),
+        ] {
+            for completed in [false, true] {
+                let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
+                command(&mut e, &[6]);
+                let mut bytes = vec![2, (start >> 8) as u8, start as u8];
+                bytes.extend_from_slice(payload);
+                command(&mut e, &bytes);
+                let at = if completed {
+                    e.deadline().unwrap()
+                } else {
+                    Time::from_micros(3000)
+                };
+                let mut events = vec![];
+                if completed {
+                    e.complete(at, &mut events).unwrap();
+                } else {
+                    e.power_off(at, &mut events);
+                }
+                let expected = if completed {
+                    Event::NvCommit {
+                        at,
+                        domain: NvDomain::EepromArray,
+                        address: range.0,
+                        length: range.1,
+                    }
+                } else {
+                    Event::NvInterrupted {
+                        at,
+                        domain: NvDomain::EepromArray,
+                        address: range.0,
+                        length: range.1,
+                    }
+                };
+                assert_eq!(events.pop(), Some(expected));
+                assert_eq!(events.len(), payload.len());
+                for event in events {
+                    let Event::NvByte { address, value, .. } = event else {
+                        panic!("expected persistent byte before completion");
+                    };
+                    assert!(
+                        (u32::from(range.0)..u32::from(range.0) + u32::from(range.1))
+                            .contains(&u32::from(address))
+                    );
+                    assert_eq!(e.bytes(at)[usize::from(address)], value);
+                }
+            }
+        }
     }
     #[test]
     fn partial_command_and_missing_write_enable_do_not_program() {

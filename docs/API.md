@@ -53,7 +53,9 @@ latch its error and stop issuing further run calls. The CLI implements this patt
 no-op sink is `&mut ()`.
 
 Persistent updates carry their data in `NvByte`; `NvCommit` or `NvInterrupted` then
-closes the affected range. Internal flash reports settled cell changes during a pulse
+closes an address range containing the affected bytes. A wrapped EEPROM write spans
+the whole page; its byte events identify the selected cells. Internal flash reports
+settled cell changes during a pulse
 and closes that pulse when software ends it or hardware interrupts it. A pulse commit
 does not assert that the guest's complete program/erase-and-verify algorithm succeeded.
 Inspection and capture emit no events; ordinary reads retain the direct array path.
