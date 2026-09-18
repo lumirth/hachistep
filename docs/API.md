@@ -119,10 +119,7 @@ does not yet provide the reusable PCM conversion required by
 [DESIGN §12.2](DESIGN.md#122-buzzer-output).
 
 `firmware`, `ram`, `eeprom`, `eeprom_status`, `sensor_nonvolatile`, `lcd_ram` and
-`lcd_icons` return read-only data. The current `Machine` API has no host write operation
-for memory or registers. Image loading and whole-machine restoration are available, but
-neither provides direct editing of a running session. The intended state access contract
-is in [DESIGN §13.1](DESIGN.md#131-public-interface).
+`lcd_icons` return read-only data. RAM and EEPROM edits use the operations below.
 
 `firmware()` returns an owned 48-KiB image of the current flash cells, including the
 physical progress of an unfinished pulse. It may differ from the firmware loaded at
@@ -130,6 +127,31 @@ construction. The CLI exports this as `flash.bin`; the input file is never modif
 Exporting or peeking at flash does not perform a guest read, trigger protection or
 finish a pulse. A raw image preserves readable bytes; an exact snapshot additionally
 preserves intermediate cell charge and controls.
+
+## State editing
+
+`write_ram(address, bytes)` copies bytes into RAM at guest addresses `0xF780..0xFF80`.
+`write_eeprom(address, bytes)` copies bytes into the EEPROM's 64 KiB array. Both require
+exclusive mutable access between run calls. They validate the whole range before
+editing; ranges do not wrap. Neither advances time, performs a guest bus access, emits
+events or clears a core fault. A faulted session rejects edits until restored.
+
+Fetched instructions, pending CPU accesses and serial buffers retain their contents.
+Future reads see edited memory; a pending guest write can overwrite it. EEPROM edits
+require `eeprom_busy()` to be false so they cannot change the starting cells of an
+ongoing programming cycle. Buffered serial writes can still commit afterward. Direct
+edits bypass guest write protection, and the frontend owns persistence of its edits.
+
+The caller supplies any firmware layout, checksums and related value updates. For
+example, it may read a counter through `ram()`, calculate a new value and write its
+encoded bytes through `write_ram`. Multiple edits between run calls take effect before
+execution resumes. [mGBA's raw and bus access APIs][mgba-access] and
+[SameBoy's direct memory access][sameboy-access] provide precedents for keeping these
+operations distinct from physical input delivery. CPU and peripheral register mutation
+is not currently exposed by `Machine`.
+
+[mgba-access]: https://github.com/mgba-emu/mgba/blob/master/include/mgba/core/core.h
+[sameboy-access]: https://github.com/LIJI32/SameBoy/blob/master/Core/gb.h
 
 ## Checkpoint
 

@@ -124,6 +124,20 @@ impl M95512 {
     pub fn busy(&self) -> bool {
         self.programming != Programming::None
     }
+    pub(crate) fn write_bytes(&mut self, address: u16, bytes: &[u8]) -> Result<(), Error> {
+        if self.busy() {
+            return Err(Error::BadInput("cannot edit EEPROM during programming"));
+        }
+        let start = usize::from(address);
+        let end = start
+            .checked_add(bytes.len())
+            .ok_or(Error::BadInput("edit extends beyond EEPROM"))?;
+        self.array
+            .get_mut(start..end)
+            .ok_or(Error::BadInput("edit extends beyond EEPROM"))?
+            .copy_from_slice(bytes);
+        Ok(())
+    }
     pub fn status(&self) -> u8 {
         self.status | (u8::from(self.wel) * 2) | u8::from(self.busy())
     }
@@ -441,6 +455,31 @@ mod tests {
             xfer(e, v);
         }
         e.set_selected(false, Time::ZERO).unwrap();
+    }
+    #[test]
+    fn host_edit_preserves_the_byte_already_loaded_for_serial_output() {
+        let mut e = M95512::new(&[255; EEPROM_SIZE], 0).unwrap();
+        e.write_bytes(0x100, &[12, 34]).unwrap();
+        e.set_selected(false, Time::ZERO).unwrap();
+        e.set_selected(true, Time::ZERO).unwrap();
+        for byte in [3, 1, 0] {
+            xfer(&mut e, byte);
+        }
+        e.write_bytes(0x100, &[99, 88]).unwrap();
+        assert_eq!(xfer(&mut e, 0), 12);
+        assert_eq!(xfer(&mut e, 0), 88);
+    }
+    #[test]
+    fn host_edit_waits_for_programming_without_interrupting_it() {
+        let mut e = M95512::new(&[255; EEPROM_SIZE], 0).unwrap();
+        command(&mut e, &[6]);
+        command(&mut e, &[2, 1, 0, 42]);
+        let before = e.clone();
+        assert!(e.write_bytes(0x100, &[99]).is_err());
+        assert_eq!(e, before);
+        e.complete(e.deadline().unwrap(), &mut ()).unwrap();
+        e.write_bytes(0x100, &[99]).unwrap();
+        assert_eq!(e.bytes(Time::from_micros(6000))[0x100], 99);
     }
     #[test]
     fn programming_waits_and_wraps_inside_a_page() {

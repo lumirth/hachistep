@@ -223,8 +223,38 @@ impl Machine {
     pub fn ram(&self) -> &[u8; 2048] {
         self.mcu.ram()
     }
+    /// Edit RAM at a guest address while execution is stopped. This advances no
+    /// clocks and leaves fetched instructions and pending CPU accesses intact.
+    /// The complete range must lie in RAM; a rejected edit changes nothing.
+    pub fn write_ram(&mut self, address: u16, bytes: &[u8]) -> Result<(), Error> {
+        self.check_fault()?;
+        let start = address
+            .checked_sub(crate::mcu::RAM_START)
+            .map(usize::from)
+            .ok_or(Error::BadInput("edit address is outside RAM"))?;
+        let end = start
+            .checked_add(bytes.len())
+            .ok_or(Error::BadInput("edit extends beyond RAM"))?;
+        self.mcu
+            .ram
+            .get_mut(start..end)
+            .ok_or(Error::BadInput("edit extends beyond RAM"))?
+            .copy_from_slice(bytes);
+        Ok(())
+    }
     pub fn eeprom(&self) -> [u8; 65_536] {
         self.eeprom.bytes(self.now)
+    }
+    /// Edit EEPROM cells directly, without serial traffic, elapsed time or
+    /// persistence events. Programming must finish before editing. Buffered
+    /// serial data survives the edit and may subsequently overwrite these cells.
+    pub fn write_eeprom(&mut self, address: u16, bytes: &[u8]) -> Result<(), Error> {
+        self.check_fault()?;
+        self.eeprom.write_bytes(address, bytes)
+    }
+    /// Whether the EEPROM has an unfinished page or status programming cycle.
+    pub fn eeprom_busy(&self) -> bool {
+        self.eeprom.busy()
     }
     pub fn eeprom_status(&self) -> u8 {
         self.eeprom.persistent_status(self.now)
