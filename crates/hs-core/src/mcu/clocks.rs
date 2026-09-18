@@ -233,6 +233,21 @@ impl Clocks {
             }
         }
     }
+    /// IIC2's SCL synchronization monitor includes half-phi obligations.
+    pub(crate) fn system_half_ticks(&self, now: Time) -> Result<u64, Error> {
+        self.ticks(now, Tap::system(1))
+            .checked_mul(2)
+            .and_then(|v| v.checked_add(u64::from(!self.high(now, Tap::system(1)))))
+            .ok_or_else(|| TimeError::Overflow.into())
+    }
+    pub(crate) fn system_half_edge(&self, tick: u64) -> Result<Time, Error> {
+        let a = self.edge(tick / 2, Tap::system(1))?;
+        if tick & 1 == 0 {
+            return Ok(a);
+        }
+        let b = self.edge(tick / 2 + 1, Tap::system(1))?;
+        Ok(Time::from_raw(a.raw() + (b.raw() - a.raw()) / 2))
+    }
     pub(crate) fn set_prescalers(
         &mut self,
         now: Time,

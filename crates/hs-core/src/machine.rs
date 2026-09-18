@@ -380,6 +380,8 @@ impl Machine {
         let pins = self.mcu.ssu.pins();
         let timer = self.mcu.timer_w.outputs() << 1;
         let timer_mask = self.mcu.timer_w.drives() << 1;
+        let iic_pins = self.mcu.iic.pins();
+        self.mcu.gpio.set_iic_pins(iic_pins);
         let data = self.serial_data()?;
         let levels = self.mcu.gpio.resolve(pins, timer, timer_mask, data);
         let sampled = self.mcu.gpio.serial_inputs();
@@ -413,7 +415,14 @@ impl Machine {
         self.mcu
             .sci
             .input_pins(sck, rxd, self.now, &self.mcu.clocks)?;
-        if self.mcu.ssu.pins() != pins || self.mcu.sci.pins() != sci_pins {
+        let [scl, sda] = self.mcu.gpio.iic_inputs();
+        self.mcu
+            .iic
+            .input_pins(scl, sda, self.now, &self.mcu.clocks)?;
+        if self.mcu.ssu.pins() != pins
+            || self.mcu.sci.pins() != sci_pins
+            || self.mcu.iic.pins() != iic_pins
+        {
             self.resolve_board(out)?;
         }
         let emitting = self.mcu.gpio.emitting();
@@ -576,6 +585,9 @@ impl Machine {
         }
         if self.mcu.sci.deadline(&self.mcu.clocks)? == Some(self.now) {
             self.mcu.sci.advance(self.now, &self.mcu.clocks)?;
+        }
+        if self.mcu.iic.deadline(&self.mcu.clocks)? == Some(self.now) {
+            self.mcu.iic.advance(self.now, &self.mcu.clocks)?;
         }
         if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
             let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;

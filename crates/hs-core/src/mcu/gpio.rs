@@ -22,6 +22,7 @@ pub struct Gpio {
     clock_output: bool,
     clock_output_floating: bool,
     sci: super::sci::Pins,
+    iic: Option<[bool; 2]>,
     incident_light: bool,
     pub levels: [u8; 5],
 }
@@ -47,6 +48,12 @@ impl Default for SerialLevels {
     }
 }
 impl Gpio {
+    pub fn set_iic_pins(&mut self, pins: Option<[bool; 2]>) {
+        self.iic = pins;
+    }
+    pub fn iic_inputs(&self) -> [bool; 2] {
+        [self.levels[3] & 1 != 0, self.levels[3] & 2 != 0]
+    }
     pub fn clock_selection(&self) -> u8 {
         self.pmr[0] & 7
     }
@@ -302,7 +309,13 @@ impl Gpio {
                 Drive::Floating
             } else {
                 serial.drives[function].unwrap_or_else(|| {
-                    if self.direction[3] & mask == 0 {
+                    if let Some(pins) = self.iic.filter(|_| bit < 2) {
+                        if pins[bit] {
+                            Drive::Floating
+                        } else {
+                            Drive::Low
+                        }
+                    } else if self.direction[3] & mask == 0 {
                         Drive::Floating
                     } else if self.latch[3] & mask == 0 {
                         Drive::Low
@@ -388,6 +401,25 @@ impl Gpio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ssu_selection_overrides_iic_even_when_its_driver_is_released() {
+        let mut g = Gpio::default();
+        g.write(0xf087, 3).unwrap();
+        g.set_iic_pins(Some([false, false]));
+        g.resolve(Pins::default(), 0, 0, [None; 2]);
+        assert_eq!(g.iic_inputs(), [false; 2]);
+        let serial = Pins {
+            drives: [Some(Drive::Floating), Some(Drive::Floating), None, None],
+            data_open_drain: false,
+        };
+        g.resolve(serial, 0, 0, [None; 2]);
+        assert_eq!(g.iic_inputs(), [true; 2]);
+        // SSUS moves SSU's SCS/SSCK; unselected P90/P91 return to IIC.
+        g.write(0xf085, 0x10).unwrap();
+        g.resolve(serial, 0, 0, [None; 2]);
+        assert_eq!(g.iic_inputs(), [false; 2]);
+    }
+
     #[test]
     fn alternate_input_does_not_override_the_pullup_enable_condition() {
         let mut g = Gpio::default();

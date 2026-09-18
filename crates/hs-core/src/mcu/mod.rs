@@ -4,6 +4,7 @@ pub mod clocks;
 pub mod comparators;
 pub mod control;
 pub mod gpio;
+pub mod iic;
 pub mod rtc;
 pub mod sci;
 pub mod ssu;
@@ -23,6 +24,7 @@ use clocks::{Clocks, Frequencies, Tap};
 use comparators::Comparators;
 use control::{Control, Mode};
 use gpio::Gpio;
+use iic::Iic;
 use rtc::Rtc;
 use sci::Sci;
 use ssu::Ssu;
@@ -43,6 +45,7 @@ pub struct Mcu {
     pub rtc: Rtc,
     pub ssu: Ssu,
     pub sci: Sci,
+    pub iic: Iic,
     pub timer_b1: TimerB1,
     pub timer_w: TimerW,
     pub watchdog: Watchdog,
@@ -74,6 +77,7 @@ impl Mcu {
             rtc: Rtc::default(),
             ssu: Ssu::default(),
             sci: Sci::default(),
+            iic: Iic::default(),
             timer_b1: TimerB1::default(),
             timer_w: TimerW::default(),
             watchdog: Watchdog::default(),
@@ -217,6 +221,8 @@ impl Mcu {
             now,
             &self.clocks,
         )?;
+        self.iic
+            .set_gate(main && self.control.gate2 & 0x20 != 0, now, &self.clocks)?;
         self.sci.set_power(
             self.control.gate1 & 0x40 != 0,
             main,
@@ -254,6 +260,7 @@ impl Mcu {
         self.gpio.reset();
         self.ssu = Ssu::default();
         self.sci = Sci::default();
+        self.iic = Iic::default();
         self.timer_b1 = TimerB1::default();
         self.timer_w = TimerW::default();
         self.adc.reset();
@@ -318,6 +325,7 @@ impl Mcu {
             self.watchdog.deadline(&self.clocks)?,
             self.ssu.deadline(&self.clocks)?,
             self.sci.deadline(&self.clocks)?,
+            self.iic.deadline(&self.clocks)?,
             self.adc.deadline(&self.clocks)?,
             self.comparators.deadline(),
             self.aec.deadline(&self.clocks)?,
@@ -359,7 +367,7 @@ impl Mcu {
         if request & 4 != 0 {
             push(33);
         }
-        if self.ssu.interrupt() {
+        if self.ssu.interrupt() || self.iic.interrupt() {
             push(34);
         }
         if self.timer_w.interrupt() {
@@ -439,6 +447,7 @@ impl Mcu {
             0xf0f0..=0xf0f5 => Ok(self.timer_w.read(a)),
             0xffb0..=0xffb3 => Ok(self.watchdog.read(a)),
             0xffbe | 0xffbf => Ok(self.adc.peek(a)),
+            0xf078..=0xf07f => self.iic.read(a, now, &self.clocks),
             0xf020..=0xf023 | 0xf02b => Ok(0),
             _ => self.unimplemented(a).map_or(Ok(0), Err),
         }
@@ -548,6 +557,7 @@ impl Mcu {
                     Ok(())
                 }
             }
+            0xf078..=0xf07f => self.iic.write(a, v, now, &self.clocks),
             0xf020..=0xf023 | 0xf02b if v == 0 => Ok(()),
             _ => self.unimplemented(a).map_or(Ok(()), Err),
         }
@@ -575,7 +585,6 @@ impl Mcu {
     fn unimplemented(&self, a: u16) -> Option<Error> {
         let component = match a {
             0x0000..=0xbfff | 0xf020..=0xf023 | 0xf02b => "flash",
-            0xf078..=0xf07f => "IIC2",
             _ => return None, // Unselected bus: reads zero, writes have no latch.
         };
         Some(Error::Unsupported {
@@ -625,6 +634,7 @@ impl Mcu {
             0xf0f0..=0xf0ff => Ok(self.timer_w.peek(a)),
             0xffb0..=0xffb3 => Ok(self.watchdog.peek(a)),
             0xffbe | 0xffbf => Ok(self.adc.peek(a)),
+            0xf078..=0xf07f => Ok(self.iic.peek(a)),
             0xffbc => Ok((self.adc.result() >> 8) as u8),
             0xffbd => Ok(self.adc.result() as u8),
             _ => self.unimplemented(a).map_or(Ok(0), Err),

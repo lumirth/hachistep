@@ -268,6 +268,67 @@ fn sci_pin_edges_and_buffered_characters_survive_partition_and_restore() {
     );
 }
 #[test]
+fn iic_package_inputs_preserve_frames_through_partition_and_restore() {
+    let mut code = vec![0x79, 7, 0xff, 0x70];
+    for (a, v) in [
+        (0xfffb_u16, 0x24),
+        (0xf087, 3),
+        (0xf07d, 0x54),
+        (0xf078, 0x80),
+    ] {
+        code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+    }
+    for slot in 0..3 {
+        code.extend([0x6a, 8, 0xf0, 0x7c, 0xe8, 0x20, 0x47, 0xf8]);
+        code.extend([0x6a, 8, 0xf0, 0x7f, 0x6a, 0x88, 0xf8, slot]);
+    }
+    code.extend([0x40, 0xfe]);
+    let mut inputs = vec![];
+    let mut drive = |us, pin, high| {
+        inputs.push(TimedInput {
+            at: Time::from_micros(us),
+            input: Input::DigitalPin {
+                pin,
+                level: Some(high),
+            },
+        })
+    };
+    drive(0, DigitalPin::P90, true);
+    drive(0, DigitalPin::P91, true);
+    drive(100, DigitalPin::P91, false);
+    let mut us = 120;
+    for byte in [0x54, 0x3c, 0xa5] {
+        for bit in (0..8).rev() {
+            drive(us, DigitalPin::P90, false);
+            drive(us, DigitalPin::P91, byte & (1 << bit) != 0);
+            drive(us + 20, DigitalPin::P90, true);
+            us += 40;
+        }
+        drive(us, DigitalPin::P90, false);
+        drive(us, DigitalPin::P91, true);
+        drive(us + 20, DigitalPin::P90, true);
+        us += 40;
+    }
+    let mut whole = machine(&code);
+    let mut split = whole.clone();
+    let (mut a, mut b) = (vec![], vec![]);
+    whole
+        .run_until(Time::from_micros(1500), &inputs, &mut a)
+        .unwrap();
+    let mut consumed = 0;
+    for us in (1..1500).step_by(7).chain([1500]) {
+        consumed += split
+            .run_until(Time::from_micros(us), &inputs[consumed..], &mut b)
+            .unwrap()
+            .inputs_consumed;
+        split = Machine::from_snapshot(&split.snapshot());
+    }
+    assert_eq!(&whole.ram()[0x80..0x83], &[0x54, 0x3c, 0xa5]);
+    assert_eq!(a, b);
+    assert_eq!(whole, split);
+}
+
+#[test]
 fn external_avcc_fixture_sets_the_adc_midpoint_transitions() {
     // 2048 mV / 1024 gives 2 mV per code, with transitions at odd millivolts.
     let code = [
@@ -455,8 +516,8 @@ fn instruction_fetches_from_ram_follow_the_same_executor() {
     assert_eq!(m.instruction_pc(), 0xf782);
 }
 #[test]
-fn unimplemented_access_latches_a_fault_without_erasing_prior_store() {
-    let code = [0xf8, 0x5a, 0x6a, 0x88, 0xf7, 0x80, 0x6a, 0x88, 0xf0, 0x78];
+fn invalid_instruction_latches_a_fault_without_erasing_prior_store() {
+    let code = [0xf8, 0x5a, 0x6a, 0x88, 0xf7, 0x80, 0x57, 0xff];
     let mut m = machine(&code);
     assert!(m.run_until(Time::from_micros(100), &[], &mut ()).is_err());
     assert_eq!(m.ram()[0], 0x5a);
