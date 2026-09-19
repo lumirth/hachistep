@@ -523,16 +523,16 @@ separately. Later input changes affect later acquisitions. Comparators follow th
 continuous-input response model. Supply, temperature and analog stimulus are explicit
 physical conditions; firmware computes battery policy from them.
 
-### 10.10 Internal flash and boot service
+### 10.10 Internal flash
 
 Retain cell contents, partial exposure, programming/erase controls, verification and
 access restrictions. Fetches use the ordinary CPU bus. Modified cells invalidate decode
 metadata while already fetched CPU bytes retain their values.
 
-The unavailable manufacturer boot ROM is represented by a functional service using the
-same bus, SCI, flash and clocks. Its private instruction timing and scratch state remain
-unestablished. An authentic ROM image would allow ordinary execution to replace that
-service. See the [boot contract](research/h8-boot-mode.md).
+Supplied firmware owns programming algorithms and serial protocols. Its instructions
+produce register effects and timing through the CPU and peripheral models. The core
+loads the supplied image into flash and executes it in user mode. Manufacturer boot
+and test modes are unsupported; selecting them at reset returns a host diagnostic.
 
 ### 10.11 M95512 EEPROM
 

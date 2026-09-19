@@ -218,9 +218,9 @@ during normal progress.
 
 `Input::NmiPin(bool)` controls the dedicated NMI input, separate from IRQ enables and
 flags. It defaults high and preserves its physical level across MCU reset. NMI low with
-TEST low at external reset release admits the manufacturer boot service; TEST high
-selects the quiescent test state. See the boot protocol in
-[INPUTS](INPUTS.md).
+TEST low at external reset release selects manufacturer boot mode; TEST high selects
+a test mode. These modes return `Error::UnsupportedResetMode`. User mode executes the
+supplied flash image. See the reset inputs in [INPUTS](INPUTS.md).
 
 `Input::AnalogPin { pin, millivolts }` and `Input::DigitalPin { pin, level }` accept
 optional fixture drives (`None` releases them). The actual names/variant field spelling

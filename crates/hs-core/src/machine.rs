@@ -2,12 +2,11 @@
 //!
 //! Retains partial CPU and serial work across caller horizons. Component timing
 //! rules and their evidence are indexed in docs/SOURCES.md.
-mod boot;
 mod execution;
 mod serial;
 mod state;
 use crate::{
-    cpu::{alu::I, Action, Cpu, Registers, Width, WriteOrigin},
+    cpu::{alu::I, Action, Cpu, Registers, Width},
     devices::{bma150::Bma150, m95512::M95512, nt7508::Nt7508},
     error::Error,
     mcu::{
@@ -20,7 +19,6 @@ use crate::{
     signals::{Drive, Event, Input, Output, Piezo, TimedInput},
     time::{Time, TimeError},
 };
-use boot::Boot;
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy)]
@@ -105,7 +103,6 @@ pub struct Machine {
     now: Time,
     last_effect: Time,
     cpu: Cpu,
-    boot: Option<Boot>,
     mcu: Mcu,
     eeprom: M95512,
     sensor: Bma150,
@@ -153,7 +150,6 @@ impl Machine {
             now: Time::ZERO,
             last_effect: Time::ZERO,
             cpu,
-            boot: None,
             mcu,
             eeprom: M95512::new(images.eeprom, images.eeprom_status)?,
             sensor: match sensor_nonvolatile {
@@ -207,11 +203,7 @@ impl Machine {
         self.cpu.instruction_pc()
     }
     pub fn phase_name(&self) -> &'static str {
-        if self.boot.is_some() {
-            "boot-service"
-        } else {
-            self.cpu.phase_name()
-        }
+        self.cpu.phase_name()
     }
     pub fn retired(&self) -> u64 {
         self.cpu.retired
@@ -419,11 +411,6 @@ impl Machine {
             self.sensor.set_supply(rail, self.now, out)?;
             self.lcd.set_supply(rail, self.now)?;
             self.mcu.set_supply(rail, self.now, out)?;
-            if rail < 1800 && self.boot.take().is_some() {
-                self.cpu = Cpu::reset();
-                self.boot = None;
-                self.pending = None;
-            }
             if (old != 0) != (rail != 0) {
                 let _ = out.event(Event::Power {
                     at: self.now,
@@ -712,7 +699,6 @@ impl Machine {
             out,
         )?;
         self.cpu = Cpu::reset();
-        self.boot = None;
         self.pending = None;
         self.resume_after = None;
         self.stats.resets = self.stats.resets.wrapping_add(1);
@@ -802,7 +788,6 @@ impl Machine {
                 self.lcd.lose_volatile();
                 self.sensor.lose_volatile();
                 self.cpu = Cpu::reset();
-                self.boot = None;
                 self.pending = None;
                 self.resume_after = None;
                 self.watchdog_reset = None;
@@ -843,11 +828,10 @@ impl Machine {
             .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?
             == Some(self.now)
         {
-            // TEST shares the ADTRG package input. The fixed board's E7_0
-            // boot-enable strap is modeled high; TEST-high is inactive test state.
-            let test = self.mcu.gpio.adc_trigger().1;
-            if test || !self.mcu.control.nmi_level() {
-                self.boot = Some(Boot::new(test));
+            // TEST shares the ADTRG package input. Only user-mode reset
+            // executes the supplied flash image (manual §6.3, Table 6.1).
+            if self.mcu.gpio.adc_trigger().1 || !self.mcu.control.nmi_level() {
+                return Err(Error::UnsupportedResetMode);
             }
             self.reset_release = None;
             self.mcu.hold_reset(
@@ -983,7 +967,6 @@ impl Machine {
                 high,
                 self.power.mcu()
                     && rail >= 1800
-                    && self.boot.is_none()
                     && !was_reset
                     && !will_reset
                     && self.reset_release.is_none()

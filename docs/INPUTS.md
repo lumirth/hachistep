@@ -98,12 +98,11 @@ open-drain nodes through the selected pin functions. These fixtures represent el
 connections to the package pads.
 
 NMI starts high. IEGR bit 7 selects its edge. A low level at actual RES release selects
-manufacturer boot mode when TEST/ADTRG is low. The host supplies ordinary 8N1 UART
-levels on `digital,p31`, beginning with repeated zero frames; SCI echoes and transfers
-the uploaded RAM program through the documented handshake. The fixed board models E7_0
-high. TEST/ADTRG high holds an inactive test state. A retained supply dip without RES
-assertion does not sample a new reset strap. Held levels do not continuously reassert
-NMI. Short-pulse/subcycle synchronizer behavior remains uncharacterized.
+manufacturer boot mode when TEST/ADTRG is low, with E7_0 assumed high. TEST/ADTRG high
+selects a test mode. Both are unsupported and return a host diagnostic. A retained
+supply dip without RES assertion does not sample a new reset strap. Held levels do not
+continuously reassert NMI. Short-pulse/subcycle synchronizer behavior remains
+uncharacterized.
 
 ## Exclusive timing
 

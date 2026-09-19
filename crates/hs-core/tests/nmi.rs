@@ -123,23 +123,42 @@ fn nmi_wake_respects_standby_stabilization_and_partitioning() {
 }
 
 #[test]
-fn reset_strap_low_enters_the_manufacturer_service() {
-    let mut m = program(&[0x40, 0xfe]);
-    let events = [
-        TimedInput {
-            at: t(10),
-            input: Input::ResetPin(false),
+fn non_user_reset_modes_report_an_error_and_preserve_the_stopped_session() {
+    for strap in [
+        Input::NmiPin(false),
+        Input::DigitalPin {
+            pin: hs_core::DigitalPin::Adtrg,
+            level: Some(true),
         },
-        input(10, false),
-        TimedInput {
-            at: t(100),
-            input: Input::ResetPin(true),
-        },
-    ];
-    m.run_until(t(200), &events, &mut ()).unwrap();
-    assert_eq!(m.phase_name(), "boot-service");
-    assert_eq!(m.peek(0xffb1).unwrap() & 4, 0);
-    assert_eq!(m.interrupt_entries(), 0);
+    ] {
+        let mut m = program(&[0x40, 0xfe]);
+        let firmware = m.firmware();
+        let events = [
+            TimedInput {
+                at: t(10),
+                input: Input::ResetPin(false),
+            },
+            TimedInput {
+                at: t(10),
+                input: strap,
+            },
+            TimedInput {
+                at: t(100),
+                input: Input::ResetPin(true),
+            },
+        ];
+        assert_eq!(
+            m.run_until(t(200), &events, &mut ()).unwrap_err(),
+            hs_core::Error::UnsupportedResetMode,
+        );
+        assert_eq!(m.firmware(), firmware);
+        assert_eq!(m.interrupt_entries(), 0);
+        let stopped = m.snapshot();
+        assert!(m.run_until(t(300), &[], &mut ()).is_err());
+        assert_eq!(m.snapshot(), stopped);
+        let mut loaded = state::restore_file(&stopped);
+        assert!(loaded.run_until(t(300), &[], &mut ()).is_err());
+    }
 }
 
 #[test]

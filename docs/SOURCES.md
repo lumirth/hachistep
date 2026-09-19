@@ -117,7 +117,7 @@ the code, including the reasoning behind inferred behavior and nominal parameter
 | Timers, RTC, watchdog, ADC and AEC | [Counter and converter rules](research/h8-counters-and-adc.md) |
 | Register bus and GPIO | [Access and pin rules](research/h8-registers-and-gpio.md) |
 | SSU and IIC2 | [SSU](research/h8-ssu.md), [IIC2](research/h8-iic2.md) |
-| Internal flash and manufacturer boot service | [Flash](research/h8-flash.md), [boot service](research/h8-boot-mode.md) |
+| Internal flash | [Flash](research/h8-flash.md) |
 | Supply and reset | [Board supply, retention and startup](research/power-and-reset.md) |
 | ADC board circuit and comparators | [Battery sensing](research/adc-board-transfer.md), [comparators](research/h8-comparators.md) |
 | BMA150 sensor | [Sampling, filtering and register behavior](research/bma150-behavior.md), [I²C](research/bma150-i2c.md) |

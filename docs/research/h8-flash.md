@@ -233,11 +233,13 @@ or unexplained address corruption. That choice leaves a precise measurement targ
 hardware shows a distinct RTS latch disturbance. ([Figures 6.3–6.4][algorithm],
 [H8/300H software manual §2.8, pp. 242–244][cpu-returns])
 
-## Manufacturer boot mode
+## Reset mode selection
 
-The [manufacturer boot service](h8-boot-mode.md) uses this same flash controller for
-erasure and verification. It retains interrupted cell progress and follows SCI pin
-timing; reset does not perform an instant bulk erase.
+Table 6.1 selects user mode with TEST low and NMI high. TEST low, NMI low and E7_0 high
+select the manufacturer's separate boot program. HachiStep supplies the flash image
+for user-mode execution. It reports other reset modes as unsupported. Firmware that
+programs flash in user mode executes through the same CPU, bus and flash controller.
+See [§6.3][reset-modes] and [§6.3.2][user-mode].
 
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group#page=4
 [specification-update]: https://www.renesas.com/en/document/tcu/h838602-group-specification-changes#page=12
@@ -250,7 +252,7 @@ timing; reset does not perform an instant bulk erase.
 [power]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=149
 [module-stop]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=150
 [retention]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=414
-[boot]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=139
+[reset-modes]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=138
 [cpu-returns]: https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=258
 [pw]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/include/startup/iodefine.h#L17-L62
 [pw-eeprom]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/application/pw_eeprom_m95512_io.c#L507-L575

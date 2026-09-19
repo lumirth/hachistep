@@ -9,6 +9,7 @@ pub enum Error {
         actual: usize,
     },
     PersistentStatus(u8),
+    UnsupportedResetMode,
     Decode {
         pc: u16,
         words: [u16; 5],
@@ -50,6 +51,9 @@ impl fmt::Display for Error {
                 f,
                 "EEPROM persistent status contains nonpersistent bits: {v:02x}"
             ),
+            Self::UnsupportedResetMode => {
+                f.write_str("reset straps select an unsupported manufacturer boot or test mode")
+            }
             Self::Decode { pc, words, count } => write!(
                 f,
                 "unsupported/invalid H8 form at {pc:04x}: {:04x?}",

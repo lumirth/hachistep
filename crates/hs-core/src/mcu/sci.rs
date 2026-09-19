@@ -164,10 +164,6 @@ impl Sci {
         // A mux's transient electrical excursion cannot outlive its supply.
         self.mux_glitch = None;
     }
-    /// TEND asserts at stop-bit launch; this also waits for its full duration.
-    pub(crate) fn transmit_idle(&self) -> bool {
-        self.tx.is_none() && self.holding.is_none()
-    }
     pub fn handles(a: u16) -> bool {
         matches!(a, 0xff91 | 0xff98..=0xff9d | 0xffa6 | 0xffa7)
     }

@@ -32,19 +32,6 @@ impl Machine {
             return Ok(false);
         }
         let mut changed = false;
-        if let Some(boot) = &mut self.boot {
-            let action = boot.next(self.now, &self.mcu)?;
-            if boot.done() {
-                self.boot = None;
-                self.cpu = Cpu::new(0xfb80);
-                self.mcu.instruction_boundary();
-            } else {
-                if let Some(action) = action {
-                    self.queue_action(action, clock)?;
-                }
-                return Ok(changed);
-            }
-        }
         if let Some(resume) = self.resume_after {
             if self.resume_deadline()? != Some(self.now) {
                 return Ok(changed);
@@ -173,11 +160,7 @@ impl Machine {
         Ok(())
     }
     fn complete_action(&mut self, value: u16, out: &mut dyn Output) -> Result<(), Error> {
-        let result = if let Some(boot) = &mut self.boot {
-            boot.complete(value, self.mcu.clocks.frequencies.main_hz)
-        } else {
-            self.cpu.complete(value)
-        };
+        let result = self.cpu.complete(value);
         // A stopped session must retain the serial effects preceding the fault.
         if result.is_err() {
             self.sync_serial(out)?;
@@ -223,17 +206,10 @@ impl Machine {
                 value
             };
             match w {
-                Width::Byte => self.mcu.write8(
-                    a,
-                    v as u8,
-                    if self.boot.is_some() {
-                        WriteOrigin::MovByte
-                    } else {
-                        self.cpu.write_origin(mov_byte)
-                    },
-                    self.now,
-                    out,
-                )?,
+                Width::Byte => {
+                    self.mcu
+                        .write8(a, v as u8, self.cpu.write_origin(mov_byte), self.now, out)?
+                }
                 Width::Word => self.mcu.write16(a, v, self.now, out)?,
             };
             self.stats.bus_writes = self.stats.bus_writes.wrapping_add(1);

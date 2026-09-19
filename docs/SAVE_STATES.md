@@ -44,7 +44,7 @@ list of up to 384 touched internal flash pages; each has a 16-bit aligned addres
 1024 cell-charge values.
 
 The maximum payload is 4 MiB, accommodating every flash page plus fixed memory and owner
-records, including boot-service handshake/upload progress. Counts are checked before
+records. Counts are checked before
 allocation; the large flash/EEPROM byte arrays are read directly into fixed-size heap
 buffers. Frontends can use `Snapshot::MAX_ENCODED_SIZE` to bound file reads. Decoding
 rejects trailing bytes, bad checksums/tags, invalid indices/divisors/progress and missed
@@ -109,11 +109,6 @@ file supplies the whole machine, so image/initial-condition arguments conflict w
 before the restored instant are skipped. Outputs and reports contain only the resumed
 segment's diagnostic/event totals. `start_time_raw` records that segment's starting
 instant, alongside its requested and reached horizons.
-
-Manufacturer boot captures retain autobaud's source-edge start, the current
-protocol/erase/setup stage, pending physical bus access, response byte, length/cursor
-and block/verify progress. SCI and flash retain the actual shift and cell state, so
-restoration continues at the captured point.
 
 Validation follows reachable hardware progress, including unusual register settings and
 inactive stale latches. It checks arithmetic against the captured clock epochs and time
