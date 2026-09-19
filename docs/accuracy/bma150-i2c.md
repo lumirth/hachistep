@@ -1,8 +1,21 @@
-# BMA150 I²C on the Pokéwalker board
+# BMA150 I²C
 
-Custom firmware can use the sensor's I²C interface by bit-banging P91/P92 while holding
-P90 high. This is the existing physical wiring, not an added connection to the MCU's
-hardware IIC controller.
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+The sensor's I²C interface operates on the existing P91/P92 nets while CSB is high.
+Addressing, ACK/NACK, incrementing reads and paired address/data writes share the same
+registers, conversion state and read side effects as SPI. The MCU's IIC2 controller
+uses different pins; sensor I²C is available through GPIO on this board.
+
+## Limits and open questions
+
+The byte protocol and fixed address have direct datasheet support. Sleep ACKs, read
+acknowledgement edges and pointer retention across interface changes include selected
+inferences explained below. Pad slew and pull-up strength are not modeled, so accepting
+a fast digital transaction does not establish that the board can sustain its bit rate.
+Sampling, calibration and interrupt limits belong to the [sensor model](bma150.md).
 
 ## Reachability and electrical ownership
 
@@ -172,6 +185,16 @@ unclocked acceleration byte leaves freshness/shadows untouched; after its first 
 rise, freshness clears even if the master ultimately NACKs, assuming no intervening
 conversion. A split run or save/restore in either ACK half, between pointer and repeated
 START, or mid-read must reproduce the same bytes and pad transitions.
+
+## Implementation and checks
+
+The [I²C parser](../../crates/hs-core/src/devices/bma150/i2c.rs) shares its
+[sensor owner](bma150.md) with SPI. Hachiware's
+[sensor I²C cases](https://github.com/lumirth/hachiware/blob/main/cases/sensor_i2c.py)
+operate through guest GPIO and check the protocol on the actual modeled nets.
+Local [sensor I²C tests](../../crates/hs-core/tests/sensor_i2c.rs) add transport and
+state continuity checks. These exercise digital transactions and the selected read
+boundaries; they do not characterize pull-up rise time.
 
 [p11]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=11
 [p20]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=20

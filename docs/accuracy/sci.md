@@ -1,62 +1,51 @@
-# H8/38606 clocks and SCI3
+# SCI and IrDA
+
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+SCI supports asynchronous and synchronous transfers, internal/external clocks, the
+corrected five-bit formats, parity/framing/overrun behavior, receive-only master clocking,
+holding registers and pin selection. TX completion status is distinct from completion
+of the outgoing stop interval. Status-read qualification and RDR effects follow the
+manual. IrDA encoding/decoding operates on timed signals through this SCI engine.
+
+## Limits and open questions
+
+The A333B update removes multiprocessor operation and defines the five-bit formats.
+Those changes apply to this target. The IrDA drawing leaves pulse launch phase and
+decoder internals incompletely dimensioned; the model uses a centered pulse and a
+retriggerable receive hold feeding the UART sampler. Live format changes also have
+selected boundaries. These choices can affect marginal pulse widths, unusual clock
+changes and peers with tight timing tolerances.
 
 ## Sources and applicability
 
 - Renesas [H8/38602R hardware manual, REJ09B0152-0300, rev. 3.00][manual]:
-  clock tree/registers/prescalers §§4.1–4.4, printed pp. 63–71; mode transitions
-  §§5.1–5.3, pp. 78–94; SCI3 §§14.3–14.8, pp. 234–281. PDF page numbers are
-  printed page numbers plus 34.
+  SCI3 §§14.3–14.8, printed pp. 234–281. PDF page numbers are printed page
+  numbers plus 34. [Clocks](clocks.md) covers the shared clock sources.
 - [TN-H8*-A414A/E, addition of H8/38606][addition], 2009-04-22, pp. 1–5:
   target differences concern memory, package, and flash organization; it does not
   replace the clock/SCI chapters.
-- [TN-H8*-A287A/E, specification changes][clock-update], 2004-11-10, p. 1:
-  amended SYSCR1 stabilization guidance and STS table. Rev. 3 retains these values.
 - [TN-H8*-A333B/E, SCI3 specification change][sci-update], 2006-07-07,
   pp. 2, 5–6: removes multiprocessor operation and specifies the 5-bit formats.
   Use revision B, not the superseded revision A. Rev. 3 incorporates the change.
 - Public [`lumirth/pw`][pw] at `6dc7bc09950078fa3fe0dffa4dae34e9549a99da`.
   Firmware is evidence of exercised behavior, not a restriction on custom firmware.
 
-## Hardware facts to preserve
+## Clock and transfer overview
 
 | Area | Relevant facts and exact manual location |
 | --- | --- |
-| Sources | E7_2 selects the main oscillator at reset; OSCF is read-only. SUBSEL selects crystal watch clock or Rosc/32; SUBSTP stops the subclock oscillator. RFCUT controls feedback resistance, not clock selection. [§4.1.1, fig. 4.1, §4.2.4][clock-registers]. |
-| Prescalers | S resets/stops in standby, watch, subactive, subsleep; W stops in standby but continues through watch/subactive/subsleep. [§4.4][prescalers]. |
-| Transitions | SA changes take effect through SLEEP. Direct transitions include an intermediate sleep/watch state; I=1 prevents the direct-transition exception. Subactive→active includes STS delay counted in oscillator cycles, before destination-clock exception cycles. [§5.3, especially equation 6][direct]. |
 | SCI clocks | CKS selects φ, φW, φ/16, φ/64. Internal bit periods: `(BRR+1)×32` source cycles, ×16 with ABCS, ×4 synchronous. External asynchronous clocks supply 16/8 samples per bit. Synchronous TX changes on falling SCK; RX samples rising SCK. [§§14.3.8–14.5][sci-clocks]. |
 | SCI timing | Receiver start detection is clock-sampled. TEND/next TDR transfer occurs at stop-bit launch. TE enable first emits a mark frame. BRR initialization requires one bit interval. [§14.4.2–3, §14.8.4][sci-timing]. |
 
-The STS selectors `000…111` correspond to `8192, 16384, 1024, 2048, 4096, 256, 512, 16`
-oscillator states. The update recommends `111` for an external/on-chip source and
-explicitly notes different early-start behavior for other settings; a generic
-divided-CPU delay does not express that distinction. [Clock update, p. 1][clock-update].
-
-## Firmware evidence and inference
-
-[`ClockSleep`][pw-sleep] writes SYSCR1/SYSCR2 then executes SLEEP.
-[`CaptureSample`][pw-sample] uses `0xa7/0xeb` for a direct return from subactive
-operation: STS=`010`, therefore 1024 oscillator states. The firmware therefore exercises
-the 1024-state stabilization wait.
+## Firmware serial configuration
 
 [`IrConfigure`][pw-ir] enables SCI, selects SMR=0/BRR=0/SEMR=0, executes a short
 settling loop, then enables RX and IrDA/TX. With the canonical 3.6864-MHz main source,
 the derived baud rate is 115200. Its transmit helper polls TDRE and writes TDR; a
 separate software TDRE-clear requirement would break real firmware.
-
-For writes or transitions that violate software sequencing advice, use the documented
-datapath as the starting model: preserve remaining source edges and partial shift state
-unless an actual reset condition applies. That is an engineering inference, not a claim
-that every such sequence has been measured. Do not turn an unsupported implementation
-branch into a permanent guest fault merely because the manual advises against a
-sequence. Keep any selected tie-breaking rule local so later hardware evidence can
-refine it.
-
-Useful focused checks are the `pw` direct transition, a transition into /8 mode, start
-edges swept across the SCI sampling phase, external SCK stopped mid-byte, TDR writes
-during the stop interval, the two five-bit formats, and exact restoration
-mid-wait/mid-frame. Source-edge obligations belong in saved state; cached appointment
-timestamps can be rebuilt.
 
 ## SCI3 timing model
 
@@ -261,19 +250,22 @@ framing or clock helpers.
 | SPCR.SPC3=1, idle normal UART, flip SCINV1 | Physical P32 flips immediately. Clear SPC3 with PCR32=1: P32 follows PDR32, independently of TE. Readback with PCR32=1 still returns the port latch. |
 | Switch synchronous SCK output directly to GPIO at 3.6864 MHz | The documented transient is low for half a φ cycle = 0.135634 µs; the three-step §14.8.5 sequence avoids it. |
 
+## Implementation and checks
+
+The [SCI](../../crates/hs-core/src/mcu/sci.rs) owns bit timing and the MCU IrDA block.
+The [optical topic](infrared.md) covers the external transceiver and its separate gaps.
+Hachiware's [serial cases](https://github.com/lumirth/hachiware/blob/main/cases/serial.py)
+check transmission, reception, formats, overrun, external synchronous clocking and
+GPIO/SCI optical selection. Local [machine tests](../../crates/hs-core/tests/kernel.rs)
+check complete pin-event histories through partitioning and restoration. Digital
+pulse tests cannot establish the unidentified optical receiver's transfer function.
+
 [manual]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group#page=2
-[clock-update]: https://www.renesas.com/en/document/tcu/h838602-group-specification-changes#page=2
 [sci-update]: https://www.renesas.com/us/en/document/tcu/about-sci3-specification-change-0#page=6
-[clock-registers]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=97
-[prescalers]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=105
-[direct]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=125
 [sci-clocks]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=277
 [sci-timing]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=292
-[module-state]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=115
 [pw]: https://github.com/lumirth/pw/tree/6dc7bc09950078fa3fe0dffa4dae34e9549a99da
-[pw-sleep]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/lib_common.c#L658-L672
-[pw-sample]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/application/pw_main.c#L517-L523
 [pw-ir]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/ir.c#L123-L150
 [sci-sync]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=299
 [sci-sampling]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=312
@@ -288,40 +280,3 @@ framing or clock helpers.
 [pw-ir-pins]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/ir.c#L65-L70
 [pw-ir-start]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/ir.c#L158-L180
 [pw-ir-finish]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/support/ir.c#L1150-L1160
-
-## Shared divider phases
-
-Prescaler S has the §4.4.1 reset/stop domain, and W retains its §4.4.2 standby phase
-independently of the upstream phiW/4 divider. Each output keeps its emitted-edge ordinal
-across reset; phase reset cannot rewind a peripheral's consumed work. CPU reference
-selection is separate from main phi. Timer W's input synchronizer and SSU
-holding-register load use that CPU reference; main-clock peripherals do not inherit the
-subactive CPU's watch frequency.
-
-For undocumented reset polarity, the selected circuit uses high-first divider outputs,
-consistent with the Timer W timing drawing. This is separate from the documented zeroed
-up-counter state: the drawing does not identify Q versus /Q. AEC gate transitions use
-the physical divider phase. A Timer W internal source switch from low to high produces
-the extra count described in §10.7(3), pp.181–183. No reset transition is counted
-through a held consumer.
-
-## Oscillator controls
-
-OSCCR writes retain SUBSTP, RFCUT and SUBSEL; OSCF remains the board's read-only
-main-oscillator strap. SUBSTP stops X1 alone; SUBSEL routes ROSC/32 through the watch
-domain even with X1 stopped. RFCUT is latched at the specified low-power transition; the
-prescribed oscillator frequency is still the physical input to this digital model,
-rather than an analog feedback-resistor simulation.
-
-Source lifetimes follow §5.5. ROSC stops when WDT, reset and the subclock generator all
-release it. Stopped sources retain their emitted count and create no virtual elapsed
-edges. Restart establishes a fresh source phase. Consumers retain their unfinished edge
-obligations, including a partially transmitted watch-clock SCI character. Source
-reconfiguration refreshes clock projections without restarting the peripheral operation.
-Programmed SYSCR divisors still latch through SLEEP.
-
-Table 5.3, printed p.86, specifically lists the subclock oscillator as functions/halted
-in standby: X1 remains under SUBSTP control. Prescaler W and watch consumers halt
-independently, including standby wake stabilization. This preserves X1's phase through
-standby when it was left enabled. The ROSC-backed watch generator follows whether the
-shared ROSC still has a consumer.

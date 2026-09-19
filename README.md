@@ -92,7 +92,8 @@ toolchain requirements and commands.
 ## Development
 
 Read [DESIGN](docs/DESIGN.md), [CONTEXT](CONTEXT.md), the affected
-[accuracy section](docs/ACCURACY.md) and its hardware notes before changing behavior.
+[accuracy topic](docs/ACCURACY.md#what-can-i-rely-on) before changing behavior.
+Each topic combines supported behavior, known limits, source reasoning and relevant checks.
 Decisions come from hardware documentation, observations, the matching `pw` decompilation, and
 inferences that explain the mechanism for arbitrary firmware. Development history and
 work in progress belong in commits, issues, and the task discussion.

@@ -1,4 +1,22 @@
-# H8/38606 comparators
+# Comparators
+
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+Both comparators implement internal ladder and external reference selection, hysteresis,
+settling, result latches, read-armed interrupt baselines and separate vectors. Renesas's
+internal/external-reference examples resolve conflicting manual prose. A comparator
+can continue while CPU clocks stop, subject to its own enable and power.
+
+## Limits and open questions
+
+The model uses the specified 15 µs maximum as its nominal response time. Short transients
+are filtered by that response model. Gate restoration starts a fresh analog response;
+external reference with the prohibited hysteresis bit selects the external threshold.
+Those transient and off-sequence behaviors are circuit inferences. `pw` provides no
+reached comparator configuration to strengthen them. Timing-sensitive custom firmware
+and narrow analog pulses are the relevant review cases.
 
 ## Primary evidence
 
@@ -113,6 +131,16 @@ CMDR reads still arm/update each comparator baseline only when that channel is o
 with CME and CMIE set. Clearing CMIE disarms without clearing CMF. Merely enabling CMIE
 must not invent a read strobe. The normal CMF read-then-zero clear and same-time read
 masking remain unchanged.
+
+## Implementation and checks
+
+The [comparator implementation](../../crates/hs-core/src/mcu/comparators.rs) owns
+response and latches. Hachiware's
+[comparator cases](https://github.com/lumirth/hachiware/blob/main/cases/comparators.py)
+check read-armed wake, channel priority and live external-reference gating.
+Local [comparator tests](../../crates/hs-core/tests/comparators.rs) cover gating and
+configuration transitions. Checks using the selected 15 µs response protect that model;
+the source supplies a maximum, not every physical unit's transient response.
 
 [target]: https://www.renesas.com/en/document/tcu/addition-h838606-group#page=2
 [manual-comparator]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=395

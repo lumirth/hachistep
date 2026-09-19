@@ -1,7 +1,22 @@
-# H8 encodings and arithmetic
+# CPU encodings and arithmetic
 
-This note records encoding and flag rules where manuals, toolchains or other emulators
-disagree. [Execution timing](h8-execution.md) covers bus sequencing and exceptions.
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+The decoder handles the target's instruction families, addressing forms and register
+selectors. Arithmetic follows the instruction-specific flag rules, including sticky
+ADDX/SUBX Z and decimal carry. The sections below preserve exact encodings, examples
+and resolutions of conflicting source descriptions.
+
+## Limits and open questions
+
+The alternative MOV.L store selector is supported by toolchain and emulator evidence;
+its equivalence on this particular chip remains inferred. Decimal H/V and some division
+result bits are unspecified in the reviewed sources. The implementation selects stable
+values while conformance checks exclude unspecified bits. This distinction matters to
+firmware that deliberately observes them. Physical outcomes of unassigned opcodes are
+not established by the decoder's rejection of those encodings.
 
 ## Sources
 
@@ -74,8 +89,8 @@ multiply/divide sources. ([Software §1.4,
 pp.8–10](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=24),
 [MULXS/MULXU, pp.130–133](https://www.renesas.com/en/document/mah/h8300h-series-software-manual#page=146)).
 
-Compact selector grid; `valid` concerns documented instruction encodings, not the
-physical outcome of executing an unassigned encoding:
+In the table below, `valid` identifies a documented instruction encoding. The table
+does not establish the physical outcome of executing an unassigned encoding:
 
 | Words in memory | Expected classification / distinction |
 | --- | --- |
@@ -198,3 +213,13 @@ Preserve its meaning as an unmodeled encoding diagnostic; do not describe it as 
 chip-generated trap, or replace every unassigned pattern with an invented NOP. MAME's
 `illegal()` also stops execution, which supplies no physical evidence. ([MAME illegal
 handler](https://github.com/mamedev/mame/blob/57018adb9d8cd92949081fade9ad0ba3038dbf37/src/devices/cpu/h8/h8.cpp#L608-L612)).
+
+## Implementation and checks
+
+The [CPU implementation](../../crates/hs-core/src/cpu/) contains the decoder and
+arithmetic. Hachiware's [CPU cases](https://github.com/lumirth/hachiware/blob/main/cases/cpu.py)
+include literal encodings and flag expectations; its
+[decimal cases](https://github.com/lumirth/hachiware/blob/main/cases/decimal_adjust.py)
+check the defined decimal result and carry rules. Expected values must follow the
+source reasoning above, including which flag bits are unspecified. The companion
+[execution topic](cpu.md) covers when those effects become visible.

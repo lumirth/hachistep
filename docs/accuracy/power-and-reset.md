@@ -1,9 +1,28 @@
-# Pokéwalker supply, reset and startup
+# Supply, reset and retention
 
-One battery-derived rail feeds devices with different startup and retention behavior.
-Reset, minimum operating voltage and the firmware's low-battery warning are separate
-mechanisms. Numerical choices below distinguish manufacturer values from the inferred
-physical parameters used by the model.
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+Supply changes reach the MCU and external chips. The model distinguishes reset,
+clock startup, chip availability, volatile retention and interrupted persistent writes.
+RES release and watchdog reset combine, and external devices can progress while the
+CPU is held. MCU reset does not automatically cold-reset every peripheral chip.
+
+## Limits and open questions
+
+The common battery-derived rail follows the available board and firmware evidence.
+Reset charging uses a nominal RC response; volatile loss uses an accumulated
+low-voltage exposure. These parameters, deterministic cold contents and chip availability
+thresholds are approximations rather than a reconstructed complete analog circuit.
+Some startup delays use datasheet maxima. The model does not calculate a CR2032's
+discharge curve or load-dependent rail droop; supplied voltage describes those conditions.
+
+RES2B/VCI pad identities and peripheral reset connectivity remain incompletely known.
+The selected MCU-only external reset must not silently become a common reset net based
+on a pad label. Exact short-collapse retention and marginal-voltage operation need
+stronger board/component evidence. Ordinary digital reset domains have more direct
+support than these analog boundaries.
 
 ## Board evidence and independent chip control
 
@@ -223,6 +242,19 @@ implementation and recording its output.
 | Functional gates | Hold rail at 2.0 V, then 1.7 V, then restore 3 V. | At 2.0 V MCU/EEPROM and LCD digital logic can operate; BMA and LCD analog drive cannot. At 1.7 V MCU/EEPROM also stop. Neither crossing is itself a universal POR or RAM clear. |
 | Causal snapshot | Snapshot during RC charging, after four release edges, during watch startup, and during retained rail absence. | Restore keeps the original charge, consumed edges, source deadlines, and retention dose. Subsequent effects and timestamps match; no timer restarts at restoration. |
 
+## Implementation and checks
+
+[Supply/reset state](../../crates/hs-core/src/power.rs),
+[startup clocks](../../crates/hs-core/src/mcu/clocks/startup.rs), and
+[board composition](../../crates/hs-core/src/machine.rs) apply the domain rules.
+Hachiware's [power cases](https://github.com/lumirth/hachiware/blob/main/cases/power.py)
+exercise reset and selected retention/default timings.
+Local [power tests](../../crates/hs-core/tests/power.rs) and
+[reset-release tests](../../crates/hs-core/tests/reset_release.rs) cover qualification,
+source readiness and short collapses. The conformance table above identifies which
+expectations are documented and which calculate a nominal model value. A passing
+retention case cannot identify the real board's capacitance or memory loss distribution.
+
 [h8-reset]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=403
 [h8-por]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=442
 [h8-clocks]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=434
@@ -239,6 +271,5 @@ implementation and recording its output.
 [pw-startup]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/startup/h8_resetprg.c#L193-L245
 [pw-accel]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/application/pw_accel_bma150.c#L68-L95
 [pw-rtc]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/application/pw_storage.c#L147-L159
-
 [board-photos]: https://github.com/mamba2410/reverse-pokewalker/tree/7a409ff625e95457a55832a4e89ebdefa0c7cec6/pics
 [pw-battery]: https://github.com/lumirth/pw/blob/6dc7bc09950078fa3fe0dffa4dae34e9549a99da/src/application/pw_battery.c#L47-L119

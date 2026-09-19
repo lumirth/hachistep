@@ -1,5 +1,5 @@
 //! CSB-high SDI/SCK protocol. Register effects and read shadows are shared with
-//! SPI. See docs/research/bma150-i2c.md for edge placement and pointer retention.
+//! SPI. See docs/accuracy/bma150-i2c.md for edge placement and pointer retention.
 use super::*;
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]

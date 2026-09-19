@@ -1,8 +1,29 @@
-# H8/38606F register access and GPIO
+# Memory, register accesses and GPIO
 
-The bus model completes ordinary accesses even when firmware violates a programming
-recommendation. The rules below distinguish specified access behavior from selected
-behavior for unassigned addresses and access widths.
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+The target map contains 48 KiB flash and 2 KiB RAM. Normal-mode effective addresses
+truncate to 16 bits; word alignment, longword decomposition and register access widths
+follow the physical bus. Register masks, reset values, read side effects and protected
+writes are implemented by the relevant peripheral. GPIO resolution includes direction,
+output latches, open-drain selection, pull-ups and peripheral pin priority.
+
+The fixed board connects the shared serial bus, chip selects, sensor interrupt,
+buttons, buzzer, battery sensing and infrared pins. Selecting an alternate function
+on a connected pin can affect another device. The BMA150's I²C uses its existing
+P91/P92 wiring; the MCU's IIC2 uses P90/P91. They are different bus connections.
+
+## Limits and open questions
+
+Selected behavior remains for holes, prohibited access widths, reserved mux selectors
+and PCR readback. In particular, PCR readback preserves direction latches, consistent
+with the matching firmware's read/modify/write sequences despite write-only wording.
+Conflicting EEPROM and sensor MISO drivers resolve low. The cited drive strengths
+support that nominal choice but do not determine contention voltage or damage.
+Analog fixtures use Vcc/2 as their digital threshold. Firmware relying on floating
+pins, marginal levels or prohibited accesses reaches these model choices.
 
 ## Primary evidence
 
@@ -157,15 +178,11 @@ to the shared external data net and revise it from measured loaded outputs. Dese
 a device releases its driver immediately; neither parser loses progress merely because
 the other device also drives the net.
 
-[bma-drive]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=27
-[eeprom-drive]: https://www.mouser.com/datasheet/2/389/m95512-w-955061.pdf#page=35
-
 Analog fixture voltages project to digital input levels at Vcc/2. This is a selected
 threshold for the digital fixture interface, without a pad-loading or input-hysteresis
 model.
 
-For off-sequence mux settings, retain written implemented bits. The existing compact
-choices are reasonable: PFCR IRQ selector `11` connects no IRQ source; PMR1 clock
+For off-sequence mux settings, retain written implemented bits. The selected decoder rules are: PFCR IRQ selector `11` connects no IRQ source; PMR1 clock
 selector `111` releases the alternate output. Do not throw host errors or substitute a
 different legal source. These two decoder outcomes are chosen rules; the manufacturer
 labels the encodings prohibited. ([§8.1.4][pmr],
@@ -198,6 +215,21 @@ undocumented silicon:
 | Word write `AB12` at `F084` | First hole write is discarded; second write sets PFCR=`12`; four data-access states. |
 | PCR8=`0C`; read-modify-write OR `10`, then AND `EF` | Direction becomes `1C`, then `0C`, preserving the buzzer pin directions. |
 
+## Implementation and checks
+
+The [MCU](../../crates/hs-core/src/mcu/mod.rs),
+[GPIO resolver](../../crates/hs-core/src/mcu/gpio.rs) and
+[board composition](../../crates/hs-core/src/machine.rs) own routing and physical reads.
+Hachiware's [bus cases](https://github.com/lumirth/hachiware/blob/main/cases/bus.py)
+check native-word lanes, holes, mixed accesses and comparator pin readback. Some of
+those expectations deliberately describe the selected behavior for prohibited accesses.
+The [register-access test](../../crates/hs-core/tests/register_access.rs) checks the
+execution boundary, while [clock and pin tests](../../crates/hs-core/tests/clock_obligations.rs)
+include pull-up behavior. Neither a resolved Boolean nor a correct register read
+establishes analog contention voltage.
+
+[bma-drive]: https://media.digikey.com/pdf/Data%20Sheets/Bosch/BMA150.pdf#page=27
+[eeprom-drive]: https://www.mouser.com/datasheet/2/389/m95512-w-955061.pdf#page=35
 [manual]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group#page=2
 [corrections]: https://www.renesas.com/en/document/tcu/h838602-group-specification-changes#page=4

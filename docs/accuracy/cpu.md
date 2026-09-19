@@ -1,4 +1,33 @@
-# H8 execution: fetches, access order, and interrupt admission
+# CPU execution and exceptions
+
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+The H8/300H interpreter supports the target instruction families, register widths,
+addressing forms, arithmetic flags, branches, stack operations and exceptions. The
+decoder applies the H8/38606 instruction set rather than admitting the extra H8S/H8SX
+instructions in shared toolchain tables. RAM and flash execute through the same CPU.
+Unassigned encodings produce a host decode diagnostic; the model does not establish
+their physical outcome.
+
+Execution retains instruction prefetch, partial operations and physical access order.
+This covers writes to prefetched RAM code, source/address aliases in predecrement
+stores, normal-mode addressing, discarded fetches and exception stack writes.
+Interrupt handling includes reset's first-instruction deferral, enable-write races,
+CCR instruction deferral and EEPMOV.W's NMI boundaries. Target manuals, Renesas Q&A,
+GNU assembler encodings and independent MAME code support the interpretations.
+
+## Limits and open questions
+
+Some source conflicts have specific resolutions: sticky SUBX Z follows the target
+flag table; DAA includes reachable decimal states omitted from the printed table;
+MOV.L stores accept the alternative selector supported by the conflicting manual and
+toolchain encodings. Those resolutions are documented individually. Division by zero
+retains the destination, overflow retains truncated result fields, and unspecified
+decimal H/V flags retain their old values. The documented flags have a firmer basis
+than these selected result bits. Firmware depending on unspecified results or
+unassigned encodings needs further investigation.
 
 ## Sources
 
@@ -108,6 +137,19 @@ unassigned encodings. A model decode error is a host diagnostic, not an invented
 architectural exception. The target instruction list also excludes MOVFPE/MOVTPE;
 H8S/H8SX additions are not missing H8/38606 instructions. [Target instruction
 list][instructions].
+
+## Implementation and checks
+
+[CPU implementation](../../crates/hs-core/src/cpu/),
+[CPU continuation contract](../CPU_STATE.md), and
+[bus accesses](bus-and-gpio.md) describe execution and its retained state.
+Hachiware's [CPU](https://github.com/lumirth/hachiware/blob/main/cases/cpu.py) and
+[interrupt](https://github.com/lumirth/hachiware/blob/main/cases/interrupts.py)
+cases check aliases, stack contents, RAM execution, prefetch and interrupt admission.
+Local [CPU regressions](../../crates/hs-core/tests/cpu_regressions.rs) and
+[admission tests](../../crates/hs-core/tests/interrupt_admission.rs) exercise particular
+ordering rules. The [arithmetic topic](cpu-arithmetic.md) records flag and encoding
+conflicts. A decoder accepting an encoding does not itself verify its bus sequence.
 
 [hardware]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group

@@ -1,7 +1,7 @@
 //! H8/38602R §18: two analog comparators with read-armed interrupt latches.
 //!
 //! The default 15 µs response uses the manual's maximum conversion time.
-//! See docs/research/h8-comparators.md for the basis of this timing choice.
+//! See docs/accuracy/comparators.md for the basis of this timing choice.
 use crate::{
     error::Error,
     time::{Duration, Time, TimeError},

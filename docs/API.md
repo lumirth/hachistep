@@ -231,7 +231,7 @@ Supply changes affect the analog network and functional availability. Falling be
 chip's operating range freezes or interrupts its physical work; this does not by itself
 assert a clean brownout reset. RES charge and retention are separate mechanisms. Their
 nominal constants and worked examples are in
-[the power contract](research/power-and-reset.md).
+[the power contract](accuracy/power-and-reset.md).
 
 ## Concurrency and allocation
 

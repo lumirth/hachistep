@@ -1,5 +1,5 @@
 //! The common rail, RES capacitor and volatile-cell retention. See
-//! docs/research/power-and-reset.md for nominal component values.
+//! docs/accuracy/power-and-reset.md for nominal component values.
 use crate::{
     error::Error,
     time::{Duration, Time, TimeError},

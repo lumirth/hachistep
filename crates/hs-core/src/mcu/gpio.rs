@@ -215,7 +215,7 @@ impl Gpio {
     }
     /// Resolve the shared serial pins. Chip-select nets have a board pull-up;
     /// other released nets follow connected drivers and enabled MCU pull-ups,
-    /// then default low. See docs/research/h8-registers-and-gpio.md.
+    /// then default low. See docs/accuracy/bus-and-gpio.md.
     pub fn resolve(
         &mut self,
         serial: Pins,

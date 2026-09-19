@@ -1,8 +1,28 @@
-# Infrared board and firmware evidence
+# Infrared transceiver and connections
 
-The core exposes timed incident and emitted infrared signals. The application owns their
-transport, and firmware performs the link protocol. See
-[DESIGN §13.5](../DESIGN.md#135-execution-pacing-and-external-connections).
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+The board interface emits timed optical levels and accepts incident levels through
+the SCI/GPIO path. P30 controls shutdown, P31 receives active-low input and P32 controls
+emission. These connections are supported by matching firmware sequences. Applications
+transport signals between independently running devices; firmware implements discovery,
+packets, retry timing and game-specific exchanges.
+
+## Limits and open questions
+
+The current board path uses digital gating and polarity. It does not implement a
+characterized optical receiver's pulse shaping, turnaround recovery, ambient-light
+response or sustained-transmit cutoff. The actual transceiver remains unidentified.
+ROHM and Vishay documents establish plausible mechanisms and useful comparisons;
+their specific timings and self-echo behavior are not established Pokéwalker properties.
+
+Emulated walker-to-walker exchange exercises the firmware and signal interface.
+It does not by itself establish communication with an HGSS cartridge or a physical
+walker. Those peers can expose timing or optical assumptions shared by two identical
+emulated devices. Component identification and existing independent communication
+evidence are useful next sources.
 
 ## Pins and MCU timing
 
@@ -94,6 +114,18 @@ users to select CONNECT on both units facing each other about 5 cm apart.
 Walker-to-walker and HGSS exchanges use different peers. Each needs its own
 interoperability evidence through the ordinary signal interface. Connection setup, host
 pacing and any test-environment scheduling remain outside the core.
+
+## Implementation and checks
+
+The [board](../../crates/hs-core/src/machine.rs) resolves optical gating and polarity;
+[SCI and IrDA](sci.md) explains MCU encoding and decoding. Hachiware's
+[serial cases](https://github.com/lumirth/hachiware/blob/main/cases/serial.py) exercise
+timed signal input/output. The [retail peer test](../../crates/hs-core/tests/retail_link.rs)
+checks a complete exchange and persistent consequences through the public interface.
+This provides stronger firmware coverage than receiving a header, while both peers
+still share the core's optical assumptions. Independent-peer and transceiver behavior
+remain separate questions. [Application linking](../research/emulator-linking.md)
+explains the transport and pacing boundary.
 
 [board]: https://dmitry.gr/?r=05.Projects&proj=28.%20pokewalker
 [h8-irda]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=305

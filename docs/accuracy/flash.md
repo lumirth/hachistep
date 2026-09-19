@@ -1,4 +1,30 @@
-# H8/38606F internal flash
+# Internal flash
+
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+The flash model uses the target's six erase blocks and 128-byte program latch. Guest
+instructions select setup, pulse and verify operations. Protection, settling and
+interrupted exposure affect the same array from which the CPU fetches. Firmware owns
+retry loops and programming algorithms. Retail's external EEPROM driver does not
+validate these internal-flash operations.
+
+## Limits and open questions
+
+Normal reads and verify reads use distinct cell thresholds. The selected distribution
+and exposure scale are based on aggregate timing and the documented programming
+mechanism, without a measured per-cell distribution. This supports partial-progress
+behavior but limits predictions of exact interrupted bits and marginal pulse success.
+Review source timing bounds, protection transitions and the justification for the
+distribution before expanding its complexity.
+
+Construction supports ordinary user-mode reset. Manufacturer/test strap selections
+return `UnsupportedResetMode`; no manufacturer ROM program is substituted by the core.
+That boundary is separate from guest-controlled flash hardware. Unavailable ROM contents
+do not justify implementing their software procedures as peripheral behavior.
+
+## Sources and applicability
 
 The controller follows Renesas REJ09B0152-0300 rev. 3 and the H8/38606 addition,
 TN-H8*-A414A/E. Printed hardware-manual pages are 34 below the PDF page number. The
@@ -62,8 +88,8 @@ array. Capture must not advance emulated time.
 ### Concrete nominal partial-progress model
 
 The manuals give pulse algorithms and aggregate timing, not cell distributions. The
-following is a deliberately small local physical approximation, with parameters isolated
-for later measurement. It avoids an atomic page commit and also avoids the fictitious
+following is a local physical approximation, with parameters isolated
+for refinement as evidence improves. It avoids an atomic page commit and also avoids the fictitious
 process of programming bytes in address order.
 
 Represent a cell by bounded exposure `q`, erased at `0`, fully programmed at `Q`. Use `Q
@@ -92,8 +118,8 @@ table][electrical])
 
 Retain intermediate `q` through pulse endings, page changes, reset and power loss.
 Otherwise repeatedly interrupted short pulses never accumulate, and reset can
-incorrectly repair a partly written cell. No host RNG, wear counter or spontaneous
-charge-decay subsystem is needed for this initial model.
+incorrectly repair a partly written cell. The model uses deterministic cell classes and retains exposure. It does not simulate
+wear or spontaneous charge decay.
 
 Keep ordinary reads as direct array-byte reads. Populate exposure only for pages that
 have been exposed to a pulse; untouched binary endpoint cells are implicit. A
@@ -240,6 +266,18 @@ select the manufacturer's separate boot program. HachiStep supplies the flash im
 for user-mode execution. It reports other reset modes as unsupported. Firmware that
 programs flash in user mode executes through the same CPU, bus and flash controller.
 See [§6.3][reset-modes] and [§6.3.2][user-mode].
+
+## Implementation and checks
+
+The [flash implementation](../../crates/hs-core/src/mcu/flash.rs) owns pulse exposure,
+protection and verification. Hachiware's
+[flash cases](https://github.com/lumirth/hachiware/blob/main/cases/flash.py) check register
+access, wake, retries, verification, read protection and target block geometry.
+Local [flash tests](../../crates/hs-core/tests/flash.rs) and
+[guest execution tests](../../crates/hs-core/tests/flash_execution.rs) exercise the
+hardware through component and CPU paths. Retry programs test guest-controlled pulses;
+they do not justify implementing a manufacturer's programming routine inside the core.
+Checks of partial exposure verify the selected model, not a physical cell distribution.
 
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group#page=4
 [specification-update]: https://www.renesas.com/en/document/tcu/h838602-group-specification-changes#page=12

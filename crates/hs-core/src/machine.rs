@@ -481,7 +481,7 @@ impl Machine {
     fn serial_data(&self) -> [Option<bool>; 2] {
         let miso = match (self.eeprom.output(), self.sensor.output()) {
             // Opposing external drivers resolve low in the nominal circuit.
-            // The electrical basis is in research/h8-registers-and-gpio.md.
+            // The electrical basis is in docs/accuracy/bus-and-gpio.md.
             (Drive::Low, _) | (_, Drive::Low) => Some(false),
             (Drive::High, _) | (_, Drive::High) => Some(true),
             _ => None,

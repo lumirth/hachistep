@@ -7,7 +7,7 @@
 //!
 //! The model resolves gate/clock coincidences at reference-clock edges. The
 //! manual bounds gating error by one count and interrupt synchronization by
-//! one cycle. See docs/research/h8-counters-and-adc.md for phase and delay choices.
+//! one cycle. See docs/accuracy/timers.md for phase and delay choices.
 use super::clocks::{Clocks, Tap};
 use crate::{
     error::Error,

@@ -1,16 +1,29 @@
-# H8 SSU: transfer state, clock changes, and firmware use
+# SSU
 
-`CaptureSample` writes a new byte and then changes SSMR at `0xf0e2` without another TEND
-wait. Its intervening CPU work must run under the correct clock. If a custom program
-changes CKS during a transfer, continue the existing shifter under the new clock
-selection. Do not complete the byte, restart it, or defer an intervening chip-select
-change.
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
 
-This note uses REJ09B0152-0300 Rev.3.00, §15, printed pp.283–310 ([original
+## Supported behavior
+
+SSU retains shift and holding state, phase/polarity, bit order, chip-select arbitration,
+receive-only operation and slave/bidirectional modes. Partial transfers survive clock
+changes according to remaining source edges. Completed bytes reach the actual EEPROM,
+sensor and LCD parsers. `pw` supplies working configurations, including slow sensor
+reads followed by faster bus use.
+
+## Limits and open questions
+
+Live mode/order changes outside the prescribed stop sequence follow a retained-shift
+model. Their exact transition boundaries remain inferred. Review these alongside pin
+priority and device read side effects. Manufacturer SSU examples can test sequencing
+independently of retail. The H8SX SSU erratum in the catalogue concerns other parts;
+it has not established a corresponding H8/38606 defect.
+
+## Sources and applicability
+
+This topic uses REJ09B0152-0300 Rev.3.00, §15, printed pp.283–310 ([original
 manual][manual]); add 34 for PDF page numbers. H8/38606 applicability is established in
-[h8-execution.md](h8-execution.md). Firmware links are pinned to `lumirth/pw` commit
-`6dc7bc09950078fa3fe0dffa4dae34e9549a99da`. Local source copies and rendered timing
-figures are in ignored `out/research/`.
+[CPU execution](cpu.md). Firmware links are pinned to `lumirth/pw` commit
+`6dc7bc09950078fa3fe0dffa4dae34e9549a99da`. Downloaded source copies and rendered timing figures belong in ignored `out/research/`.
 
 ## The actual reached sequence
 
@@ -170,6 +183,19 @@ Searches found SSU notices for other Renesas families, including
 [TN-H8*-A311A/E][other-erratum] and TN-SH7-A610A/E. Their listed targets and extra
 registers differ; they do not establish H8/38606 errata. In particular, do not import
 the H8SX notice's extra one-bit completion wait as a proven target rule.
+
+## Implementation and checks
+
+The [SSU](../../crates/hs-core/src/mcu/ssu.rs) and
+[board serial routing](../../crates/hs-core/src/machine/serial.rs) propagate each transfer.
+Hachiware's [SSU cases](https://github.com/lumirth/hachiware/blob/main/cases/ssu.py)
+exercise holding replacement, repeated transmission, slave selection, bidirectional
+routing, output controls and overlapping device reads.
+[Clock-obligation tests](../../crates/hs-core/tests/clock_obligations.rs) retain partial
+transfers through source changes and gates. The
+[manufacturer leads](../SOURCES.md#located-manufacturer-material) include further SSU
+examples for checking sequencing. Their timing must be compared with this target's
+manual and the explicit load/completion inferences above.
 
 [manual]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
 [registers]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual#page=323

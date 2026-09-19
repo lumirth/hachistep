@@ -1,4 +1,23 @@
-# H8/38606F IIC2
+# IIC2
+
+[Accuracy overview](../ACCURACY.md) · [Source catalogue](../SOURCES.md)
+
+## Supported behavior
+
+IIC2 implements master/slave transfer, addressing/general call, ACK/NACK, stretching,
+arbitration, receive continuation, filtered pins, status qualification and synchronous
+serial mode. Resolved SCL/SDA levels feed back into the controller. Register requests
+produce START/STOP through those pins. SSU and IIC2 share an interrupt vector and pin
+priority follows the package diagrams.
+
+## Limits and open questions
+
+The model incorporates the applicable reset, STOP, synchronization and receive-hold
+errata. Equal nominal clock halves and exact collision windows for some defects are
+inferred where only their conditions and consequences are documented. A defect's
+presence can therefore be supported more strongly than the exact emulated race window.
+Multi-master contention, same-edge reads and live CKS changes remain valuable targeted
+review cases. The source catalogue distinguishes these errata from general I²C advice.
 
 ## Sources
 
@@ -39,7 +58,7 @@ remaining count and returns to zero after the frame. Preserve the actual bus wri
 strobes; instructions other than the advised MOV are not grounds for a guest fault.
 [§§16.3.2–3, 16.4.1][registers]
 
-Recommended state: registers and status-read qualification; one shift register; bit/ACK
+The controller retains registers and status-read qualification; one shift register; bit/ACK
 phase; current transaction selection; receive continuation/hold state; own SCL/SDA drive
 intent; two input-filter histories; remaining local clock obligations. AAS is sticky
 status, not the current transaction-selection latch. Use TDRE itself for
@@ -158,7 +177,7 @@ every internal phase. They are local implementation inferences:
   with synchronization during stretch; WAIT=1 extends the pre-ACK low interval
   by two transfer periods and can shorten ACK high under the documented
   stretch condition ([§16.7.1–3][notes], [A300][timing]). A deterministic early-request loss
-  at the ninth-high collision is a bounded initial choice, not measured timing.
+  at the ninth-high collision is the selected collision rule, not measured timing.
 - An RDR read around the eighth fall can release the following frame's hold
   without another read, losing data ([A017, p. 1][receive]). A single stale
   release credit models the effect. Choose the collision on the same φ sampling
@@ -195,6 +214,18 @@ IIC drives resolve on the same P90/P91 pads as GPIO and SSU. P90 also selects th
 and P91 clocks the shared serial bus, so transitions reach those external chips too.
 PFCR.SSUS relocates SSU functions, not IIC pads. Save states retain filter, shift, hold
 and clock progress; appointments are derived from it.
+
+## Implementation and checks
+
+The [IIC2 implementation](../../crates/hs-core/src/mcu/iic.rs) owns its controller;
+[GPIO](bus-and-gpio.md) owns pad selection. Hachiware's
+[IIC cases](https://github.com/lumirth/hachiware/blob/main/cases/iic.py) check reset,
+holding order, flag clearing, NACK/STOP and slave/general-call reception.
+Local [IIC tests](../../crates/hs-core/tests/iic.rs) cover further controller behavior;
+[machine tests](../../crates/hs-core/tests/kernel.rs) check input histories and restoration.
+The example vectors above describe useful expected behavior; their presence in this
+page does not mean each has an independent guest case. Exact erratum collision windows
+remain the stated model choices.
 
 [manual]: https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual
 [addition]: https://www.renesas.com/en/document/tcu/addition-h838606-group

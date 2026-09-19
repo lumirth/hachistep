@@ -2,7 +2,7 @@
 
 This catalogue collects the sources used to understand the Pokéwalker and leads that
 can refine its model. [ACCURACY](ACCURACY.md) describes the implementation's supported
-behavior and limits. The linked hardware notes explain source conflicts and the
+behavior and limits. The linked accuracy topics explain source conflicts and the
 reasoning behind individual choices.
 
 The main catalogue includes references used in the hardware and design notes.
@@ -30,7 +30,7 @@ the disagreement and the reason for the selected interpretation.
 - [Additional research leads](#additional-research-leads)
 - [Supplied images](#supplied-images)
 - [Supplied document identities](#supplied-document-identities)
-- [Detailed hardware notes](#detailed-hardware-notes)
+- [Detailed hardware understanding](#detailed-hardware-understanding)
 
 ## MCU manuals and amendments
 
@@ -51,7 +51,7 @@ different questions. A feature list alone omits access conflicts and transition 
 Useful entry points are §3.8 for interrupt conflicts, §§4–5 for clocks/modes, §6 for
 flash, §8 for GPIO, §§9–18 for peripherals, §19 for reset, §20 for register/reset
 tables, §21 for electrical limits, and the appendices for instructions and pin logic.
-The hardware notes give exact pages for the claims derived from them.
+The accuracy topics give exact pages for the claims derived from them.
 
 ### Corrections and silicon defects
 
@@ -99,8 +99,8 @@ independent examples and explanations of the hardware behind a recommended seque
   disagreements with MAME, including alias and flag behavior. Agreement between
   emulators alone does not establish a silicon result.
 
-See [encoding/arithmetic](research/h8-encoding-and-arithmetic.md) and
-[execution](research/h8-execution.md) for the selected interpretation of each conflict.
+See [encoding/arithmetic](accuracy/cpu-arithmetic.md) and
+[execution](accuracy/cpu.md) for the selected interpretation of each conflict.
 
 ## Accelerometer
 
@@ -114,8 +114,8 @@ See [encoding/arithmetic](research/h8-encoding-and-arithmetic.md) and
 | [Atmel/Microchip ASF BMA150 driver](https://github.com/avrxml/asf/blob/68cddb46ae5ebc24ef8287a8d4c61a6efa5e2848/common/services/sensors/drivers/bosch/bma150.c) and [register definitions](https://github.com/avrxml/asf/blob/68cddb46ae5ebc24ef8287a8d4c61a6efa5e2848/common/services/sensors/drivers/bosch/bma150.h) | Wake configuration, acquisition formulas, field definitions and another driver interpretation. Compare its wake-mode setter with Bosch's rather than assuming they are identical. |
 | [Bosch inline-calibration note](https://www.bosch-sensortec.com/media/boschsensortec/downloads/application_notes_1/bst-mas-an030.pdf), 2019 | Examined as a possible source for calibration. It applies to different parts/register layouts and does not supply the missing BMA150 transfer function. |
 
-[Sensor behavior](research/bma150-behavior.md) reconciles status-bit, wake-duration and
-mode-setting conflicts. [Sensor I²C](research/bma150-i2c.md) explains board reachability,
+[Sensor behavior](accuracy/bma150.md) reconciles status-bit, wake-duration and
+mode-setting conflicts. [Sensor I²C](accuracy/bma150-i2c.md) explains board reachability,
 the fixed address, interface selection and timing revisions. The firmware driver is
 listed under [board and firmware](#board-and-firmware). The unrecovered older
 calibration note is listed under [research leads](#unrecovered-or-unidentified-material).
@@ -133,7 +133,7 @@ July 2008, is the controller reference. Useful sections include:
 | 29–32, 33–51 | Reset lists, command inventory, geometry, oscillator control, contrast trim and OTP conditions. |
 | 53, 56–57 | Reset and electrical/oscillator timing; distinguish guaranteed bounds from typical values. |
 
-The [LCD note](research/lcd-and-eeprom.md) resolves conflicts in wrapping and reset
+The [LCD note](accuracy/lcd.md) resolves conflicts in wrapping and reset
 descriptions and relates the firmware's initialization to scan timing. The controller
 datasheet establishes digital and electrical functions. It does not supply a calibrated
 response curve for the actual Pokéwalker glass.
@@ -147,7 +147,7 @@ provenance; NT7508, board evidence and the matching driver determine this model.
 - [ST M95512-R datasheet](https://www.st.com/resource/en/datasheet/m95512-r.pdf),
   DS4192 rev. 24 in the existing research. The board investigation identifies M95512RP.
   Relevant material includes READ/WRITE, WREN/WIP, WRSR/protection, page wrap and
-  power transitions. The [EEPROM note](research/lcd-and-eeprom.md) cites the sections.
+  power transitions. The [EEPROM note](accuracy/eeprom.md) cites the sections.
 - [ST M95512 family datasheet](https://www.st.com/resource/en/datasheet/m95512-w.pdf)
   and the [archived family copy used for drive limits](https://www.mouser.com/datasheet/2/389/m95512-w-955061.pdf).
   The family includes variants with different voltage limits and extra features.
@@ -179,7 +179,7 @@ internal write cycle cannot define the MCU's guest-controlled flash procedure.
   in the board notes.
 - [Associated 64 KiB dump](https://github.com/mamba2410/reverse-pokewalker/blob/7a409ff625e95457a55832a4e89ebdefa0c7cec6/dumps/bin/64k-full-rom.bin).
   Context for the battery-calibration analysis cited in
-  [ADC board transfer](research/adc-board-transfer.md). Interpret its contents and
+  [ADC board transfer](accuracy/adc.md). Interpret its contents and
   acquisition context before treating its filename as a memory-map description.
 - [Nintendo Pokéwalker operations manual](https://csassets.nintendo.com/noaext/image/private/t_KA_PDF/Pokewalker_Tri?_a=BATCtdAA0).
   Original instructions for connection, battery replacement and user-visible operation.
@@ -205,7 +205,7 @@ sequence and its state; comments can have a weaker basis than the accesses thems
 | `pw_home.c`, `pw_pictogram_menu.c`, `pw_friend.c` | Connection eligibility and persistent consequences used to interpret complete retail exchanges. |
 
 Unqualified filenames in the table are in `src/application/`. Exact functions and
-line references are linked from the relevant hardware notes. Hardware rules must also
+line references are linked from the relevant accuracy topics. Hardware rules must also
 explain custom firmware; reaching a retail branch is evidence of use, not the limit
 of the component specification.
 
@@ -213,7 +213,7 @@ of the component specification.
 
 The board sources do not establish a transceiver part number. These manufacturer
 documents support comparison of plausible mechanisms, with the limits recorded in
-[infrared evidence](research/infrared.md).
+[infrared evidence](accuracy/infrared.md).
 
 | Source | Use and applicability |
 | --- | --- |
@@ -257,8 +257,7 @@ adapter, checks and interpretation of results.
 These are useful places to extend the existing research. The identified topics have
 been checked against the documents' accessible descriptions or relevant sections.
 Detailed comparison with the implementation is still required before adopting a
-new hardware claim. Retain useful findings in the existing mechanism note and update
-the corresponding accuracy section.
+new hardware claim. Retain useful findings in the accuracy topic that owns the mechanism.
 
 ### Located manufacturer material
 
@@ -314,7 +313,6 @@ EEPROM SHA-256: 9b9d7ac29b3d27de8fed1aca392c91ec559a53c2c22f2a9c860c980895539008
 The images are unmodified. Retail verification checks their identities before and after
 execution against `workloads/retail.json`.
 
-
 ## Supplied document identities
 
 The original PDF bytes are not redistributed. These hashes identify the supplied copies,
@@ -329,28 +327,13 @@ including the SSD1854 reference whose presence does not identify the installed L
 | `components_m95512r_datasheet.pdf` | `0f91e5ebc32c8eed6f389be81b01a2e90aa94c3a9b118a5fac428cd61af76bab` |
 | `devices_h8-38602r_hardware-manual.pdf` | `5029638c5ab3e3448fbadb9dcbe689ff8e74fbd50412e3abd5720f1651a1cc0f` |
 
+## Detailed hardware understanding
 
-## Detailed hardware notes
-
-These notes preserve the interpretation and local model choices behind the accuracy
-overview. Their inline references locate individual claims within the catalogue's
-documents and code.
-
-| Mechanism | Reference |
-| --- | --- |
-| CPU fetch, access order, exceptions and admission | [Execution](research/h8-execution.md) |
-| Encoding and arithmetic | [Encodings and arithmetic](research/h8-encoding-and-arithmetic.md) |
-| Clocks and SCI/IrDA | [Clock and serial rules](research/h8-clock-and-sci.md) |
-| Timers, RTC, watchdog, ADC and AEC | [Counter and converter rules](research/h8-counters-and-adc.md) |
-| Register bus and GPIO | [Access and pin rules](research/h8-registers-and-gpio.md) |
-| SSU and IIC2 | [SSU](research/h8-ssu.md), [IIC2](research/h8-iic2.md) |
-| Internal flash | [Flash](research/h8-flash.md) |
-| Supply and reset | [Board supply, retention and startup](research/power-and-reset.md) |
-| ADC board circuit and comparators | [Battery sensing](research/adc-board-transfer.md), [comparators](research/h8-comparators.md) |
-| BMA150 sensor | [Sampling, filtering and register behavior](research/bma150-behavior.md), [I²C](research/bma150-i2c.md) |
-| LCD and EEPROM | [Controller and storage behavior](research/lcd-and-eeprom.md) |
-| Infrared board behavior | [Optical interface and firmware evidence](research/infrared.md) |
-
+The [accuracy overview](ACCURACY.md#what-can-i-rely-on) indexes the hardware topics.
+Each topic combines implemented behavior, known limits, source interpretation and
+relevant checks. Its inline references locate individual claims within this catalogue's
+documents and code. The remaining [emulator research](research/emulator-state-and-testing.md)
+compares architecture and interface choices.
 
 Native save-state semantics are in [SAVE_STATES](SAVE_STATES.md) and
 [CPU_STATE](CPU_STATE.md). The [design](DESIGN.md) records the architectural contract.
