@@ -1,5 +1,9 @@
 # Testing and evidence
 
+[ACCURACY](ACCURACY.md) describes supported hardware behavior and remaining limitations.
+[SOURCES](SOURCES.md) identifies the reference material. This document explains the
+checks and what their results establish.
+
 ## Different claims have different tests
 
 The standard suite needs no private images. It runs ordinary Rust tests, documentation

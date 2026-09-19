@@ -4,6 +4,9 @@ This document defines required behavior and architectural choices. Revise a choi
 concrete consequences justify it. Track implementation progress and completed work in Git
 and the task discussion.
 
+[ACCURACY](ACCURACY.md) describes current hardware support and limitations.
+[SOURCES](SOURCES.md) collects the evidence and research leads behind that understanding.
+
 HachiStep is a Pokéwalker emulator core for downstream applications and frontend users.
 It should make ordinary Pokéwalker use practical and support custom firmware development
 with useful confidence in behavior on the physical device. Hardware fidelity,

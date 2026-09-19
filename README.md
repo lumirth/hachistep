@@ -6,7 +6,8 @@ by default through a compact, coherent architecture. The core runs
 unmodified retail firmware through boot, menus, motion processing, Dowsing, Poké Radar,
 saving and peer exchanges. The
 [design](docs/DESIGN.md) defines the intended behavior;
-[hardware references](docs/SOURCES.md) explain the evidence and model choices.
+[hardware accuracy](docs/ACCURACY.md) describes supported behavior and remaining limits;
+[source catalogue](docs/SOURCES.md) collects hardware references and research leads.
 
 ## Build and run
 
@@ -90,8 +91,8 @@ toolchain requirements and commands.
 
 ## Development
 
-Read [DESIGN](docs/DESIGN.md), [CONTEXT](CONTEXT.md), and the relevant
-[hardware references](docs/SOURCES.md) before changing behavior. Decisions come
-from hardware documentation, observations, the matching `pw` decompilation, and
+Read [DESIGN](docs/DESIGN.md), [CONTEXT](CONTEXT.md), the affected
+[accuracy section](docs/ACCURACY.md) and its hardware notes before changing behavior.
+Decisions come from hardware documentation, observations, the matching `pw` decompilation, and
 inferences that explain the mechanism for arbitrary firmware. Development history and
 work in progress belong in commits, issues, and the task discussion.

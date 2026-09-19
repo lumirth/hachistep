@@ -6,6 +6,14 @@ are printed pages.
 
 ## NT7508 behavior and sources
 
+The rules below describe the controller and the intended model. The current parser
+retains power-control, regulator, booster, bias, temperature-slope and contrast-trim
+settings without applying their electrical effects to the exposed drive or contrast.
+OTP control is also retained without fusing behavior. Oscillator controls do affect
+scan timing. See [display accuracy](../ACCURACY.md#nt7508-display-controller) for the
+consequences and remaining work; the command inventory below establishes decoding
+coverage, not implementation of every command's effects.
+
 | Behavior | Required rule | Novatek reference |
 | --- | --- | --- |
 | Interface | Serial is write-only. CS resets partial-byte assembly. Three-wire DDL is `parameter + 1`; it is a pin-selected interface. | [pp. 8, 11–13, 46][nt-serial] |
