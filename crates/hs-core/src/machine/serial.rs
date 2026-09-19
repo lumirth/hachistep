@@ -19,11 +19,11 @@ impl Machine {
     }
     pub(super) fn serial_edge(
         &mut self,
-        configuration_changed: bool,
+        change: BoardChange,
         out: &mut dyn Output,
     ) -> Result<(), Error> {
         let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;
-        let sampled = self.settle_board(configuration_changed, out)?;
+        let sampled = self.settle_board(change, out)?;
         if let Some(edge) = edge {
             if edge.sample {
                 self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
@@ -31,7 +31,7 @@ impl Machine {
             let pins = self.mcu.ssu.pins();
             self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
             if self.mcu.ssu.pins() != pins {
-                self.settle_board(configuration_changed, out)?;
+                self.settle_board(change, out)?;
             }
         }
         Ok(())
@@ -54,7 +54,7 @@ impl Machine {
             self.now = at;
             self.last_effect = self.last_effect.max(at);
             self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
-            let result = self.serial_edge(false, out);
+            let result = self.serial_edge(BoardChange::Serial, out);
             self.now = now;
             result?;
             changed = true;

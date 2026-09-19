@@ -223,12 +223,11 @@ impl Gpio {
         timer_mask: u8,
         external_data: [Option<bool>; 2],
     ) -> SerialLevels {
-        for i in 0..4 {
+        for i in 0..3 {
             self.levels[i] = self.latch[i] & self.direction[i] | self.pull[i] & !self.direction[i];
         }
         // Board chip-select lines idle high when not actively driven.
         self.levels[0] |= (!self.direction[0]) & 5;
-        self.levels[3] |= (!self.direction[3]) & 1;
         self.levels[4] = self.raw_button_levels();
         for i in 0..6 {
             if let Some(high) = self.analog_levels[i] {
@@ -315,6 +314,16 @@ impl Gpio {
                 self.levels[1] = (self.levels[1] & !4) | (u8::from(tx) << 2);
             }
         }
+        self.resolve_serial(serial, external_data)
+    }
+    /// Resolve P9 after serial drivers change. Other ports retain their settled
+    /// levels; configuration and other peripheral changes use full resolution.
+    pub(crate) fn resolve_serial(
+        &mut self,
+        serial: Pins,
+        external_data: [Option<bool>; 2],
+    ) -> SerialLevels {
+        self.levels[3] = 0;
         for bit in 0..4 {
             let mask = 1 << bit;
             let function = if self.pfcr & 0x10 == 0 { bit } else { 3 - bit };

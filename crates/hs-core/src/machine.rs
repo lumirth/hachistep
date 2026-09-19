@@ -23,6 +23,13 @@ use crate::{
 use boot::Boot;
 use sha2::{Digest, Sha256};
 
+#[derive(Clone, Copy)]
+enum BoardChange {
+    Configuration,
+    Peripherals,
+    Serial,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Images<'a> {
     pub firmware: &'a [u8],
@@ -500,13 +507,14 @@ impl Machine {
         [mosi, miso]
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<[bool; 4], Error> {
-        self.settle_board(true, out)
+        self.settle_board(BoardChange::Configuration, out)
     }
     fn settle_board(
         &mut self,
-        configuration_changed: bool,
+        change: BoardChange,
         out: &mut dyn Output,
     ) -> Result<[bool; 4], Error> {
+        let configuration_changed = matches!(change, BoardChange::Configuration);
         let previous = self.mcu.gpio.levels;
         self.mcu.update_clock_output(self.now);
         let sci_pins = self.mcu.sci.pins();
@@ -521,7 +529,11 @@ impl Machine {
         self.mcu.gpio.set_iic_pins(iic_pins);
         let data = self.serial_data();
         let levels = if self.power.mcu() {
-            self.mcu.gpio.resolve(pins, timer, timer_mask, data)
+            if matches!(change, BoardChange::Serial) {
+                self.mcu.gpio.resolve_serial(pins, data)
+            } else {
+                self.mcu.gpio.resolve(pins, timer, timer_mask, data)
+            }
         } else {
             self.mcu.gpio.resolve_unpowered(data)
         };
@@ -560,7 +572,7 @@ impl Machine {
         self.serial = if settled_data == data {
             levels
         } else if self.power.mcu() {
-            self.mcu.gpio.resolve(pins, timer, timer_mask, settled_data)
+            self.mcu.gpio.resolve_serial(pins, settled_data)
         } else {
             self.mcu.gpio.resolve_unpowered(settled_data)
         };
@@ -858,11 +870,16 @@ impl Machine {
         if self.mcu.iic.deadline(&self.mcu.clocks)? == Some(self.now) {
             self.mcu.iic.advance(self.now, &self.mcu.clocks)?;
         }
+        let change = if due == schedule::ALL {
+            BoardChange::Configuration
+        } else {
+            BoardChange::Peripherals
+        };
         if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
-            self.serial_edge(due == schedule::ALL, out)?;
+            self.serial_edge(change, out)?;
             due |= schedule::SSU;
         } else {
-            self.settle_board(due == schedule::ALL, out)?;
+            self.settle_board(change, out)?;
         }
         self.refresh_peripherals(due)
     }
