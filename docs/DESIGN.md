@@ -955,7 +955,7 @@ processing needed by changing sensor inputs or other histories.
 
 | Operation | Required implementation property |
 | --- | --- |
-| Register instruction | Direct arithmetic and a local timing-budget update. |
+| Register instruction | Direct arithmetic and a clock obligation. |
 | Ordinary memory access | Direct access at the physical width. |
 | Peripheral access | Synchronize the affected owners. |
 | Inactive peripheral | Revisit it when an input or control change requires work. |

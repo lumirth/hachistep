@@ -105,6 +105,14 @@ and checks the encounter records committed by both firmwares. Its input preparat
 simulated channel are described in [INPUTS](INPUTS.md#physical-csv). It runs alongside
 the partition test for every retail verification, including `--quick` and `--case`.
 
+The gameplay test continues the walking trajectory into Dowsing, spends earned Watts,
+collects an item and checks its persistent record. A separate Poké Radar session uses a
+host RAM edit to fund entry, then completes the search, battle and capture through
+button inputs. The guest writes the captured Pokémon from its course data. Both sessions
+check sound, display, complete event replay and exact restoration during play. Firmware
+layouts and expected rewards come from the matching `pw` source; this test exercises the
+public embedding API and does not add firmware knowledge to the core.
+
 The day-rollover workload runs for an emulated day, including idle sleep, hourly saves,
 diary rotation and midnight maintenance. Its capture falls inside the RTC busy interval
 before midnight, so restoration must preserve the pending calendar update and all later

@@ -6,6 +6,10 @@ The runnable example is `crates/hs-core/examples/replay.rs`:
 cargo run -p hs-core --release --example replay -- FIRMWARE EEPROM
 ```
 
+The example requests 300 display frames at a 60 Hz cadence, delivers button inputs,
+streams PCM, and verifies save state restoration. A frontend supplies its own window,
+audio device and host pacing.
+
 The crate documentation also includes a compiled doctest using an original synthetic
 branch loop, so it needs no proprietary inputs.
 
@@ -111,7 +115,10 @@ a panel tint and apply their chosen contrast response.
 The image projects current RAM and programmed geometry. It does not retain earlier
 scan rows or model the glass's response time. An inactive display or an undriven scan
 clock produces zero pixels. `display_enabled` and `display_start_line` expose useful
-controller state.
+controller state. `display_contrast()` returns the controller's electronic-volume
+setting, 0..63. Read it alongside the pixels so firmware contrast changes can affect
+the frontend's presentation. Pixel values describe duty; mapping this voltage control
+to visible contrast requires the frontend's panel response.
 
 `display_drive()` projects the LCD controller's digital output at the current
 observation point: selected COM (128 for the icon), two 64-bit SEG masks, and AC

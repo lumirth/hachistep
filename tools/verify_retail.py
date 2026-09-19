@@ -89,7 +89,11 @@ def main() -> None:
     env = environment()
     env.update(HS_FIRMWARE=str(firmware), HS_EEPROM=str(eeprom))
     records = []
-    for test, name in [("retail", "partition-and-snapshot"), ("retail_link", "peer-exchange")]:
+    for test, name in [
+        ("retail", "partition-and-snapshot"),
+        ("retail_link", "peer-exchange"),
+        ("retail_play", "gameplay-and-rewards"),
+    ]:
         records.append(
             run(
                 [

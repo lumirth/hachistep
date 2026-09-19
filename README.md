@@ -3,7 +3,8 @@
 A Rust Pokéwalker emulator core for retail and custom firmware, built for use in
 downstream applications. The goal is faithful hardware behavior and high performance
 by default through a compact, coherent architecture. The core runs
-unmodified retail firmware through boot, menus, motion processing and idle. The
+unmodified retail firmware through boot, menus, motion processing, Dowsing, Poké Radar,
+saving and peer exchanges. The
 [design](docs/DESIGN.md) defines the intended behavior;
 [hardware references](docs/SOURCES.md) explain the evidence and model choices.
 

@@ -54,17 +54,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         samples: 0,
         error: None,
     };
-    machine.run_until(Time::from_micros(5_000_000), &inputs, &mut playback)?;
-    if let Some(error) = playback.error {
-        return Err(error.into());
+    let mut cursor = 0;
+    let mut pixels = [0; 6144];
+    for frame in 1..=300u128 {
+        // The frontend chooses when to present. This cadence leaves the device's
+        // independent clocks running at their configured frequencies.
+        let end = Time::from_raw((frame << 64) / 60);
+        let count = inputs[cursor..].partition_point(|input| input.at < end);
+        let result = machine.run_until(end, &inputs[cursor..cursor + count], &mut playback)?;
+        cursor += result.inputs_consumed;
+        if let Some(error) = playback.error.take() {
+            return Err(error.into());
+        }
+        playback.audio.advance(result.now, &mut |block| {
+            playback.samples += block.len();
+        })?;
+        machine.display(&mut pixels);
+        // A frontend presents these pixels and paces calls against its host clock.
     }
-    playback
-        .audio
-        .advance(machine.now(), &mut |block| playback.samples += block.len())?;
     println!(
-        "time={:?}; retired={}; audio samples={}",
+        "time={:?}; retired={}; frames=300; contrast={}; audio samples={}",
         machine.now(),
         machine.retired(),
+        machine.display_contrast(),
         playback.samples
     );
     let saved = machine.snapshot();

@@ -288,6 +288,11 @@ impl Machine {
     pub fn display_start_line(&self) -> u8 {
         self.lcd.start_line()
     }
+    /// Programmed electronic-volume setting, 0..63. The frontend maps this
+    /// voltage control to its panel response; it is independent of pixel duty.
+    pub fn display_contrast(&self) -> u8 {
+        self.lcd.contrast()
+    }
     pub fn ssu_counts(&self) -> (u64, u64) {
         (self.mcu.ssu.transmitted, self.mcu.ssu.received)
     }
