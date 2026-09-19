@@ -58,6 +58,13 @@ impl Default for Nt7508 {
     }
 }
 impl Nt7508 {
+    pub(crate) fn serial_effect_edges(&self) -> u8 {
+        if self.selected {
+            (8 - self.bits) * 2 - 1
+        } else {
+            16
+        }
+    }
     pub fn new() -> Self {
         Self {
             ram: [0; 4096],

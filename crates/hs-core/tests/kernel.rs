@@ -668,6 +668,87 @@ fn peeking_does_not_change_causal_state() {
 }
 
 #[test]
+fn instruction_fault_preserves_serial_progress_at_the_stopping_instant() {
+    let mut code = vec![];
+    for (address, value) in [
+        (0xfffb_u16, 0x14),
+        (0xf0e0, 0x8c),
+        (0xf0e1, 0x40),
+        (0xf0e2, 0x86),
+        (0xf0e3, 0xc0),
+        (0xf0eb, 6),
+    ] {
+        code.extend([0xf8, value, 0x6a, 0x88, (address >> 8) as u8, address as u8]);
+    }
+    code.extend([0, 0, 0, 0, 0, 0, 0x57, 0xff]);
+    let mut whole = machine(&code);
+    let mut split = whole.clone();
+    let error = whole
+        .run_until(Time::from_micros(100), &[], &mut ())
+        .unwrap_err();
+    for quarter in 1..=400 {
+        let at = Time::from_raw(Time::from_micros(quarter).raw() / 4);
+        if let Err(observed) = split.run_until(at, &[], &mut ()) {
+            assert_eq!(error, observed);
+            break;
+        }
+    }
+    state::assert_same_state(&whole, &split);
+    let restored = state::restore_file(&whole.snapshot());
+    state::assert_same_state(&whole, &restored);
+    assert!(restored.fault().is_some());
+}
+
+#[test]
+fn serial_clock_changes_and_register_accesses_preserve_host_partitioning() {
+    for mode in [0x86, 0xa6, 0xc6, 0xe6] {
+        let mut code = vec![];
+        let store = |code: &mut Vec<u8>, a: u16, v: u8| {
+            code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);
+        };
+        for (a, v) in [
+            (0xfffb, 0x14),
+            (0xf0e0, 0x8c),
+            (0xf0e1, 0x40),
+            (0xf0e2, mode),
+            (0xf0e3, 0xc0),
+            (0xffe4, 7),
+            (0xffd4, 1),
+            (0xf087, 8),
+            (0xffec, 1),
+            (0xffdc, 1),
+            (0xf0eb, 6),
+        ] {
+            store(&mut code, a, v);
+        }
+        // Fetches and RAM accesses run alongside the transfer. A live divider
+        // change and a GPIO read must observe the intervening physical edges.
+        code.extend([0x6a, 0x88, 0xf8, 0, 0, 0]);
+        store(&mut code, 0xf0e2, mode & !7 | 5);
+        code.extend([0x6a, 0x08, 0xff, 0xd5, 0x6a, 0x88, 0xf8, 1]);
+        code.extend([0x6a, 0x08, 0xf0, 0xe4, 0xe8, 8, 0x47, 0xf8]);
+        store(&mut code, 0xffd4, 5);
+        code.extend([0x40, 0xfe]);
+        let mut whole = machine(&code);
+        let mut split = whole.clone();
+        let mut expected = vec![];
+        let mut observed = vec![];
+        let end = Time::from_micros(300);
+        whole.run_until(end, &[], &mut expected).unwrap();
+        for quarter in 1..=1200 {
+            let at = Time::from_raw(Time::from_micros(quarter).raw() / 4);
+            split.run_until(at, &[], &mut observed).unwrap();
+            if quarter % 137 == 0 {
+                split = state::restore_file(&split.snapshot());
+            }
+        }
+        assert_eq!(expected, observed, "SSMR={mode:02x}");
+        state::assert_same_state(&whole, &split);
+        assert_eq!(whole.ssu_counts().0, 1, "SSMR={mode:02x}");
+    }
+}
+
+#[test]
 fn guest_serial_page_write_reaches_the_real_device_owner_and_commits_later() {
     fn store(code: &mut Vec<u8>, a: u16, v: u8) {
         code.extend([0xf8, v, 0x6a, 0x88, (a >> 8) as u8, a as u8]);

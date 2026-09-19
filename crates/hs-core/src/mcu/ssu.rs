@@ -95,6 +95,23 @@ impl Ssu {
             .as_ref()
             .map_or(Ok(None), |wait| wait.deadline(clocks))
     }
+    /// The last receive sample and frame completion can change CPU-visible flags.
+    pub(crate) fn effect_deadline(
+        &self,
+        edges: u8,
+        clocks: &Clocks,
+    ) -> Result<Option<Time>, Error> {
+        let count = match self.phase {
+            Phase::Load => 1,
+            Phase::Edge => {
+                let sample = if self.first_edge_samples() { 15u8 } else { 16 };
+                edges.min(sample.saturating_sub(self.edges).max(1))
+            }
+        };
+        self.next.as_ref().map_or(Ok(None), |wait| {
+            wait.later_edge(u64::from(count - 1), clocks)
+        })
+    }
     fn master(&self) -> bool {
         self.high & 0x80 != 0
     }

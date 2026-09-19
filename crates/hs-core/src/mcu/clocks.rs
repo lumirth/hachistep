@@ -522,6 +522,21 @@ impl ClockWait {
             WaitState::Ready(at) => Ok(Some(at)),
         }
     }
+    pub(crate) fn later_edge(&self, count: u64, clocks: &Clocks) -> Result<Option<Time>, Error> {
+        if count == 0 {
+            return self.deadline(clocks);
+        }
+        match self.state {
+            WaitState::Running { target, .. } if clocks.available(self.tap) => {
+                Ok(Some(clocks.edge(
+                    target.checked_add(count).ok_or(TimeError::Overflow)?,
+                    self.tap,
+                )?))
+            }
+            WaitState::Ready(at) => Self::after(at, count, self.tap, clocks)?.deadline(clocks),
+            _ => Ok(None),
+        }
+    }
     /// Continue a completed periodic wait on the same divider. Its ordinal
     /// identifies the consumed edge without converting its timestamp back to a count.
     pub(crate) fn following_edge(self, clocks: &Clocks) -> Result<Self, Error> {

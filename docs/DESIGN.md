@@ -192,12 +192,12 @@ Use an opaque 64.64 timestamp in seconds, represented by `u128`. Its resolution 
 their supplied parameters.
 
 Use the wide timestamp at component and API boundaries. The CPU's frequent execution
-work uses a 64-bit budget in its local clock domain. Convert between the two at
+work uses a 64-bit edge cursor in its local clock domain. Convert between the two at
 synchronization points.
 
-Keep the CPU's local cycle cursor and budget disposable. Rebuild the projection when
-the clock configuration changes, and the budget when an interaction changes the next
-external boundary. Captures retain the underlying hardware clock obligation.
+Keep the CPU's local cycle cursor disposable. Rebuild the projection when the clock
+configuration changes. Compare each pending access's timestamp with the next external
+boundary; captures retain the underlying hardware clock obligation.
 
 ### 4.3 Preserve fractional remainder
 

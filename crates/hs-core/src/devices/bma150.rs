@@ -276,6 +276,15 @@ impl Bma150 {
             self.sample_clock.next().ok()
         }
     }
+    pub(crate) fn serial_effect_edges(&self) -> u8 {
+        // Read shadows and freshness acknowledgements can change on the first
+        // SPI edge. The deselected device continues to listen for I2C traffic.
+        if self.selected {
+            1
+        } else {
+            self.i2c.effect_edges()
+        }
+    }
     pub fn deadline(&self) -> Option<Time> {
         if self.unpowered_since.is_some() {
             return None;

@@ -49,6 +49,7 @@ impl Machine {
             if self.resume_deadline()? != Some(self.now) {
                 return Ok(changed);
             }
+            self.sync_serial(out)?;
             self.resume_after = None;
             changed = true;
             match resume {
@@ -78,6 +79,7 @@ impl Machine {
             }
             if self.mcu.control.sleeping() {
                 changed = true;
+                self.sync_serial(out)?;
                 if self.mcu.sync(self.now, out)? {
                     self.reset_mcu(true, out)?;
                     return Ok(changed);
@@ -97,7 +99,13 @@ impl Machine {
         }
         loop {
             let boundary = self.cpu.boundary();
-            let action = self.cpu.next(|| self.mcu.interrupt())?;
+            let action = match self.cpu.next(|| self.mcu.interrupt()) {
+                Ok(action) => action,
+                Err(error) => {
+                    self.sync_serial(out)?;
+                    return Err(error);
+                }
+            };
             if boundary {
                 self.mcu.instruction_boundary();
             }
@@ -113,6 +121,7 @@ impl Machine {
                         return Ok(changed);
                     }
                     changed = true;
+                    self.sync_serial(out)?;
                     self.mcu.flash.protect(self.now, out)?;
                     if self.mcu.sync(self.now, out)? {
                         self.reset_mcu(true, out)?;
@@ -163,12 +172,17 @@ impl Machine {
         });
         Ok(())
     }
-    fn complete_action(&mut self, value: u16) -> Result<(), Error> {
-        if let Some(boot) = &mut self.boot {
+    fn complete_action(&mut self, value: u16, out: &mut dyn Output) -> Result<(), Error> {
+        let result = if let Some(boot) = &mut self.boot {
             boot.complete(value, self.mcu.clocks.frequencies.main_hz)
         } else {
             self.cpu.complete(value)
+        };
+        // A stopped session must retain the serial effects preceding the fault.
+        if result.is_err() {
+            self.sync_serial(out)?;
         }
+        result
     }
     fn complete_cpu(&mut self, clock: &mut CpuCursor, out: &mut dyn Output) -> Result<bool, Error> {
         self.last_effect = self.now;
@@ -178,7 +192,7 @@ impl Machine {
             .ok_or(Error::Internal("CPU completion without pending access"))?;
         let (address, width, write) = match pending.action {
             Action::Idle(_) => {
-                self.complete_action(0)?;
+                self.complete_action(0, out)?;
                 return Ok(false);
             }
             Action::Read { address, width, .. } => (address, width, false),
@@ -193,6 +207,7 @@ impl Machine {
         let a = base.wrapping_add(u16::from(pending.lane));
         let w = if pending.split { Width::Byte } else { width };
         let memory = Mcu::is_memory(a);
+        let serial_changed = !memory && self.sync_serial(out)?;
         let affected = Mcu::access_peripherals(a, write);
         if !memory && self.mcu.sync_peripherals(affected, self.now, out)? {
             self.reset_mcu(true, out)?;
@@ -261,9 +276,9 @@ impl Machine {
             } else {
                 value
             };
-            self.complete_action(value)?;
+            self.complete_action(value, out)?;
         }
-        Ok(changed)
+        Ok(changed || serial_changed)
     }
     /// Advance through effects before `end`, returning earlier if output requests it.
     /// Inputs at the returned exclusive horizon remain pending.
@@ -299,6 +314,7 @@ impl Machine {
                 self.devices_at_boundary(&mut out)?;
             }
             if consumed < inputs.len() && inputs[consumed].at == self.now {
+                self.sync_serial(&mut out)?;
                 let start = consumed;
                 while consumed < inputs.len() && inputs[consumed].at == self.now {
                     consumed += 1;
@@ -329,6 +345,7 @@ impl Machine {
                 cpu_due = true;
             }
         }
+        self.sync_serial_before(self.now, &mut out)?;
         Ok(RunResult {
             now: self.now,
             inputs_consumed: consumed,

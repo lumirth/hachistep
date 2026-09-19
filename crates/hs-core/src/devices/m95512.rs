@@ -141,6 +141,13 @@ impl M95512 {
     pub fn status(&self) -> u8 {
         self.status | (u8::from(self.wel) * 2) | u8::from(self.busy())
     }
+    pub(crate) fn serial_effect_edges(&self) -> u8 {
+        if self.selected {
+            (8 - self.rx_bits) * 2 - 1
+        } else {
+            16
+        }
+    }
     pub fn deadline(&self) -> Option<Time> {
         match self.programming {
             Programming::None => None,

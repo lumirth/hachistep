@@ -30,14 +30,18 @@ impl Appointments {
             .enumerate()
             .fold(0, |mask, (i, at)| mask | (u16::from(*at == Some(now)) << i))
     }
-    pub fn update(&mut self, mut mask: u16, mcu: &Mcu) -> Result<(), Error> {
+    pub fn update(&mut self, mut mask: u16, mcu: &Mcu, serial: Option<Time>) -> Result<(), Error> {
         if mask == 0 {
             return Ok(());
         }
         while mask != 0 {
             let i = mask.trailing_zeros() as usize;
             mask &= mask - 1;
-            self.slots[i] = mcu.appointment(1 << i)?;
+            self.slots[i] = if 1 << i == SSU {
+                serial
+            } else {
+                mcu.appointment(1 << i)?
+            };
         }
         self.next = self.slots.iter().flatten().copied().min();
         Ok(())

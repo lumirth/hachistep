@@ -4,6 +4,7 @@
 //! rules and their evidence are indexed in docs/SOURCES.md.
 mod boot;
 mod execution;
+mod serial;
 mod state;
 use crate::{
     cpu::{alu::I, Action, Cpu, Registers, Width, WriteOrigin},
@@ -449,8 +450,12 @@ impl Machine {
         self.refresh_peripherals(schedule::ALL)
     }
     fn refresh_peripherals(&mut self, changed: u16) -> Result<(), Error> {
-        self.appointments
-            .update(changed | self.changed_peripherals, &self.mcu)?;
+        let serial = self.serial_deadline()?;
+        self.appointments.update(
+            changed | self.changed_peripherals | schedule::SSU,
+            &self.mcu,
+            serial,
+        )?;
         self.changed_peripherals = 0;
         self.next_devices = [
             self.power.deadline(),
@@ -755,6 +760,7 @@ impl Machine {
         )
     }
     fn devices_at_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        self.sync_serial_before(self.now, out)?;
         self.last_effect = self.now;
         self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
         let mut due = self.appointments.due(self.now);
@@ -848,19 +854,8 @@ impl Machine {
             self.mcu.iic.advance(self.now, &self.mcu.clocks)?;
         }
         if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
-            let edge = self.mcu.ssu.advance(self.now, &self.mcu.clocks)?;
-            let sampled = self.settle_board(due == schedule::ALL, out)?;
-            if let Some(edge) = edge {
-                if edge.sample {
-                    self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
-                }
-                let pins = self.mcu.ssu.pins();
-                self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
-                // Completing a frame can release selection and data drivers.
-                if self.mcu.ssu.pins() != pins {
-                    self.settle_board(due == schedule::ALL, out)?;
-                }
-            }
+            self.serial_edge(due == schedule::ALL, out)?;
+            due |= schedule::SSU;
         } else {
             self.settle_board(due == schedule::ALL, out)?;
         }
@@ -988,6 +983,7 @@ impl Machine {
             .map_or(Ok(None), |r| r.wait().deadline(&self.mcu.clocks))
     }
     fn enter_sleep(&mut self, out: &mut dyn Output) -> Result<(), Error> {
+        self.sync_serial(out)?;
         // A clock transition is itself an effect boundary. Peripherals which
         // keep running through it must consume the old clock/gate interval,
         // even when no other device happened to schedule an appointment here.

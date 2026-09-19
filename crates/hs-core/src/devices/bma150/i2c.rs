@@ -55,6 +55,14 @@ impl Default for State {
 }
 
 impl State {
+    pub(super) fn effect_edges(&self) -> u8 {
+        match self.phase {
+            Phase::Idle => 15,
+            Phase::Receive(_) => (8 - self.bits) * 2 - 1,
+            _ => 1,
+        }
+    }
+
     pub(super) fn abort(&mut self) {
         *self = Self {
             pointer: self.pointer,
