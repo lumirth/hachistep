@@ -37,13 +37,13 @@ hardware it accesses into the relevant topics, including shared clocks, pins and
 The [design contract](DESIGN.md) describes the intended architecture; these accuracy
 pages describe the implemented behavior and the evidence supporting it.
 
-## Consequential gaps and refinements
+## Known gaps and model limits
 
 These are the main limitations currently identified. Each linked topic gives the
 mechanism, basis and narrower questions. The table is an entry point, not a complete
 inventory of possible defects or a fixed order of work.
 
-| Area | What remains | Consequence |
+| Area | Gap or model limit | Consequence |
 | --- | --- | --- |
 | [LCD electrical controls](accuracy/lcd.md#limits-and-open-questions) | Supply, regulator, booster, bias and trim fields have stored values but incomplete electrical effects. | Firmware can change a control without the corresponding change in displayed drive or contrast. |
 | [Sensor calibration](accuracy/bma150.md#offset-calibration-and-gain-fields) | Gain, temperature trim and some protected fields lack an established transfer function. | Offset calibration works, but other calibration writes cannot yet predict their physical response. |
@@ -58,6 +58,10 @@ Known omissions deserve implementation work even when retail firmware rarely exe
 them. A plausible approximation can remain useful while we refine its parameters.
 Choose work by its consequences for ordinary use, custom firmware, performance and
 maintainability; the length of a topic or its test count does not set its priority.
+
+Nominal analog parameters describe a representative device. Differences between
+individual units become implementation work when their effects matter to the supported
+use, such as a firmware decision near a voltage or motion threshold.
 
 ## Understanding the evidence
 
@@ -88,6 +92,11 @@ being listed does not mean every relevant passage has been understood or applied
 
 Strong inference can justify implementation. Physical measurement can strengthen or
 correct it, but new measurements are not a prerequisite for supported behavior.
+An inferred mechanism can be considered supported when it explains the applicable
+sources and observed firmware behavior coherently. Keep its basis beside the mechanism;
+reopen it when conflicting evidence or a consequential alternative gives a reason.
+Inference alone is not an implementation gap.
+
 Search applicable manuals, amendments, vendor examples, board evidence and the matching
 firmware before describing a mechanism as undocumented. Preserve conflicts and the
 reason for resolving them in the detailed topic.

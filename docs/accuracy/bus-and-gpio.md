@@ -174,9 +174,9 @@ specifies 0.4 V at 3 mA sinking and a 0.4-V drop at 1 mA sourcing; [ST tables
 at the 2.5-V test point. This supports a small deterministic default for conflicting
 outputs. Those limits are not current/voltage curves, so this rule does not establish
 the actual contention voltage or model heating and supply droop. Keep the choice local
-to the shared external data net and revise it from measured loaded outputs. Deselecting
-a device releases its driver immediately; neither parser loses progress merely because
-the other device also drives the net.
+to the shared external data net. Component drive curves, circuit evidence or loaded
+output measurements can refine it. Deselecting a device releases its driver immediately;
+neither parser loses progress merely because the other device also drives the net.
 
 Analog fixture voltages project to digital input levels at Vcc/2. This is a selected
 threshold for the digital fixture interface, without a pad-loading or input-hysteresis

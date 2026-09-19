@@ -18,13 +18,14 @@ Interrupt handling includes reset's first-instruction deferral, enable-write rac
 CCR instruction deferral and EEPMOV.W's NMI boundaries. Target manuals, Renesas Q&A,
 GNU assembler encodings and independent MAME code support the interpretations.
 
-## Limits and open questions
-
 Some source conflicts have specific resolutions: sticky SUBX Z follows the target
 flag table; DAA includes reachable decimal states omitted from the printed table;
 MOV.L stores accept the alternative selector supported by the conflicting manual and
-toolchain encodings. Those resolutions are documented individually. Division by zero
-retains the destination, overflow retains truncated result fields, and unspecified
+toolchain encodings. Their reasoning is recorded in [encodings and arithmetic](cpu-arithmetic.md).
+
+## Limits and open questions
+
+Division by zero retains the destination, overflow retains truncated result fields, and unspecified
 decimal H/V flags retain their old values. The documented flags have a firmer basis
 than these selected result bits. Firmware depending on unspecified results or
 unassigned encodings needs further investigation.

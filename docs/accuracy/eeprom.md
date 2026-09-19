@@ -59,20 +59,19 @@ the order of cell transitions unspecified. The model uses these inferred rules:
 
 1. Before the terminating CS edge, data exists only in the volatile page
    buffer. Power loss discards it without changing cells.
-2. At acceptance, freeze the addressed-byte mask, original values, targets,
-   start time, duration, and physical-part parameters. Maintain WIP and WEL
-   through programming. Treat a page as one operation over its selected cells,
+2. At acceptance, retain the addressed-byte mask, original values, targets,
+   start time and deadline. Maintain WIP and WEL through programming.
+   Treat a page as one operation over its selected cells,
    not 128 serial byte operations.
 3. During erase, an affected old byte `O` becomes `O & ~E(t)`, where `E` is a
    monotonic mask of erased cells. Once erase ends, programming proceeds from
    zero as `T & P(t)`, where `T` is the target and `P` is a monotonic completion
    mask. Unaddressed bytes remain untouched.
-4. Use a deterministic threshold schedule associated with the physical part,
-   address, and bit. A half-duration split and a stable distribution of cell
-   thresholds within each phase are selected approximations; neither is a
-   measured ST timing parameter. Keep those choices centralized so evidence
-   can refine them without replacing the model. Do not base them on host call
-   count or consume new randomness when loading a save state.
+4. Derive each bit's threshold from its cell address using a fixed deterministic
+   rule. Status cells use a separate address key. The half-duration split and
+   threshold distribution are selected approximations. The current model has
+   no per-unit threshold calibration or random seed. These choices live in
+   `WriteCycle`, so evidence can refine them without changing the serial protocol.
 5. On supply collapse, evaluate the partial cells, report the resulting
    persistent changes, and cancel the internal operation. On power-up, reload
    those cells and reset volatile protocol state. Successful completion always
@@ -87,10 +86,11 @@ handling cannot accidentally bypass it.
 
 This needs no per-cell scheduler events or floating-point simulation. Store the
 operation descriptor and compute cell thresholds only when an observation requires them,
-especially power loss and completion. Snapshotting preserves the descriptor, physical
-parameters, and time; EEPROM-save extraction must explicitly settle/project the
-persistent cells it represents. A supply value that disables the chip must reach this
-transition, rather than merely updating a machine condition field.
+especially power loss and completion. Snapshotting preserves the descriptor, cells,
+buffers and time. The configured write duration defaults to 5 ms; each accepted operation
+retains its deadline. EEPROM-save extraction projects the persistent cells at the
+current time without committing or ending the pending write. Supply loss reaches the
+device's interruption handler, which commits the resulting cells and ends programming.
 
 The firmware makes this behavior useful. Its [page writer][pw-page] polls WIP, issues
 WREN, transmits 128 bytes, raises CS, and returns. Its

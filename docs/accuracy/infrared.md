@@ -10,13 +10,20 @@ emission. These connections are supported by matching firmware sequences. Applic
 transport signals between independently running devices; firmware implements discovery,
 packets, retry timing and game-specific exchanges.
 
+With the interface enabled and P31 configured for reception, supplied incident light
+drives P31 low, including during local emission. The core neither feeds its emitted
+light back into reception nor blanks externally supplied light during transmission.
+An application can supply echo through the same incident-light input.
+
 ## Limits and open questions
 
-The current board path uses digital gating and polarity. It does not implement a
-characterized optical receiver's pulse shaping, turnaround recovery, ambient-light
-response or sustained-transmit cutoff. The actual transceiver remains unidentified.
+The current board path uses digital gating and polarity. It does not implement
+optical receiver pulse shaping, turnaround recovery, ambient-light response or
+sustained-transmit cutoff. The actual transceiver remains unidentified.
 ROHM and Vishay documents establish plausible mechanisms and useful comparisons;
 their specific timings and self-echo behavior are not established Pokéwalker properties.
+A coherent inference from those mechanisms, board evidence and firmware can support
+a more complete optical model without recovering the exact part number.
 
 Emulated walker-to-walker exchange exercises the firmware and signal interface.
 It does not by itself establish communication with an HGSS cartridge or a physical
@@ -69,9 +76,10 @@ The firmware supplies an important constraint on self-echo. `SendPacket` waits f
 waits for two Timer W counts, then drains a pending receive byte. However, `IrBegin`
 sends its single CONNECT probe without that drain. A successfully decoded echo of this
 probe would be treated as another walker by `IrProtocolTick`. Therefore the drain alone
-does not justify unconditional self-echo. Suppression during local transmission is a
-supported inference; echo-on, receiver blanking, and recovery need to be tested together
-against this complete sequence. [Send/start/receive routines][pw-ir].
+does not justify unconditional self-echo. This supports the current absence of automatic
+echo, while leaving its physical cause open. It does not establish blanket suppression
+of incoming light during transmission. Any proposed echo or recovery model must also
+explain this probe sequence. [Send/start/receive routines][pw-ir].
 
 Useful physical observations include P30/P31/P32 plus emitted light during startup, a
 local probe, sustained GPIO TX, and the first remote reply. Those distinguish multiple
@@ -117,7 +125,8 @@ pacing and any test-environment scheduling remain outside the core.
 
 ## Implementation and checks
 
-The [board](../../crates/hs-core/src/machine.rs) resolves optical gating and polarity;
+The [GPIO resolver](../../crates/hs-core/src/mcu/gpio.rs) applies optical gating and
+polarity, and the [machine](../../crates/hs-core/src/machine.rs) propagates the signals;
 [SCI and IrDA](sci.md) explains MCU encoding and decoding. Hachiware's
 [serial cases](https://github.com/lumirth/hachiware/blob/main/cases/serial.py) exercise
 timed signal input/output. The [retail peer test](../../crates/hs-core/tests/retail_link.rs)

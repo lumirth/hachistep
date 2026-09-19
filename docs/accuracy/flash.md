@@ -19,8 +19,9 @@ behavior but limits predictions of exact interrupted bits and marginal pulse suc
 Review source timing bounds, protection transitions and the justification for the
 distribution before expanding its complexity.
 
-Construction supports ordinary user-mode reset. Manufacturer/test strap selections
-return `UnsupportedResetMode`; no manufacturer ROM program is substituted by the core.
+At qualified external reset release, TEST high or NMI low selects an unsupported reset
+mode and returns `UnsupportedResetMode`. Ordinary user-mode reset executes the supplied
+flash image; the core supplies no manufacturer ROM replacement.
 That boundary is separate from guest-controlled flash hardware. Unavailable ROM contents
 do not justify implementing their software procedures as peripheral behavior.
 

@@ -45,7 +45,8 @@ display on an otherwise unchanged board. MCU RES/watchdog reset, BMA soft reset,
 software reset are separate existing mechanisms. A shared-rail dip can affect chips
 differently because their internal domains differ. Nor should the label RES2B alone be
 used to connect MCU reset to LCD RESETB: retain the existing MCU-only meaning of
-`ResetPin` until an actual net connection establishes more.
+`ResetPin` unless board or firmware evidence supports a shared connection. A coherent
+circuit inference is sufficient; a complete measured netlist is not required.
 
 ## Primary constraints
 
