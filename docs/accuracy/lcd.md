@@ -10,6 +10,9 @@ and power save have different effects. The display API supplies interpreted pixe
 digital scan drive. Oscillator frequency/control settings affect the scan. The
 datasheet and `pw` initialization/fill routines establish geometry and plane order.
 
+PWM varies pulse width and FRC varies the pattern over successive frames to produce
+gray levels. Scan phase records the controller's progress through those pulses and rows.
+
 ## Limits and open questions
 
 There is a known implementation gap in electrical controls. Converter/regulator/follower
@@ -19,13 +22,15 @@ effects for these controls. Firmware changing them can therefore produce an inac
 display result. Review the supplied voltage model and frontend information together;
 the frontend should receive interpreted hardware output.
 
-OTP control is also stored without a fusing model. Fusing requires an external programming
-voltage whose delivery on this board is not established. Determine reachability before
-adding a programming interface. External OSC1 selection stops internal advancement;
+One-time-programmable (OTP) control is also stored without modeling how its bits are
+permanently programmed, or fused. Fusing requires an external programming voltage whose
+delivery on this board is not established. Determine whether the board can supply it
+before adding a programming interface. External OSC1 selection stops internal scanning;
 the board has no established external OSC1 driver.
 
-RAM latch granularity, geometry changes during scan, some command/scan ties and restart
-phase use explicit inferences. Pixel intensity expresses normalized programmed drive;
+The amount of RAM captured at each scan step, geometry changes during scanning,
+commands completing at scan transitions and restart phase use explicit inferences.
+Pixel intensity expresses normalized programmed drive;
 it is not a calibrated brightness curve. Glass persistence and optical appearance are
 presentation work when a frontend requires them. Existing supply-control omissions
 remain hardware questions regardless of that future presentation work.
@@ -69,13 +74,14 @@ calculation is the clock divisor; the FRC sequence spans three such frames. Thes
 
 The pixel API averages each programmed palette entry's valid pulse widths over the
 selected FRC frames and normalizes the result to 0..255. Retail's 0/5/7/9 widths
-therefore produce 0/142/198/255. This view projects current RAM and geometry;
+therefore produce 0/142/198/255. This view calculates pixels from current RAM and geometry;
 `display_drive` provides the scan timing and latched output. The controller voltage effects described above remain core work. A frontend can
 apply a glass-response model to the resulting drive.
 
 The controller retains scan phase, frame/FRC index, line counter, latched start line,
-current output latch, inversion phase, and the clock/control projection. Settle the old
-projection before a mutation, then apply the command at its actual completion time. A
+current output latch, inversion phase, and the clock/control projection used to calculate
+scanning. Advance the scan under the old settings up to the time of a change, then apply
+the command at its actual completion time. A
 RAM write must not retroactively rewrite the output already latched. The scan section
 below resolves the latch granularity. Crop through board wiring after controller
 mapping; centered COM32–95 happens to hide some common-direction mistakes, but that
@@ -83,8 +89,8 @@ coincidence is not the mapping rule. Keep icon enable independent of the selecte
 page. Expose interpreted controller changes or requested pixels without making the
 frontend decode commands.
 
-Use arithmetic projection for stable scan spans. No global scheduler event per PWM edge
-is needed. Preserve the state needed to resume a partially scanned frame, including when
+Calculate scanning over an interval with unchanged settings directly, without scheduling
+every PWM edge. Preserve the state needed to resume a partially scanned frame, including when
 firmware changes RAM or parameters mid-frame. The unresolved electrical controls and their settling behavior remain hardware work.
 Frontend work can refine how the resulting drive is presented.
 

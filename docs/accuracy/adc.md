@@ -11,7 +11,8 @@ The manual and subclock application note support conversion lengths and power be
 
 ## Limits and open questions
 
-The acquisition aperture occupies four of 31 converter steps as a selected placement.
+The sampling interval, or acquisition aperture, occupies four of 31 converter steps
+in the selected model.
 Live channel/clock changes, premature conversion after module enable and a disconnected
 input use the retained capacitor and conversion state. These choices affect fast analog
 changes and sequences outside the prescribed initialization procedure.

@@ -1,16 +1,16 @@
 # Hardware accuracy
 
 HachiStep models the Pokéwalker for ordinary use and custom firmware development.
-This overview identifies supported behavior and consequential gaps. The topic pages
-combine our understanding of the hardware with the implementation, its limits and the
+This overview identifies supported behavior and gaps that affect firmware or users.
+The topic pages combine our understanding of the hardware with the implementation, its limits and the
 reasoning behind it. The [source catalogue](SOURCES.md) identifies the supporting
 material and further research leads.
 
 ## What can I rely on?
 
 The core implements the target CPU, memory map, clocks, MCU peripherals, connected
-sensor, display controller, EEPROM, infrared pins and power/reset domains. Retail and
-custom firmware use the same mechanisms. Instruction ordering, operations in progress
+sensor, display controller, EEPROM, infrared pins and the effects of power and reset.
+Retail and custom firmware use the same mechanisms. Instruction ordering, operations in progress
 and device timing remain observable through execution and save states.
 
 Support for a component does not establish every effect of every configuration.
@@ -40,17 +40,17 @@ pages describe the implemented behavior and the evidence supporting it.
 ## Known gaps and model limits
 
 These are the main limitations currently identified. Each linked topic gives the
-mechanism, basis and narrower questions. The table is an entry point, not a complete
-inventory of possible defects or a fixed order of work.
+behavior, supporting evidence and specific open questions. Use the table to find the
+relevant topic; it does not prescribe an order of work or list every possible defect.
 
 | Area | Gap or model limit | Consequence |
 | --- | --- | --- |
 | [LCD electrical controls](accuracy/lcd.md#limits-and-open-questions) | Supply, regulator, booster, bias and trim fields have stored values but incomplete electrical effects. | Firmware can change a control without the corresponding change in displayed drive or contrast. |
-| [Sensor calibration](accuracy/bma150.md#offset-calibration-and-gain-fields) | Gain, temperature trim and some protected fields lack an established transfer function. | Offset calibration works, but other calibration writes cannot yet predict their physical response. |
-| [Optical transceiver](accuracy/infrared.md#optical-transceiver) | The component is unidentified; the current connection uses digital gating without receiver shaping, recovery or transmit cutoff. | Two emulated walkers communicating does not establish agreement with another kind of peer or marginal optical signals. |
+| [Sensor calibration](accuracy/bma150.md#offset-calibration-and-gain-fields) | Gain, temperature trim and some protected fields are stored, but their effect on sensor readings is not established. | Offset calibration works, but other calibration writes cannot yet predict their physical response. |
+| [Optical transceiver](accuracy/infrared.md#optical-transceiver) | The model handles signal levels and shutdown. It does not yet reshape received pulses, delay reception after transmission or cut off prolonged transmission. The component is unidentified. | Two emulated walkers communicating does not establish agreement with another kind of peer or with weak or distorted optical signals. |
 | [Battery sensing](accuracy/adc.md#selected-nominal-circuit-and-defaults) | Firmware constrains the response, but the circuit and its nominal voltage drop remain inferred. | ADC results for supplied pin voltages have a stronger basis than predicted battery-warning voltage. |
-| [Power and retention](accuracy/power-and-reset.md) | Reset capacitance, first oscillator edges, retention loss and some board connections use selected approximations. | Short supply dips and marginal startup sequences need care when drawing conclusions about a physical unit. |
-| [EEPROM](accuracy/eeprom.md#a-compact-default-for-interrupted-programming) and [flash](accuracy/flash.md#concrete-nominal-partial-progress-model) | Partial programming has a causal model, but cell thresholds and exposure distributions are approximations. | Recovery experiments exercise interrupted operations without predicting the exact damaged bits of an individual device. |
+| [Power and retention](accuracy/power-and-reset.md) | Reset capacitance, oscillator startup, loss of stored state at low voltage and some board connections use selected approximations. | Short supply dips and startup near electrical limits need care when drawing conclusions about a physical unit. |
+| [EEPROM](accuracy/eeprom.md#a-compact-default-for-interrupted-programming) and [flash](accuracy/flash.md#concrete-nominal-partial-progress-model) | The model tracks erase/program progress. The time or pulse exposure needed to change individual bits is approximate. | Recovery experiments exercise interrupted operations without predicting the exact damaged bits of an individual device. |
 | [Live changes and interactions](accuracy/interactions.md#review-boundaries) | Some clock, serial, capture and reset races have documented rules; others use local inferences or have narrower checks. | A correct isolated operation does not establish every combination with another active device. |
 | [Physical presentation](accuracy/buttons-and-buzzer.md) | Digital drive is available; glass response and piezo/enclosure acoustics are not calibrated. | Frontends can present the device, while a physical appearance or acoustic model remains separate work. |
 
@@ -59,7 +59,7 @@ them. A plausible approximation can remain useful while we refine its parameters
 Choose work by its consequences for ordinary use, custom firmware, performance and
 maintainability; the length of a topic or its test count does not set its priority.
 
-Nominal analog parameters describe a representative device. Differences between
+The selected analog values describe a representative device. Differences between
 individual units become implementation work when their effects matter to the supported
 use, such as a firmware decision near a voltage or motion threshold.
 
@@ -77,12 +77,12 @@ strong implementation basis in firmware, vendor code and circuit reasoning.
 | A hardware question remains unresolved. | State what the sources establish, what is still unclear, and useful avenues for resolving it. |
 | An area has received limited examination. | Describe the boundary of that examination without declaring the area correct or defective. |
 
-These distinctions make the known knowns and known gaps useful to a reader. Unknown
-unknowns cannot be enumerated. We can expose where our reasoning and checks end,
-especially at interactions between components, so those boundaries remain visible.
-A successful retail workload establishes less about unused hardware modes than a
-focused diagnostic of those modes. Exact restoration establishes consistency of the
-modeled machine, independently of its agreement with the physical device.
+These distinctions show what we understand and where work remains. We cannot list
+problems we have not discovered, but we can explain which behavior we have examined,
+especially where components interact. Running retail firmware tells us less about
+unused hardware modes than a diagnostic written to exercise those modes. Exact save
+state restoration shows that emulation resumes consistently; agreement with the
+physical device needs its own evidence.
 
 Useful knowledge can also exist without reaching the implementation or these pages.
 A cited application note may contain an overlooked timing diagram; a firmware routine
@@ -94,7 +94,8 @@ Strong inference can justify implementation. Physical measurement can strengthen
 correct it, but new measurements are not a prerequisite for supported behavior.
 An inferred mechanism can be considered supported when it explains the applicable
 sources and observed firmware behavior coherently. Keep its basis beside the mechanism;
-reopen it when conflicting evidence or a consequential alternative gives a reason.
+revisit it when evidence conflicts or another plausible interpretation would change
+behavior that matters to firmware or users.
 Inference alone is not an implementation gap.
 
 Search applicable manuals, amendments, vendor examples, board evidence and the matching

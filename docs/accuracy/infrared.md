@@ -60,7 +60,7 @@ inference.
 
 | Mechanism | Manufacturer evidence | Consequence for HachiStep |
 | --- | --- | --- |
-| Receiver pulse shaping | ROHM RPM871-H14 gives a typical 2.3 microsecond RXD pulse for both shorter and longer incident pulses. | Incident light and the voltage on P31 need not have identical widths. An optical owner can retain a bounded pulse obligation. |
+| Receiver pulse shaping | ROHM RPM871-H14 gives a typical 2.3 microsecond RXD pulse for both shorter and longer incident pulses. | Incident light and the voltage on P31 need not have identical widths. The transceiver model can track when an output pulse ends separately from when the incoming light ends. |
 | TX protection | The same ROHM part terminates prolonged emission after typically 45 microseconds. | GPIO-held TX and stopped-clock stretched pulses can differ from indefinitely asserted light. The actual threshold needs board evidence or an explicit nominal inference. |
 | Receiver recovery | RPM871-H14 specifies typical/max turnaround latency of 100/300 microseconds. | Recovery is physical elapsed time after transmission, distinct from an SCI clock count. |
 | Shutdown and AC detection | Vishay's application note describes disabled reception in shutdown and a receiver unable to reproduce continuous DC illumination. | Shutdown, sustained light, and restart have physical state; a permanent active SCI input is not a general optical model. |

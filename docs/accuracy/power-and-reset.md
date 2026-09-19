@@ -5,23 +5,23 @@
 ## Supported behavior
 
 Supply changes reach the MCU and external chips. The model distinguishes reset,
-clock startup, chip availability, volatile retention and interrupted persistent writes.
+clock startup, chip availability, retention of volatile state and interrupted persistent writes.
 RES release and watchdog reset combine, and external devices can progress while the
 CPU is held. MCU reset does not automatically cold-reset every peripheral chip.
 
 ## Limits and open questions
 
-The common battery-derived rail follows the available board and firmware evidence.
-Reset charging uses a nominal RC response; volatile loss uses an accumulated
-low-voltage exposure. These parameters, deterministic cold contents and chip availability
-thresholds are approximations rather than a reconstructed complete analog circuit.
+The shared supply from the battery follows the available board and firmware evidence.
+Reset timing uses a resistor-capacitor (RC) charging model. Loss of volatile state depends
+on how low the voltage falls and how long it stays there. The component values, contents
+after state loss and voltages at which chips stop working are selected approximations.
 Some startup delays use datasheet maxima. The model does not calculate a CR2032's
 discharge curve or load-dependent rail droop; supplied voltage describes those conditions.
 
 RES2B/VCI pad identities and peripheral reset connectivity remain incompletely known.
 The selected MCU-only external reset must not silently become a common reset net based
 on a pad label. Exact short-collapse retention and marginal-voltage operation need
-stronger board/component evidence. Ordinary digital reset domains have more direct
+stronger board/component evidence. Which digital state each reset clears has more direct
 support than these analog boundaries.
 
 ## Board evidence and independent chip control

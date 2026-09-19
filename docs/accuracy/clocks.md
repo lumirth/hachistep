@@ -4,11 +4,12 @@
 
 ## Supported behavior
 
-The model retains oscillator lifetimes, source phase, shared prescalers and peripheral
-clock obligations. Active, sleep, watch, subactive, subsleep and standby apply their
-documented clock and retention rules. Direct transitions pass through the intermediate
-mode and count stabilization in oscillator cycles. A stopped source suspends its
-remaining work. Clock outputs pass through the pin mux and can affect connected chips.
+The model tracks when oscillators run, their phase, shared clock dividers and how many
+clock edges each peripheral still needs to finish its work. Active, sleep, watch,
+subactive, subsleep and standby apply the documented rules for running clocks and
+retaining state. Direct transitions pass through the intermediate mode and count
+stabilization in oscillator cycles. A stopped source suspends its
+remaining work. Pin configuration can route clock outputs to connected chips.
 
 ## Limits and open questions
 
@@ -53,9 +54,9 @@ the 1024-state stabilization wait.
 ## Shared divider phases
 
 Prescaler S has the §4.4.1 reset/stop domain, and W retains its §4.4.2 standby phase
-independently of the upstream phiW/4 divider. Each output keeps its emitted-edge ordinal
-across reset; phase reset cannot rewind a peripheral's consumed work. CPU reference
-selection is separate from main phi. Timer W's input synchronizer and SSU
+independently of the upstream phiW/4 divider. Each output keeps a count of the edges it
+has emitted across reset; resetting the phase cannot undo work a peripheral has already
+completed. CPU reference selection is separate from main phi. Timer W's input synchronizer and SSU
 holding-register load use that CPU reference; main-clock peripherals do not inherit the
 subactive CPU's watch frequency.
 
@@ -76,9 +77,9 @@ rather than an analog feedback-resistor simulation.
 
 Source lifetimes follow §5.5. ROSC stops when WDT, reset and the subclock generator all
 release it. Stopped sources retain their emitted count and create no virtual elapsed
-edges. Restart establishes a fresh source phase. Consumers retain their unfinished edge
-obligations, including a partially transmitted watch-clock SCI character. Source
-reconfiguration refreshes clock projections without restarting the peripheral operation.
+edges. Restart establishes a fresh source phase. Peripherals retain the number of edges
+still needed, including those for a partially transmitted watch-clock SCI character.
+Changing a source recalculates when those edges will occur without restarting the operation.
 Programmed SYSCR divisors still latch through SLEEP.
 
 Table 5.3, printed p.86, specifically lists the subclock oscillator as functions/halted

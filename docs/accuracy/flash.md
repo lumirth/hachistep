@@ -5,22 +5,24 @@
 ## Supported behavior
 
 The flash model uses the target's six erase blocks and 128-byte program latch. Guest
-instructions select setup, pulse and verify operations. Protection, settling and
-interrupted exposure affect the same array from which the CPU fetches. Firmware owns
-retry loops and programming algorithms. Retail's external EEPROM driver does not
+instructions select setup, pulse and verify operations. Protection, the time needed for
+electrical settling, and interrupted erase/program pulses affect the same array from
+which the CPU fetches instructions. Firmware owns retry loops and programming algorithms.
+Retail's external EEPROM driver does not
 validate these internal-flash operations.
 
 ## Limits and open questions
 
-Normal reads and verify reads use distinct cell thresholds. The selected distribution
-and exposure scale are based on aggregate timing and the documented programming
-mechanism, without a measured per-cell distribution. This supports partial-progress
-behavior but limits predictions of exact interrupted bits and marginal pulse success.
+Normal reads and verify reads use different thresholds for deciding a bit's value.
+Each cell accumulates exposure to erase/program pulses. The model derives the amount
+needed to cross a threshold from overall timing and the documented programming mechanism.
+How this varies between cells is an approximation. It supports partially completed
+operations but limits predictions of the exact bits affected by interruption or short pulses.
 Review source timing bounds, protection transitions and the justification for the
 distribution before expanding its complexity.
 
-At qualified external reset release, TEST high or NMI low selects an unsupported reset
-mode and returns `UnsupportedResetMode`. Ordinary user-mode reset executes the supplied
+After the required external reset release delay, TEST high or NMI low selects an
+unsupported reset mode and returns `UnsupportedResetMode`. Ordinary user-mode reset executes the supplied
 flash image; the core supplies no manufacturer ROM replacement.
 That boundary is separate from guest-controlled flash hardware. Unavailable ROM contents
 do not justify implementing their software procedures as peripheral behavior.
@@ -63,7 +65,7 @@ implementation][pw-eeprom])
 
 ## One controller, with persistent cell progress
 
-Keep these authoritative facts:
+Retain the following state:
 
 - The nonvolatile array and intermediate cell exposure, where present.
 - FLMCR1, FLER, EBR1, PDWND and FLSHE.

@@ -81,14 +81,14 @@ the order of cell transitions unspecified. The model uses these inferred rules:
 Apply the same inferred mechanism to the writable nonvolatile status cells, restricted
 to `0x8C`; leave the array alone during WRSR. Normal status-register visibility changes
 at completion; after interrupted programming, cold start loads the resulting persistent
-status. Keep the interruption calculation in the device owner so machine-level power
+status. Keep the interruption calculation in the EEPROM implementation so machine-level power
 handling cannot accidentally bypass it.
 
 This needs no per-cell scheduler events or floating-point simulation. Store the
-operation descriptor and compute cell thresholds only when an observation requires them,
-especially power loss and completion. Snapshotting preserves the descriptor, cells,
+pending write and compute cell thresholds only when an observation requires them,
+especially power loss and completion. A save state preserves the pending write, cells,
 buffers and time. The configured write duration defaults to 5 ms; each accepted operation
-retains its deadline. EEPROM-save extraction projects the persistent cells at the
+retains its deadline. Exporting an EEPROM save calculates the cell values at the
 current time without committing or ending the pending write. Supply loss reaches the
 device's interruption handler, which commits the resulting cells and ends programming.
 
