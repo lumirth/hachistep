@@ -27,6 +27,16 @@ pub struct Pins {
     /// SOOS also applies to GPIO use of SSO/SSI, independently of TE/RE.
     pub data_open_drain: bool,
 }
+/// Data accesses can change IRQ flags independently of the next wire action.
+#[derive(Default)]
+pub(crate) struct DataEffects {
+    pub flags: bool,
+    pub scheduled: bool,
+}
+struct LoadRequest {
+    disarm_empty_slave: bool,
+    schedule: bool,
+}
 pub(crate) struct Prefix {
     pub count: u8,
     pub clock: u16,
@@ -104,6 +114,12 @@ impl Default for Ssu {
     }
 }
 impl Ssu {
+    /// Data registers hold completed receive data and the next transmit byte.
+    /// Quiet edges use the independent latched shifter; controls and live SOL
+    /// still require the preceding wire history to be settled.
+    pub(crate) fn retained_data(address: u16, write: bool) -> bool {
+        matches!((address, write), (0xf0e9, false) | (0xf0eb, true))
+    }
     /// SSCRH includes live MOSI. RDR consumption can start reception. Other
     /// reads expose retained registers or flags changed at effect appointments.
     pub(crate) fn reads_shift(address: u16) -> bool {
@@ -231,29 +247,42 @@ impl Ssu {
         let shift = if self.msb_first { 7 - index } else { index };
         self.tx & (1u8 << shift) != 0
     }
-    fn schedule_load(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
-        let overrun = self.status & 0x40 != 0;
-        let transmit =
-            self.enable & 0x80 != 0 && self.status & 4 == 0 && (!self.master() || !overrun);
+    fn load_request(&self, status: u8) -> LoadRequest {
+        let overrun = status & 0x40 != 0;
+        let transmit = self.enable & 0x80 != 0 && status & 4 == 0 && (!self.master() || !overrun);
         let receive = self.enable & 0x40 != 0
             && !overrun
             && (!self.master() || (self.enable & 0x80 == 0 && self.receive_started));
-        // A receive-enabled slave can be waiting for its very first external
-        // edge when software supplies transmit data. The empty shifter can
-        // still accept that byte; preparing reception did not consume a frame.
-        if !self.master() && self.active && self.edges == 0 && !self.transmitting && transmit {
+        // A receive-enabled slave awaiting its first external edge has not yet
+        // consumed a frame. Transmit data can replace that empty preparation.
+        let disarm_empty_slave =
+            !self.master() && self.active && self.edges == 0 && !self.transmitting && transmit;
+        LoadRequest {
+            disarm_empty_slave,
+            schedule: (!self.active || disarm_empty_slave)
+                && self.next.is_none()
+                && (transmit || receive)
+                && status & 1 == 0
+                && self.gate,
+        }
+    }
+    fn apply_load(
+        &mut self,
+        request: LoadRequest,
+        now: impl FnOnce() -> Result<Time, Error>,
+        clocks: &Clocks,
+    ) -> Result<bool, Error> {
+        if request.disarm_empty_slave {
             self.active = false;
         }
-        if !self.active
-            && self.next.is_none()
-            && (transmit || receive)
-            && self.status & 1 == 0
-            && self.gate
-        {
+        if request.schedule {
             self.phase = Phase::Load;
-            self.next = Some(ClockWait::after(now, 1, Tap::cpu(), clocks)?);
+            self.next = Some(ClockWait::after(now()?, 1, Tap::cpu(), clocks)?);
         }
-        Ok(())
+        Ok(request.schedule)
+    }
+    fn schedule_load(&mut self, now: Time, clocks: &Clocks) -> Result<bool, Error> {
+        self.apply_load(self.load_request(self.status), || Ok(now), clocks)
     }
     pub fn set_gate(&mut self, gate: bool, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.gate == gate {
@@ -267,7 +296,7 @@ impl Ssu {
             }
         }
         self.gate = gate;
-        self.schedule_load(now, clocks)
+        self.schedule_load(now, clocks).map(|_| ())
     }
     pub fn interrupt(&self) -> bool {
         self.interrupt_with_enable(0)
@@ -294,20 +323,31 @@ impl Ssu {
     pub fn read(&mut self, address: u16, now: Time, clocks: &Clocks) -> Result<u8, Error> {
         self.read_at(address, || Ok(now), clocks)
     }
-    /// Retained observations qualify flags without consuming a clock. Starting
-    /// reception obtains the access timestamp before changing the owner state.
     pub(crate) fn read_at(
         &mut self,
         address: u16,
         now: impl FnOnce() -> Result<Time, Error>,
         clocks: &Clocks,
     ) -> Result<u8, Error> {
+        self.read_transaction(address, now, clocks)
+            .map(|(value, _)| value)
+    }
+    /// Flag qualification and holding state remain canonical SSU effects.
+    /// A new load appointment returns to Machine before another CPU effect.
+    pub(crate) fn read_transaction(
+        &mut self,
+        address: u16,
+        now: impl FnOnce() -> Result<Time, Error>,
+        clocks: &Clocks,
+    ) -> Result<(u8, DataEffects), Error> {
         let receive_at = if address == 0xf0e9 && self.enable & 0xc0 == 0x40 {
             Some(now()?)
         } else {
             None
         };
         let v = self.peek(address);
+        let old_status = self.status;
+        let mut scheduled = false;
         if address == 0xf0e4 {
             self.seen = v;
         }
@@ -316,10 +356,38 @@ impl Ssu {
             self.seen &= !2;
             if let Some(now) = receive_at {
                 self.receive_started = true;
-                self.schedule_load(now, clocks)?;
+                scheduled = self.schedule_load(now, clocks)?;
             }
         }
-        Ok(v)
+        Ok((
+            v,
+            DataEffects {
+                flags: old_status != self.status,
+                scheduled,
+            },
+        ))
+    }
+    pub(crate) fn write_data_transaction(
+        &mut self,
+        value: u8,
+        now: impl FnOnce() -> Result<Time, Error>,
+        clocks: &Clocks,
+    ) -> Result<DataEffects, Error> {
+        let status = self.status & !12;
+        let request = self.load_request(status);
+        // An active frame reads its latched tx, not this holding register.
+        // Obtain any needed observation time before changing the access state.
+        let at = if request.schedule { Some(now()?) } else { None };
+        let flags = self.status != status;
+        self.tdr = value;
+        self.status = status;
+        self.seen &= !12;
+        let scheduled = self.apply_load(
+            request,
+            || at.ok_or(Error::Internal("SSU load without timestamp")),
+            clocks,
+        )?;
+        Ok(DataEffects { flags, scheduled })
     }
     pub fn write(
         &mut self,
@@ -329,6 +397,17 @@ impl Ssu {
         now: Time,
         clocks: &Clocks,
     ) -> Result<(), Error> {
+        self.write_transaction(address, value, mov, now, clocks)
+            .map(|_| ())
+    }
+    pub(crate) fn write_transaction(
+        &mut self,
+        address: u16,
+        value: u8,
+        mov: bool,
+        now: Time,
+        clocks: &Clocks,
+    ) -> Result<bool, Error> {
         match address {
             0xf0e0 => {
                 let was_master = self.master();
@@ -402,9 +481,9 @@ impl Ssu {
                 }
             }
             0xf0eb => {
-                self.tdr = value;
-                self.status &= !12;
-                self.seen &= !12;
+                return self
+                    .write_data_transaction(value, || Ok(now), clocks)
+                    .map(|effects| effects.scheduled)
             }
             0xf0e9 => {}
             _ => {
@@ -751,5 +830,50 @@ mod tests {
             0
         );
         assert_eq!(s.deadline(&c).unwrap(), Some(Time::from_micros(124)));
+    }
+    #[test]
+    fn replacing_a_queued_byte_never_changes_the_active_shift_word() {
+        for mode in [0x06, 0x26, 0x46, 0x66, 0x86, 0xa6, 0xc6, 0xe6] {
+            let c = Clocks::new(Time::ZERO, Default::default()).unwrap();
+            let mut s = Ssu::default();
+            s.set_gate(true, Time::ZERO, &c).unwrap();
+            for (address, value) in [
+                (0xf0e0, 0x8c),
+                (0xf0e2, mode),
+                (0xf0e3, 0xc0),
+                (0xf0eb, 0x25),
+            ] {
+                s.write(address, value, true, Time::ZERO, &c).unwrap();
+            }
+            let load = s.deadline(&c).unwrap().unwrap();
+            s.advance(load, &c).unwrap();
+            let pending = s.next;
+            assert!(
+                !s.write_data_transaction(
+                    0x96,
+                    || panic!("an active holding write has no timed consequence"),
+                    &c
+                )
+                .unwrap()
+                .scheduled
+            );
+            assert_eq!(s.next, pending);
+            assert_eq!(s.peek(0xf0e4) & 12, 0);
+            let mut words = Vec::new();
+            while words.len() < 2 {
+                let at = s.deadline(&c).unwrap().unwrap();
+                if let Some(edge) = s.advance(at, &c).unwrap() {
+                    if edge.sample {
+                        s.sample(edge.mosi);
+                    }
+                    if s.sampled == 8 && s.edges == 16 {
+                        words.push(s.read(0xf0e9, at, &c).unwrap());
+                    }
+                    s.finish_edge(at, &c).unwrap();
+                }
+            }
+            assert_eq!(words, [0x25, 0x96], "CPOL/CPHA and bit order {mode:02x}");
+            assert_eq!(s.peek(0xf0e4) & 12, 12);
+        }
     }
 }

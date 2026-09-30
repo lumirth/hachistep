@@ -53,6 +53,11 @@ impl Access {
     pub fn read_changes_state(self) -> bool {
         self.flags & 4 != 0
     }
+    pub(super) fn ssu_data(self, write: bool) -> bool {
+        self.width == Width::Byte
+            && self.target == Target::Ssu
+            && Ssu::retained_data(self.address, write)
+    }
     pub(super) fn retained_write(self) -> bool {
         self.width == Width::Byte && self.target == Target::Gpio
     }

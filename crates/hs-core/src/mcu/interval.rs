@@ -85,12 +85,18 @@ impl Interval<'_> {
         )
     }
     fn local_read(&self, access: bus::Access) -> bool {
-        (access.width != Width::Word || access.native_word())
-            && !access.read_changes_state()
-            && !(access.observes_serial() && self.deferred_serial)
+        access.ssu_data(false)
+            || (access.width != Width::Word || access.native_word())
+                && !access.read_changes_state()
+                && !(access.observes_serial() && self.deferred_serial)
     }
     fn local_write(&self, access: bus::Access) -> bool {
-        access.retained_write() && !(access.observes_serial() && self.deferred_serial)
+        access.ssu_data(true)
+            || access.retained_write() && !(access.observes_serial() && self.deferred_serial)
+    }
+    fn refresh_interrupt(&mut self) {
+        self.interrupt = self.mcu.interrupt();
+        self.expired_interrupt = self.mcu.interrupt_with_retained([0; 10]);
     }
     pub fn take_commit(&mut self) -> Option<bus::Committed> {
         self.committed.take()
@@ -110,6 +116,25 @@ impl Interval<'_> {
             width,
             fetch,
         })?;
+        if access.ssu_data(false) {
+            let (value, effects) = self.mcu.ssu.read_transaction(
+                access.address,
+                || self.window.at(),
+                &self.mcu.clocks,
+            )?;
+            self.reads = self.reads.wrapping_add(1);
+            if effects.flags {
+                self.refresh_interrupt();
+            }
+            if effects.scheduled {
+                self.committed = Some(bus::Committed {
+                    access,
+                    value: u16::from(value),
+                });
+                return Err(Stop::CommittedOwner);
+            }
+            return Ok(u16::from(value));
+        }
         if access.owners != 0 {
             if self
                 .mcu
@@ -148,6 +173,22 @@ impl Interval<'_> {
             value,
             mov_byte,
         })?;
+        if access.ssu_data(true) {
+            let effects = self.mcu.ssu.write_data_transaction(
+                value as u8,
+                || self.window.at(),
+                &self.mcu.clocks,
+            )?;
+            self.writes = self.writes.wrapping_add(1);
+            if effects.flags {
+                self.refresh_interrupt();
+            }
+            if effects.scheduled {
+                self.committed = Some(bus::Committed { access, value: 0 });
+                return Err(Stop::CommittedOwner);
+            }
+            return Ok(());
+        }
         // The admitted GPIO owner ignores instruction-specific write origin.
         // Other owners remain fenced and retain full CPU provenance in Machine.
         let effects = self.mcu.write_gpio(access.address, value as u8)?;
@@ -296,26 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn retained_serial_status_qualifies_flags_without_a_clock_observation() {
-        let mut m = mcu();
-        m.ssu
-            .write(0xf0e3, 0x80, true, Time::ZERO, &m.clocks)
-            .unwrap();
-        m.iic.write(0xf078, 0x90, Time::ZERO, &m.clocks).unwrap();
-        let no_clock = || Err(Error::Internal("retained observation consumed time"));
-        assert!(!m
-            .sync_peripherals_at(schedule::SSU | schedule::IIC, no_clock, &mut ())
-            .unwrap());
-        for (address, flags) in [(0xf0e4, 4), (0xf07c, 0x80)] {
-            let access = Mcu::classify(address, Width::Byte, false);
-            assert_eq!(m.read_access_at(access, no_clock, &mut ()).unwrap(), flags);
-            m.write8(address, 0, WriteOrigin::Other, Time::ZERO, &mut ())
-                .unwrap();
-            assert_eq!(u16::from(m.peek8(address).unwrap()) & flags, 0);
-        }
-    }
-
-    #[test]
     fn capture_reads_observe_the_visibility_edge_inside_an_interval() {
         let mut m = mcu();
         let c = &m.clocks;
@@ -393,5 +414,98 @@ mod tests {
         ));
         assert_eq!(bus.finish(&mut cursor).unwrap().2, 2);
         assert_eq!(m.gpio.read(0xffd4), 6);
+    }
+
+    #[test]
+    fn a_receive_only_data_read_returns_its_reply_before_the_one_state_load() {
+        let mut m = mcu();
+        m.ssu.set_gate(true, Time::ZERO, &m.clocks).unwrap();
+        for (address, value) in [(0xf0e0, 0x8c), (0xf0e2, 0x86), (0xf0e3, 0x40)] {
+            m.ssu
+                .write(address, value, true, Time::ZERO, &m.clocks)
+                .unwrap();
+        }
+        assert_eq!(m.ssu.deadline(&m.clocks).unwrap(), None);
+        let mut cursor = CpuCursor::new(&m.clocks);
+        let at = edge(&m, 2);
+        let window = cursor.window(at, edge(&m, 100), &m.clocks).unwrap();
+        let mut bus = m.interval(window, at).unwrap();
+        assert!(matches!(
+            bus.read(0xf0e9, Width::Byte, false),
+            Err(Stop::CommittedOwner)
+        ));
+        let commit = bus.take_commit().unwrap();
+        assert_eq!(
+            commit.value, 0,
+            "the retained RDR reply survives the scheduling fence"
+        );
+        assert_eq!(bus.finish(&mut cursor).unwrap(), (at, 1, 0));
+        assert_eq!(m.ssu.deadline(&m.clocks).unwrap(), Some(edge(&m, 3)));
+        assert_eq!(
+            m.ssu.received, 0,
+            "scheduling reception does not synthesize a byte"
+        );
+    }
+
+    #[test]
+    fn a_holding_write_removes_a_retained_empty_request_before_cpu_admission() {
+        let mut m = mcu();
+        m.ssu.set_gate(true, Time::ZERO, &m.clocks).unwrap();
+        for (address, value) in [
+            (0xf0e0, 0x8c),
+            (0xf0e2, 0x86),
+            (0xf0e3, 0x80),
+            (0xf0eb, 0x25),
+        ] {
+            m.ssu
+                .write(address, value, true, Time::ZERO, &m.clocks)
+                .unwrap();
+        }
+        let load = m.ssu.deadline(&m.clocks).unwrap().unwrap();
+        m.ssu.advance(load, &m.clocks).unwrap();
+        m.admission_enables[4] = 4; // Software cleared TIE at this instruction.
+        assert_eq!(m.interrupt(), Some(34));
+        let mut cpu = crate::cpu::Cpu::new(0x100);
+        cpu.registers.er[0] = 0x96;
+        cpu.registers.er[7] = 0xff70;
+        cpu.registers.ccr = 0;
+        for value in [0x6a88, 0xf0eb, 0] {
+            cpu.next(|| None).unwrap();
+            cpu.complete(value).unwrap();
+        }
+        let mut cursor = CpuCursor::new(&m.clocks);
+        let at = edge(&m, 2);
+        let window = cursor.window(at, edge(&m, 20), &m.clocks).unwrap();
+        let mut bus = m.interval(window, at).unwrap();
+        assert!(matches!(
+            cpu.run_interval(&mut bus),
+            Ok(crate::cpu::execution::Exit::Horizon(_))
+        ));
+        bus.finish(&mut cursor).unwrap();
+        assert_eq!(
+            cpu.interrupt_entries, 0,
+            "the completed holding store removed TDRE before admission"
+        );
+        assert!(cpu.registers.pc > 0x106);
+        assert_eq!(m.ssu.peek(0xf0eb), 0x96);
+    }
+    #[test]
+    fn retained_serial_status_qualifies_flags_without_a_clock_observation() {
+        let mut m = mcu();
+        m.ssu
+            .write(0xf0e3, 0x80, true, Time::ZERO, &m.clocks)
+            .unwrap();
+        m.iic.write(0xf078, 0x90, Time::ZERO, &m.clocks).unwrap();
+        let no_clock = || Err(Error::Internal("retained observation consumed time"));
+        assert!(!m
+            .sync_peripherals_at(schedule::SSU | schedule::IIC, no_clock, &mut ())
+            .unwrap());
+        for (address, flags) in [(0xf0e4, 4), (0xf07c, 0x80)] {
+            let access = Mcu::classify(address, Width::Byte, false);
+            assert_eq!(m.read_access_at(access, no_clock, &mut ()).unwrap(), flags);
+            m.write8(address, 0, WriteOrigin::Other, Time::ZERO, &mut ())
+                .unwrap();
+            assert_eq!(u16::from(m.peek8(address).unwrap()) & flags, 0);
+        }
     }
 }
