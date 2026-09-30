@@ -1,6 +1,7 @@
 //! NT7508 serial command parser and controller RAM. The visible 96x64 view
 //! derives from that RAM and the controller settings. A chip-select boundary
 //! clears a partial serial byte but does not erase a pending command parameter.
+use crate::serial::Bits;
 use crate::{
     error::Error,
     signals::{Event, Output},
@@ -163,11 +164,18 @@ impl Nt7508 {
         self.data = data;
     }
     pub fn rising(&mut self, mosi: bool, now: Time, output: &mut dyn Output) -> Result<(), Error> {
+        self.receive_bits(Bits::one(mosi), now, output)
+    }
+    pub(crate) fn receive_bits(
+        &mut self,
+        bits: Bits,
+        now: Time,
+        output: &mut dyn Output,
+    ) -> Result<(), Error> {
         if !self.selected || !self.supplied || self.ready.is_some() {
             return Ok(());
         }
-        self.shift = self.shift << 1 | u8::from(mosi);
-        self.bits += 1;
+        bits.append(&mut self.shift, &mut self.bits);
         if self.bits == 8 {
             let v = self.shift;
             self.bits = 0;

@@ -55,6 +55,10 @@ impl Default for State {
 }
 
 impl State {
+    pub(super) fn idle(&self) -> bool {
+        self.phase == Phase::Idle
+    }
+
     pub(super) fn effect_edges(&self) -> u8 {
         match self.phase {
             Phase::Idle => 15,

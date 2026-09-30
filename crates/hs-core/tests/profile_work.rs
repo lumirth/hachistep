@@ -163,3 +163,70 @@ fn hardware_reset_keeps_cumulative_host_work() {
     assert!(after.owner_syncs > before.owner_syncs);
     assert!(after.sensor_sample_phases > before.sensor_sample_phases);
 }
+
+#[cfg(not(feature = "trace"))]
+#[test]
+fn grouped_serial_work_accounts_for_every_halfedge_without_changing_capture() {
+    let mut code = Vec::new();
+    for (address, value) in [
+        (0xfffb_u16, 0x14),
+        (0xf0e0, 0x8c),
+        (0xf0e1, 0x40),
+        (0xf0e2, 0x86),
+        (0xf0e3, 0xc0),
+        (0xf0eb, 0x55),
+    ] {
+        code.extend([0xf8, value, 0x6a, 0x88, (address >> 8) as u8, address as u8]);
+    }
+    for _ in 0..100 {
+        code.extend([0, 0]);
+    }
+    code.extend([0x40, 0xfe]);
+    let mut firmware = vec![0; 49_152];
+    firmware[..2].copy_from_slice(&[1, 0]);
+    firmware[0x100..0x100 + code.len()].copy_from_slice(&code);
+    let mut whole = Machine::with_conditions(
+        Images {
+            firmware: &firmware,
+            eeprom: &[255; 65_536],
+            eeprom_status: 0,
+            sensor_nonvolatile: None,
+        },
+        Conditions {
+            clocks: Frequencies {
+                main_hz: 1_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut split = whole.clone();
+    whole
+        .run_until(Time::from_micros(250), &[], &mut ())
+        .unwrap();
+    for quarter in 1..=1000 {
+        split
+            .run_until(
+                Time::from_raw(Time::from_micros(quarter).raw() / 4),
+                &[],
+                &mut (),
+            )
+            .unwrap();
+    }
+    assert_eq!(whole.ssu_counts(), (1, 1));
+    assert_eq!(
+        whole.snapshot().encode().unwrap(),
+        split.snapshot().encode().unwrap()
+    );
+    let work = diagnostic::work(&whole);
+    assert!(work.serial_prefixes > 0);
+    assert!(work.serial_prefix_edges > work.serial_prefixes);
+    assert_eq!(work.serial_edge_deliveries + work.serial_prefix_edges, 16);
+    let split_work = diagnostic::work(&split);
+    assert_eq!(
+        split_work.serial_edge_deliveries + split_work.serial_prefix_edges,
+        16
+    );
+    assert!(work.serial_resolution_lanes >= work.serial_resolutions);
+}

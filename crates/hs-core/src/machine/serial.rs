@@ -1,7 +1,10 @@
 //! Synchronize serial shifts at their first possible interaction with other
 //! hardware. Register accesses and run horizons materialize any quiet prefix.
 use super::*;
-use crate::mcu::{gpio::SerialRoute, ssu::Pins};
+use crate::{
+    mcu::{gpio::SerialRoute, ssu::Pins},
+    serial::{mask, Bits, Drives},
+};
 
 impl Machine {
     /// Settle the fixed serial nets and their connected consumers. Both master
@@ -210,6 +213,104 @@ impl Machine {
         }
         Ok(feedback || ownership_changed)
     }
+    fn serial_prefix(&mut self, end: Time, route: &SerialRoute) -> Result<bool, Error> {
+        if !self.power.mcu()
+            || self.mcu.gpio.pfcr & 0x10 != 0
+            || route.irq_observer
+            || self.mcu.iic.pins().is_some()
+            || !self.sensor.quiet_serial()
+        {
+            return Ok(false);
+        }
+        let max = self
+            .lcd
+            .serial_effect_edges()
+            .min(self.eeprom.serial_effect_edges())
+            .min(self.sensor.serial_effect_edges())
+            .saturating_sub(1);
+        let Some(prefix) = self.mcu.ssu.quiet_prefix(end, max, &self.mcu.clocks)? else {
+            return Ok(false);
+        };
+        let lanes = mask(prefix.count);
+        let pins = self.mcu.ssu.pin_planes(prefix.clock, prefix.mosi, lanes);
+        let clock = route.resolve_plane(1, pins, [Drives::default(); 2], lanes);
+        let previous_clock = (clock << 1 | u16::from(self.serial.clock)) & lanes;
+        let rises = clock & !previous_clock;
+        let falls = !clock & previous_clock & lanes;
+        let eeprom = self.eeprom.output_planes(falls, lanes);
+        let sensor = self.sensor.output_planes(rises, falls, lanes);
+        let before_sensor = [
+            sensor[0].before(self.sensor.data_output(), lanes),
+            sensor[1].before(self.sensor.output(), lanes),
+        ];
+        let before_eeprom = eeprom.before(self.eeprom.output(), lanes);
+        let external_before = [before_sensor[0], before_sensor[1].wired(before_eeprom)];
+        let external_after = [sensor[0], sensor[1].wired(eeprom)];
+        #[cfg(feature = "profile-work")]
+        {
+            self.mcu.gpio.work.serial.add(1);
+            self.mcu.gpio.work.serial_lanes.add(u64::from(prefix.count));
+        }
+        let before = route.resolve_planes(pins, external_before, prefix.count);
+        let after = if external_before == external_after {
+            before
+        } else {
+            #[cfg(feature = "profile-work")]
+            {
+                self.mcu.gpio.work.serial.add(1);
+                self.mcu.gpio.work.serial_lanes.add(u64::from(prefix.count));
+            }
+            route.resolve_planes(pins, external_after, prefix.count)
+        };
+        let previous_data = (after[2] << 1 | u16::from(self.serial.mosi)) & lanes;
+        // The deselected BMA's I2C listener remains idle only if this complete
+        // physical prefix contains no START/STOP. GPIO fixtures participate.
+        if !self.serial.sensor_selected && previous_clock & clock & (previous_data ^ before[2]) != 0
+        {
+            return Ok(false);
+        }
+        let input = Bits::samples(before[2], rises);
+        if self.power.eeprom() {
+            self.eeprom.receive_bits(input);
+        }
+        self.eeprom.shift_output(falls, lanes);
+        self.sensor.receive_bits(input, prefix.last)?;
+        self.sensor.shift_falling_prefix(falls);
+        self.lcd.receive_bits(input, prefix.last, &mut ())?;
+        let received = Bits::samples(
+            route.input_plane(before, self.mcu.ssu.input_pin()),
+            prefix.samples,
+        );
+        self.mcu.ssu.commit_prefix(&prefix, received);
+        #[cfg(feature = "profile-work")]
+        {
+            self.work.serial_prefixes.add(1);
+            self.work.serial_prefix_edges.add(u64::from(prefix.count));
+        }
+        let last = prefix.count - 1;
+        self.mcu.gpio.levels[3] = (0..4).fold(0, |levels, bit| {
+            levels | (u8::from(after[bit] & (1 << last) != 0) << bit)
+        });
+        self.serial = self.mcu.gpio.serial_levels();
+        let inputs = route.inputs(self.mcu.gpio.levels[3]);
+        self.mcu.ssu.input_pins(inputs[0], inputs[1]);
+        let [scl, sda] = self.mcu.gpio.iic_inputs();
+        if self
+            .mcu
+            .iic
+            .input_pins(scl, sda, prefix.last, &self.mcu.clocks)?
+        {
+            self.changed_peripherals |= schedule::IIC;
+        }
+        self.changed_peripherals |= schedule::SSU;
+        self.last_effect = self.last_effect.max(prefix.last);
+        self.stats.peripheral_boundaries = self
+            .stats
+            .peripheral_boundaries
+            .wrapping_add(u64::from(prefix.count));
+        Ok(true)
+    }
+
     // CPU memory accesses can pass quiet shifts. Materialize those shifts
     // before an observer or another device can interact with the serial bus.
     pub(super) fn sync_serial_before(
@@ -217,6 +318,14 @@ impl Machine {
         end: Time,
         out: &mut dyn Output,
     ) -> Result<bool, Error> {
+        if !self
+            .mcu
+            .ssu
+            .deadline(&self.mcu.clocks)?
+            .is_some_and(|at| at < end)
+        {
+            return Ok(false);
+        }
         let now = self.now;
         let mut changed = false;
         let mut route = self.mcu.gpio.serial_route(self.mcu.ssu.pins());
@@ -226,6 +335,10 @@ impl Machine {
             .deadline(&self.mcu.clocks)?
             .filter(|at| *at < end)
         {
+            if self.serial_prefix(end, &route)? {
+                changed = true;
+                continue;
+            }
             self.now = at;
             self.last_effect = self.last_effect.max(at);
             self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
@@ -250,6 +363,194 @@ impl Machine {
 mod tests {
     use super::*;
     use crate::{cpu::WriteOrigin, signals::DigitalPin};
+
+    fn read_fixture(mode: u8, fixture: Option<bool>) -> Machine {
+        let mut firmware = vec![0; 49152];
+        firmware[..2].copy_from_slice(&0x100u16.to_be_bytes());
+        firmware[0x100..0x102].copy_from_slice(&[0x40, 0xfe]);
+        let mut conditions = Conditions::default();
+        conditions.clocks.main_hz = 1_000_000;
+        let mut m = Machine::with_conditions(
+            Images {
+                firmware: &firmware,
+                eeprom: &[255; 65536],
+                eeprom_status: 0x8c,
+                sensor_nonvolatile: None,
+            },
+            conditions,
+        )
+        .unwrap();
+        for (address, value) in [
+            (0xfffb, 0x14),
+            (0xf0e0, if fixture.is_some() { 0xac } else { 0x8c }),
+            (0xf0e1, 0x40),
+            (0xf0e2, mode),
+            (0xf0e3, 0xc0),
+            (0xffe4, 5),
+            (0xffd4, 1),
+            (0xffec, 1),
+            (0xf087, 8),
+        ] {
+            m.mcu
+                .write8(address, value, WriteOrigin::MovByte, m.now, &mut ())
+                .unwrap();
+        }
+        m.mcu.gpio.set_digital_level(DigitalPin::P92, fixture);
+        m.resolve_board(&mut ()).unwrap();
+        // Establish independent read latches through the component pins:
+        // EEPROM RDSR=8c; BMA high-g threshold=96. Configure the already-low
+        // phase exactly as after the preceding address byte's final fall.
+        m.eeprom.set_selected(false, m.now).unwrap();
+        m.eeprom.set_selected(true, m.now).unwrap();
+        m.sensor.set_selected(false);
+        m.sensor.set_selected(true);
+        for bit in (0..8).rev() {
+            m.eeprom.rising(5 & (1 << bit) != 0);
+            m.sensor.rising(0x8d & (1 << bit) != 0, m.now).unwrap();
+        }
+        if mode & 0x40 != 0 {
+            m.eeprom.falling();
+            m.sensor.falling();
+        }
+        m.resolve_board(&mut ()).unwrap();
+        assert!(m.serial.eeprom_selected && m.serial.sensor_selected);
+        m.mcu
+            .ssu
+            .write(
+                0xf0eb,
+                if fixture.is_some() { 255 } else { 0 },
+                true,
+                m.now,
+                &m.mcu.clocks,
+            )
+            .unwrap();
+        m
+    }
+
+    #[test]
+    fn simultaneous_drivers_preserve_literal_phase_bit_order_and_partial_captures() {
+        for mode in [0x06, 0x26, 0x46, 0x66, 0x86, 0xa6, 0xc6, 0xe6] {
+            let mut m = read_fixture(mode, None);
+            let mut split = m.clone();
+            m.now = Time::from_micros(20);
+            m.sync_serial(&mut ()).unwrap();
+            for quarter in 1..=80 {
+                split.now = Time::from_raw(Time::from_micros(quarter).raw() / 4);
+                split.sync_serial(&mut ()).unwrap();
+            }
+            m.refresh_peripherals(schedule::ALL).unwrap();
+            split.refresh_peripherals(schedule::ALL).unwrap();
+            let saved = m.snapshot().encode().unwrap();
+            assert_eq!(split.snapshot().encode().unwrap(), saved, "mode {mode:02x}");
+            let mut restored = Machine::from_snapshot(&Snapshot::decode(&saved).unwrap());
+            assert_eq!(restored.snapshot().encode().unwrap(), saved);
+            // With initial SCK high and sampling on the first fall, the MCU
+            // sees the released/pulled-high line before the first external
+            // launch, then bits 7..1. Other phases observe all bits of 8c AND96.
+            let wire: u8 = if mode & 0x60 == 0x20 { 0xc2 } else { 0x84 };
+            let expected = if mode & 0x80 != 0 {
+                wire
+            } else {
+                wire.reverse_bits()
+            };
+            for machine in [&mut m, &mut restored] {
+                machine.now = Time::from_micros(35);
+                machine.sync_serial(&mut ()).unwrap();
+                assert_eq!(machine.mcu.ssu.peek(0xf0e9), expected, "mode {mode:02x}");
+                assert_eq!(machine.mcu.ssu.peek(0xf0e0) & 0x10, 0);
+                assert_eq!(machine.mcu.gpio.levels[3] & 2 != 0, mode & 0x40 == 0);
+            }
+            assert_eq!(
+                m.snapshot().encode().unwrap(),
+                restored.snapshot().encode().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn an_open_drain_mcu_data_launch_keeps_live_sol_separate_from_fixture_levels() {
+        for high in [false, true] {
+            let mut m = read_fixture(0x86, Some(high));
+            m.now = Time::from_micros(35);
+            m.sync_serial(&mut ()).unwrap();
+            assert_eq!(m.mcu.ssu.peek(0xf0e0) & 0x10, 0x10, "retained SOL is high");
+            assert_eq!(
+                m.mcu.gpio.levels[3] & 4 != 0,
+                high,
+                "released output uses fixture"
+            );
+            assert_eq!(
+                m.mcu.ssu.peek(0xf0e9),
+                0x84,
+                "independent external receive drivers"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mid_byte_clock_selection_rejoins_the_new_divider_at_exact_pin_edges() {
+        let mut firmware = vec![0; 49152];
+        firmware[..2].copy_from_slice(&0x100u16.to_be_bytes());
+        firmware[0x100..0x102].copy_from_slice(&[0x40, 0xfe]);
+        let mut conditions = Conditions::default();
+        conditions.clocks.main_hz = 1_000_000;
+        let mut m = Machine::with_conditions(
+            Images {
+                firmware: &firmware,
+                eeprom: &[255; 65536],
+                eeprom_status: 0,
+                sensor_nonvolatile: None,
+            },
+            conditions,
+        )
+        .unwrap();
+        for (address, value) in [
+            (0xfffb, 0x14),
+            (0xf0e0, 0x8c),
+            (0xf0e1, 0x40),
+            (0xf0e2, 0x86),
+            (0xf0e3, 0x80),
+            (0xf0eb, 0xa6),
+        ] {
+            m.mcu
+                .write8(address, value, WriteOrigin::MovByte, m.now, &mut ())
+                .unwrap();
+        }
+        m.resolve_board(&mut ()).unwrap();
+        // Load at phi=1; five half-edges at 3,5,7,9,11 leave SCK and
+        // the third output bit high. Selecting phi/128 retains that bit.
+        m.now = Time::from_micros(12);
+        m.sync_serial(&mut ()).unwrap();
+        assert_eq!(m.mcu.gpio.levels[3] & 6, 6);
+        m.mcu
+            .ssu
+            .write(0xf0e2, 0x80, true, m.now, &m.mcu.clocks)
+            .unwrap();
+        assert_eq!(
+            m.mcu.ssu.deadline(&m.mcu.clocks).unwrap(),
+            Some(Time::from_micros(128))
+        );
+        m.now = Time::from_micros(128);
+        m.sync_serial_before(m.now, &mut ()).unwrap();
+        assert_eq!(
+            m.mcu.gpio.levels[3] & 6,
+            6,
+            "the caller end excludes its edge"
+        );
+        m.sync_serial(&mut ()).unwrap();
+        assert_eq!(
+            m.mcu.gpio.levels[3] & 6,
+            0,
+            "falling SCK launches the fourth bit"
+        );
+        m.now = Time::from_micros(256);
+        m.sync_serial(&mut ()).unwrap();
+        assert_eq!(
+            m.mcu.gpio.levels[3] & 6,
+            2,
+            "the next rising edge retains that bit"
+        );
+    }
 
     #[test]
     fn a_master_load_conflict_rebuilds_slave_driver_ownership_before_resolution() {

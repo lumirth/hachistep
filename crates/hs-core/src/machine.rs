@@ -552,19 +552,17 @@ impl Machine {
         Ok(())
     }
     fn serial_data(&self) -> [Option<bool>; 2] {
-        let miso = match (self.eeprom.output(), self.sensor.output()) {
-            // Opposing external drivers resolve low in the nominal circuit.
-            // The electrical basis is in docs/accuracy/bus-and-gpio.md.
-            (Drive::Low, _) | (_, Drive::Low) => Some(false),
-            (Drive::High, _) | (_, Drive::High) => Some(true),
-            _ => None,
-        };
-        let mosi = match self.sensor.data_output() {
+        use crate::serial::Drives;
+        // Opposing external drivers resolve low in the nominal circuit.
+        // The electrical basis is in docs/accuracy/bus-and-gpio.md.
+        let miso = Drives::constant(self.eeprom.output(), 1)
+            .wired(Drives::constant(self.sensor.output(), 1));
+        let mosi = Drives::constant(self.sensor.data_output(), 1);
+        [mosi, miso].map(|drive| match drive.at(0) {
             Drive::Low => Some(false),
             Drive::High => Some(true),
             Drive::Floating => None,
-        };
-        [mosi, miso]
+        })
     }
     fn resolve_board(&mut self, out: &mut dyn Output) -> Result<[bool; 4], Error> {
         self.settle_board(BoardChange::Configuration, out)

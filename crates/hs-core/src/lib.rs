@@ -31,6 +31,7 @@ mod mcu;
 mod power;
 #[cfg(feature = "profile-work")]
 mod profile_work;
+mod serial;
 mod signals;
 mod state;
 mod time;

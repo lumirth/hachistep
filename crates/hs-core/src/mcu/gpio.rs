@@ -1,6 +1,7 @@
 //! Package latches and the fixed board's digital connections. Pin-function
 //! selection is kept separate from the output latch and resolved input level.
 use super::ssu::Pins;
+use crate::serial::{mask, Drives};
 use crate::{
     error::Error,
     signals::{Buttons, DigitalPin, Drive},
@@ -26,28 +27,71 @@ pub(crate) struct SerialRoute {
 }
 impl SerialRoute {
     fn resolve(&self, serial: Pins, external_data: [Option<bool>; 2]) -> u8 {
-        let mut levels = 0;
-        for bit in 0..4 {
-            let source = usize::from(self.sources[bit]);
-            let drive = if source < 4 {
-                serial.drives[source].unwrap_or(self.fallback[bit])
-            } else {
-                self.fallback[bit]
-            };
-            let high = match drive {
-                Drive::Low => false,
-                Drive::High if self.open_drain & (1 << bit) == 0 => true,
-                _ => self.fixtures[bit]
-                    .or(if bit >= 2 {
-                        external_data[bit - 2]
+        let serial = serial
+            .drives
+            .map(|drive| drive.map(|drive| Drives::constant(drive, 1)));
+        let external = external_data.map(|drive| {
+            drive.map_or_else(Drives::default, |high| {
+                Drives::constant(if high { Drive::High } else { Drive::Low }, 1)
+            })
+        });
+        let planes = self.resolve_planes(serial, external, 1);
+        (0..4).fold(0, |levels, bit| levels | ((planes[bit] & 1) as u8) << bit)
+    }
+    pub(crate) fn resolve_planes(
+        &self,
+        serial: [Option<Drives>; 4],
+        external: [Drives; 2],
+        count: u8,
+    ) -> [u16; 4] {
+        let lanes = mask(count);
+        std::array::from_fn(|bit| self.resolve_plane(bit, serial, external, lanes))
+    }
+    pub(crate) fn resolve_plane(
+        &self,
+        bit: usize,
+        serial: [Option<Drives>; 4],
+        external: [Drives; 2],
+        lanes: u16,
+    ) -> u16 {
+        let source = usize::from(self.sources[bit]);
+        let fallback = Drives::constant(self.fallback[bit], lanes);
+        let drive = if source < 4 {
+            serial[source].unwrap_or(fallback)
+        } else {
+            fallback
+        };
+        let high = if self.open_drain & (1 << bit) == 0 {
+            drive.high
+        } else {
+            0
+        };
+        let released = lanes & !(drive.low | high);
+        let external = if bit >= 2 {
+            external[bit - 2]
+        } else {
+            Drives::default()
+        };
+        let floating = !(external.low | external.high) & lanes;
+        let passive = self.fixtures[bit].map_or_else(
+            || {
+                external.high
+                    | if self.pulls & (1 << bit) != 0 {
+                        floating
                     } else {
-                        None
-                    })
-                    .unwrap_or(self.pulls & (1 << bit) != 0),
-            };
-            levels |= u8::from(high) << bit;
-        }
-        levels
+                        0
+                    }
+            },
+            |high| if high { lanes } else { 0 },
+        );
+        high | released & passive
+    }
+    pub(crate) fn input_plane(&self, levels: [u16; 4], function: usize) -> u16 {
+        levels[if self.reversed {
+            3 - function
+        } else {
+            function
+        }]
     }
     pub fn inputs(&self, levels: u8) -> [bool; 4] {
         std::array::from_fn(|function| {
@@ -592,6 +636,30 @@ impl Gpio {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn released_data_planes_use_external_drivers_and_fixture_priority() {
+        for fixture in [None, Some(false), Some(true)] {
+            let mut gpio = Gpio::default();
+            gpio.set_digital_level(DigitalPin::P92, fixture);
+            let serial = Pins {
+                drives: [None, None, Some(Drive::High), None],
+                data_open_drain: true,
+            };
+            let route = gpio.serial_route(serial);
+            let drives = [None, None, Some(Drives::constant(Drive::High, 15)), None];
+            let external = [Drives { low: 3, high: 12 }, Drives::default()];
+            let expected = match fixture {
+                None => 12,
+                Some(false) => 0,
+                Some(true) => 15,
+            };
+            assert_eq!(route.resolve_planes(drives, external, 4)[2], expected);
+            // A driven low is never overwritten by a passive/fixture level.
+            let drives = [None, None, Some(Drives::constant(Drive::Low, 15)), None];
+            assert_eq!(route.resolve_planes(drives, external, 4)[2], 0);
+        }
+    }
+
     #[test]
     fn ssu_selection_overrides_iic_even_when_its_driver_is_released() {
         let mut g = Gpio::default();

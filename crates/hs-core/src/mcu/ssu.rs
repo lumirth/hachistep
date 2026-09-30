@@ -1,7 +1,12 @@
-//! SSU holding registers and a shifter that advances on each clock edge.
-//! The board routes each emitted edge to the attached devices.
+//! SSU holding registers and exact clock-edge sequences. The board resolves
+//! their package drivers and attached devices before sampling the shifter.
 use super::clocks::{ClockWait, Clocks, Tap};
-use crate::{error::Error, signals::Drive, time::Time};
+use crate::{
+    error::Error,
+    serial::{mask, spread, Bits, Drives},
+    signals::Drive,
+    time::Time,
+};
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 #[borsh(use_discriminant = true)]
@@ -21,6 +26,15 @@ pub struct Pins {
     pub drives: [Option<Drive>; 4],
     /// SOOS also applies to GPIO use of SSO/SSI, independently of TE/RE.
     pub data_open_drain: bool,
+}
+pub(crate) struct Prefix {
+    pub count: u8,
+    pub clock: u16,
+    pub mosi: u16,
+    pub samples: u16,
+    launches: u8,
+    pub last: Time,
+    next: ClockWait,
 }
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Ssu {
@@ -139,40 +153,39 @@ impl Ssu {
     /// Logical SCS, SSCK, SSO, SSI functions, before the package's SSEL mux.
     /// None leaves the pin to GPIO; Floating selects a released serial pin.
     pub fn pins(&self) -> Pins {
-        let mut pins = Pins {
+        Pins {
+            drives: self
+                .pin_planes(u16::from(self.clock_high), u16::from(self.mosi), 1)
+                .map(|drive| drive.map(|drive| drive.at(0))),
             data_open_drain: self.high & 0x20 != 0,
-            ..Pins::default()
-        };
+        }
+    }
+    /// Project the live package drivers over exact chronological edge lanes.
+    /// The ordinary pin projection is the one-lane case of this same rule.
+    pub(crate) fn pin_planes(&self, clock: u16, mosi: u16, lanes: u16) -> [Option<Drives>; 4] {
+        let mut pins = [None; 4];
         if !self.gate {
             return pins;
         }
-        let drive = |high: bool, open_drain: bool| {
-            if !high {
-                Drive::Low
-            } else if open_drain {
-                Drive::Floating
-            } else {
-                Drive::High
-            }
-        };
         if self.four_line() && self.high & 3 != 0 {
-            pins.drives[0] = Some(
+            pins[0] = Some(Drives::constant(
                 if self.master() && self.high & 2 != 0 && self.select_active {
                     Drive::Low
                 } else {
                     Drive::Floating
                 },
-            );
+                lanes,
+            ));
         }
         if self.high & 4 != 0 {
-            pins.drives[1] = Some(if self.master() {
-                drive(self.clock_high, self.low & 0x10 != 0)
+            pins[1] = Some(if self.master() {
+                Drives::levels(clock, lanes, self.low & 0x10 != 0)
             } else {
-                Drive::Floating
+                Drives::default()
             });
         }
         if self.enable & 0x40 != 0 {
-            pins.drives[self.input_pin()] = Some(Drive::Floating);
+            pins[self.input_pin()] = Some(Drives::default());
         }
         if self.enable & 0x80 != 0 {
             let output = if self.four_line() && !self.master() && !self.bidirectional() {
@@ -185,10 +198,10 @@ impl Ssu {
             } else {
                 self.selected()
             };
-            pins.drives[output] = Some(if enabled {
-                drive(self.mosi, self.high & 0x20 != 0)
+            pins[output] = Some(if enabled {
+                Drives::levels(mosi, lanes, self.high & 0x20 != 0)
             } else {
-                Drive::Floating
+                Drives::default()
             });
         }
         pins
@@ -469,18 +482,104 @@ impl Ssu {
         self.select_active = false;
         self.next = None;
     }
+    fn shift_plan(&self, count: u8) -> (u16, u16, u8) {
+        let lanes = mask(count);
+        let sample_first = (self.edges & 1 == 0) == self.first_edge_samples();
+        let samples = (if sample_first { 0x5555 } else { 0xaaaa }) & lanes;
+        let launches = (!samples & lanes).count_ones() as u8;
+        let consumed = launches.min(8 - self.shifted);
+        let leading = u8::from(sample_first);
+        let mosi = if !self.transmitting || consumed == 0 {
+            if self.mosi {
+                lanes
+            } else {
+                0
+            }
+        } else {
+            let byte = if self.msb_first {
+                self.tx
+            } else {
+                self.tx.reverse_bits()
+            };
+            let bits = Bits::output(byte, self.shifted, consumed).value;
+            let repeated = spread(bits);
+            let high = (repeated | repeated << 1) << leading;
+            let through = (leading + 2 * consumed).min(count);
+            let mut mosi = high & mask(through);
+            if sample_first && self.mosi {
+                mosi |= 1;
+            }
+            if bits & (1 << (consumed - 1)) != 0 {
+                mosi |= lanes & !mask(through);
+            }
+            mosi
+        };
+        (mosi, samples, if self.transmitting { consumed } else { 0 })
+    }
+    fn commit_shift(&mut self, count: u8, mosi: u16, launches: u8) {
+        self.mosi = mosi & (1 << (count - 1)) != 0;
+        self.shifted += launches;
+        self.edges += count;
+    }
     fn shift_edge(&mut self) -> Edge {
-        let sample = (self.edges & 1 == 0) == self.first_edge_samples();
-        if !sample && self.shifted < 8 && self.transmitting {
-            self.mosi = self.output_bit(self.shifted);
-            self.shifted += 1;
-        }
-        self.edges += 1;
+        let (mosi, samples, launches) = self.shift_plan(1);
+        self.commit_shift(1, mosi, launches);
         Edge {
             clock: self.clock_high,
             mosi: self.mosi,
-            sample,
+            sample: samples != 0,
         }
+    }
+    pub(crate) fn quiet_prefix(
+        &self,
+        end: Time,
+        max: u8,
+        clocks: &Clocks,
+    ) -> Result<Option<Prefix>, Error> {
+        if self.phase != Phase::Edge || !self.master() || !self.active {
+            return Ok(None);
+        }
+        let Some(next) = self.next else {
+            return Ok(None);
+        };
+        let sample = if self.first_edge_samples() { 15u8 } else { 16 };
+        let sample_first = (self.edges & 1 == 0) == self.first_edge_samples();
+        let before_sample = 2 * (7u8.saturating_sub(self.sampled)) + u8::from(!sample_first);
+        let count = next.edges_before(end, clocks).min(u64::from(
+            max.min(sample.saturating_sub(self.edges).saturating_sub(1))
+                .min(15 - self.edges)
+                .min(before_sample),
+        )) as u8;
+        if count < 2 {
+            return Ok(None);
+        }
+        let (mosi, samples, launches) = self.shift_plan(count);
+        let clock = (if self.clock_high { 0xaaaa } else { 0x5555 }) & mask(count);
+        // Leave projection failures to one-edge retirement, which preserves
+        // the exact fault prefix if the following obligation overflows.
+        let last = match next.later_edge(u64::from(count - 1), clocks) {
+            Ok(Some(last)) => last,
+            _ => return Ok(None),
+        };
+        let next = match next.following_count(u64::from(count), clocks) {
+            Ok(next) => next,
+            Err(_) => return Ok(None),
+        };
+        Ok(Some(Prefix {
+            count,
+            clock,
+            mosi,
+            samples,
+            launches,
+            last,
+            next,
+        }))
+    }
+    pub(crate) fn commit_prefix(&mut self, prefix: &Prefix, samples: Bits) {
+        self.commit_shift(prefix.count, prefix.mosi, prefix.launches);
+        self.clock_high = prefix.clock & (1 << (prefix.count - 1)) != 0;
+        self.next = Some(prefix.next);
+        self.sample_bits(samples);
     }
     /// Observe resolved package levels. External and internal clocks enter the
     /// same shifter; selection changes cannot complete or discard a whole byte.
@@ -507,15 +606,18 @@ impl Ssu {
         }
     }
     pub fn sample(&mut self, high: bool) {
-        if self.sampled >= 8 {
+        self.sample_bits(Bits::one(high));
+    }
+    fn sample_bits(&mut self, bits: Bits) {
+        if self.sampled >= 8 || bits.count == 0 {
             return;
         }
         if self.msb_first {
-            self.rx = self.rx << 1 | u8::from(high);
+            bits.append(&mut self.rx, &mut self.sampled);
         } else {
-            self.rx |= u8::from(high) << self.sampled;
+            self.rx |= bits.value << self.sampled;
+            self.sampled += bits.count;
         }
-        self.sampled += 1;
         if self.sampled == 8 && self.enable & 0x40 != 0 && self.status & 0x40 == 0 {
             if self.status & 2 != 0 {
                 self.status |= 0x40;
@@ -574,37 +676,6 @@ impl Ssu {
 mod tests {
     use super::*;
     #[test]
-    fn receive_start_uses_the_consuming_read_time_and_preserves_failed_observations() {
-        let c = Clocks::new(
-            Time::ZERO,
-            super::super::clocks::Frequencies {
-                main_hz: 1_000_000,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let mut s = Ssu::default();
-        s.set_gate(true, Time::ZERO, &c).unwrap();
-        s.write(0xf0e0, 0x8c, true, Time::ZERO, &c).unwrap();
-        s.write(0xf0e3, 0x40, true, Time::ZERO, &c).unwrap();
-        assert_eq!(s.deadline(&c).unwrap(), None);
-        let before = s.clone();
-        assert!(s
-            .read_at(
-                0xf0e9,
-                || Err(Error::Internal("unavailable access time")),
-                &c
-            )
-            .is_err());
-        assert_eq!(s, before);
-        assert_eq!(
-            s.read_at(0xf0e9, || Ok(Time::from_micros(123)), &c)
-                .unwrap(),
-            0
-        );
-        assert_eq!(s.deadline(&c).unwrap(), Some(Time::from_micros(124)));
-    }
-    #[test]
     fn completed_external_frame_cannot_load_as_an_active_shifter() {
         let mut s = Ssu {
             active: true,
@@ -649,5 +720,36 @@ mod tests {
         }
         assert_eq!(s.read(0xf0e9, completed, &c).unwrap(), 0x35);
         assert_eq!(s.status & 14, 12);
+    }
+    #[test]
+    fn receive_start_uses_the_consuming_read_time_and_preserves_failed_observations() {
+        let c = Clocks::new(
+            Time::ZERO,
+            super::super::clocks::Frequencies {
+                main_hz: 1_000_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut s = Ssu::default();
+        s.set_gate(true, Time::ZERO, &c).unwrap();
+        s.write(0xf0e0, 0x8c, true, Time::ZERO, &c).unwrap();
+        s.write(0xf0e3, 0x40, true, Time::ZERO, &c).unwrap();
+        assert_eq!(s.deadline(&c).unwrap(), None);
+        let before = s.clone();
+        assert!(s
+            .read_at(
+                0xf0e9,
+                || Err(Error::Internal("unavailable access time")),
+                &c
+            )
+            .is_err());
+        assert_eq!(s, before);
+        assert_eq!(
+            s.read_at(0xf0e9, || Ok(Time::from_micros(123)), &c)
+                .unwrap(),
+            0
+        );
+        assert_eq!(s.deadline(&c).unwrap(), Some(Time::from_micros(124)));
     }
 }

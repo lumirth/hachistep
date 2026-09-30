@@ -6,6 +6,7 @@ mod filter;
 mod i2c;
 mod interrupts;
 use super::nv::WriteCycle;
+use crate::serial::{Bits, Drives};
 use crate::{
     error::Error,
     signals::{Acceleration, Drive, Event, NvDomain, Output},
@@ -617,6 +618,12 @@ impl Bma150 {
         Ok(self.falling())
     }
     fn shift_output(&mut self) {
+        self.shift_outputs(1);
+    }
+    fn shift_outputs(&mut self, count: u8) {
+        if count == 0 {
+            return;
+        }
         if let Serial::Read(address) = self.serial {
             if self.tx_bit == 0 {
                 self.tx = self.prepare_read(address);
@@ -625,10 +632,11 @@ impl Bma150 {
             self.driven = Drive::Floating;
             return;
         }
-        self.driven = match self.tx {
-            Some(byte) if self.selected && self.tx_bit < 8 => {
-                let bit = byte & (0x80 >> self.tx_bit) != 0;
-                if bit {
+        let last = self.tx_bit.saturating_add(count - 1);
+        let bits = self.tx.map(|byte| Bits::output(byte, self.tx_bit, count));
+        self.driven = match bits {
+            Some(bits) if self.selected && last < 8 => {
+                if bits.value & (1 << (count - 1)) != 0 {
                     Drive::High
                 } else {
                     Drive::Low
@@ -636,7 +644,38 @@ impl Bma150 {
             }
             _ => Drive::Floating,
         };
-        self.tx_bit = self.tx_bit.saturating_add(1).min(8);
+        self.tx_bit = self.tx_bit.saturating_add(count).min(8);
+    }
+    pub(crate) fn quiet_serial(&self) -> bool {
+        if !self.selected {
+            return self.i2c.idle();
+        }
+        !self.turnaround
+            && (!matches!(self.serial, Serial::Read(_)) || self.rx_bits != 0 && self.tx_bit != 0)
+    }
+    pub(crate) fn output_planes(&self, rises: u16, falls: u16, lanes: u16) -> [Drives; 2] {
+        let events = if self.four_wire() { falls } else { rises };
+        let plane = if !self.selected
+            || self.serial_ready.is_some()
+            || self.quiet_deadline.is_some()
+            || self.sleeping()
+        {
+            Drives::default()
+        } else if let (Serial::Read(_), Some(byte)) = (self.serial, self.tx) {
+            Drives::launches(byte, self.tx_bit, events, self.driven, lanes)
+        } else {
+            Drives::default()
+        };
+        if self.four_wire() {
+            [Drives::default(), plane]
+        } else {
+            [plane, Drives::default()]
+        }
+    }
+    pub(crate) fn shift_falling_prefix(&mut self, falls: u16) {
+        if self.serial_ready.is_none() && self.unpowered_since.is_none() && self.four_wire() {
+            self.shift_outputs(falls.count_ones() as u8);
+        }
     }
     /// Board delivery materializes conversion state only when this bit consumes
     /// it. Standalone diagnostic transport retains caller-driven deadlines.
@@ -660,7 +699,14 @@ impl Bma150 {
     /// Completed register writes can change the sensor's appointments. Read
     /// acknowledgement and shifting retain the existing conversion schedule.
     pub(crate) fn rising_effect(&mut self, mosi: bool, now: Time) -> Result<bool, Error> {
-        if !self.selected || self.serial_ready.is_some() || self.quiet_deadline.is_some() {
+        self.receive_bits(Bits::one(mosi), now)
+    }
+    pub(crate) fn receive_bits(&mut self, bits: Bits, now: Time) -> Result<bool, Error> {
+        if bits.count == 0
+            || !self.selected
+            || self.serial_ready.is_some()
+            || self.quiet_deadline.is_some()
+        {
             return Ok(false);
         }
         if self.turnaround {
@@ -674,8 +720,7 @@ impl Bma150 {
                 self.acknowledge_read(address);
             }
         }
-        self.rx = self.rx << 1 | u8::from(mosi);
-        self.rx_bits += 1;
+        bits.append(&mut self.rx, &mut self.rx_bits);
         if self.rx_bits == 8 {
             let value = self.rx;
             self.rx = 0;
@@ -705,7 +750,7 @@ impl Bma150 {
             };
         }
         if !self.four_wire() && !self.turnaround {
-            self.shift_output();
+            self.shift_outputs(bits.count);
         }
         Ok(deadline_changed)
     }

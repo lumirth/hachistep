@@ -1,6 +1,7 @@
 //! ST M95512 main-array protocol driven through its pins. Serial command state
 //! and an ongoing nonvolatile operation have independent lifetimes.
 use super::nv::WriteCycle;
+use crate::serial::{Bits, Drives};
 use crate::{
     error::Error,
     signals::{Drive, Event, NvDomain, Output},
@@ -237,11 +238,13 @@ impl M95512 {
         Ok(!was_busy && self.busy())
     }
     pub fn rising(&mut self, mosi: bool) {
+        self.receive_bits(Bits::one(mosi))
+    }
+    pub(crate) fn receive_bits(&mut self, bits: Bits) {
         if !self.selected {
             return;
         }
-        self.rx = (self.rx << 1) | u8::from(mosi);
-        self.rx_bits += 1;
+        bits.append(&mut self.rx, &mut self.rx_bits);
         if self.rx_bits == 8 {
             let byte = self.rx;
             self.rx = 0;
@@ -250,17 +253,20 @@ impl M95512 {
         }
     }
     pub fn falling(&mut self) -> Drive {
-        if !self.selected || self.tx_bit >= 8 {
-            self.driven = Drive::Floating;
-        } else {
-            self.driven = if self.tx & (0x80 >> self.tx_bit) == 0 {
-                Drive::Low
-            } else {
-                Drive::High
-            };
-            self.tx_bit += 1;
-        }
+        self.shift_output(1, 1);
         self.driven
+    }
+    pub(crate) fn output_planes(&self, falls: u16, lanes: u16) -> Drives {
+        if !self.selected {
+            Drives::default()
+        } else {
+            Drives::launches(self.tx, self.tx_bit, falls, self.driven, lanes)
+        }
+    }
+    pub(crate) fn shift_output(&mut self, falls: u16, lanes: u16) {
+        let outputs = self.output_planes(falls, lanes);
+        self.tx_bit = self.tx_bit.saturating_add(falls.count_ones() as u8).min(8);
+        self.driven = outputs.at((16 - lanes.leading_zeros()) as u8 - 1);
     }
     pub fn output(&self) -> Drive {
         if self.selected {

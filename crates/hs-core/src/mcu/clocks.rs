@@ -531,6 +531,42 @@ impl ClockWait {
             WaitState::Ready(at) => Ok(Some(at)),
         }
     }
+    pub(crate) fn edges_before(&self, end: Time, clocks: &Clocks) -> u64 {
+        match self.state {
+            WaitState::Running { target, .. }
+                if clocks.available(self.tap) && end != Time::ZERO =>
+            {
+                clocks
+                    .ticks(Time::from_raw(end.raw() - 1), self.tap)
+                    .checked_sub(target)
+                    .map_or(0, |count| count.saturating_add(1))
+            }
+            _ => 0,
+        }
+    }
+    /// Advance a periodic obligation by exact divider ordinals. Scalar
+    /// retirement and a bounded serial prefix retain the same wait state.
+    pub(crate) fn following_count(self, count: u64, clocks: &Clocks) -> Result<Self, Error> {
+        let target = match self.state {
+            WaitState::Running { target, .. } => {
+                target.checked_add(count).ok_or(TimeError::Overflow)?
+            }
+            WaitState::Ready(at) => return Self::after(at, count, self.tap, clocks),
+            WaitState::Paused { .. } => return Err(Error::Internal("unfinished periodic wait")),
+        };
+        Ok(Self {
+            tap: self.tap,
+            state: WaitState::Running {
+                target,
+                cached: if clocks.available(self.tap) {
+                    clocks.edge(target, self.tap)?
+                } else {
+                    Time::MAX
+                },
+                revision: clocks.revision,
+            },
+        })
+    }
     pub(crate) fn later_edge(&self, count: u64, clocks: &Clocks) -> Result<Option<Time>, Error> {
         if count == 0 {
             return self.deadline(clocks);
@@ -549,25 +585,7 @@ impl ClockWait {
     /// Continue a completed periodic wait on the same divider. Its ordinal
     /// identifies the consumed edge without converting its timestamp back to a count.
     pub(crate) fn following_edge(self, clocks: &Clocks) -> Result<Self, Error> {
-        let target = match self.state {
-            WaitState::Running { target, .. } => {
-                target.checked_add(1).ok_or(TimeError::Overflow)?
-            }
-            WaitState::Ready(at) => return Self::after(at, 1, self.tap, clocks),
-            WaitState::Paused { .. } => return Err(Error::Internal("unfinished periodic wait")),
-        };
-        Ok(Self {
-            tap: self.tap,
-            state: WaitState::Running {
-                target,
-                cached: if clocks.available(self.tap) {
-                    clocks.edge(target, self.tap)?
-                } else {
-                    Time::MAX
-                },
-                revision: clocks.revision,
-            },
-        })
+        self.following_count(1, clocks)
     }
     pub fn pause(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.deadline(clocks)?.is_some_and(|at| at < now) {
