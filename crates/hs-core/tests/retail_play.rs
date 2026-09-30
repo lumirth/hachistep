@@ -78,6 +78,7 @@ fn walking_dowsing_and_capture_preserve_rewards_through_restoration() {
         firmware: &firmware,
         eeprom: &eeprom,
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     let motion: Vec<_> = include_str!("../../../workloads/walking.csv")

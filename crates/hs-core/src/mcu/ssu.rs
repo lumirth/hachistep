@@ -90,6 +90,11 @@ impl Default for Ssu {
     }
 }
 impl Ssu {
+    /// SSCRH includes live MOSI. RDR consumption can start reception. Other
+    /// reads expose retained registers or flags changed at effect appointments.
+    pub(crate) fn reads_shift(address: u16) -> bool {
+        matches!(address, 0xf0e0 | 0xf0e9)
+    }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
         self.next
             .as_ref()
@@ -112,7 +117,7 @@ impl Ssu {
             wait.later_edge(u64::from(count - 1), clocks)
         })
     }
-    fn master(&self) -> bool {
+    pub(crate) fn master(&self) -> bool {
         self.high & 0x80 != 0
     }
     fn four_line(&self) -> bool {
@@ -274,6 +279,21 @@ impl Ssu {
         }
     }
     pub fn read(&mut self, address: u16, now: Time, clocks: &Clocks) -> Result<u8, Error> {
+        self.read_at(address, || Ok(now), clocks)
+    }
+    /// Retained observations qualify flags without consuming a clock. Starting
+    /// reception obtains the access timestamp before changing the owner state.
+    pub(crate) fn read_at(
+        &mut self,
+        address: u16,
+        now: impl FnOnce() -> Result<Time, Error>,
+        clocks: &Clocks,
+    ) -> Result<u8, Error> {
+        let receive_at = if address == 0xf0e9 && self.enable & 0xc0 == 0x40 {
+            Some(now()?)
+        } else {
+            None
+        };
         let v = self.peek(address);
         if address == 0xf0e4 {
             self.seen = v;
@@ -281,7 +301,7 @@ impl Ssu {
         if address == 0xf0e9 {
             self.status &= !2;
             self.seen &= !2;
-            if self.enable & 0xc0 == 0x40 {
+            if let Some(now) = receive_at {
                 self.receive_started = true;
                 self.schedule_load(now, clocks)?;
             }
@@ -553,6 +573,37 @@ impl Ssu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receive_start_uses_the_consuming_read_time_and_preserves_failed_observations() {
+        let c = Clocks::new(
+            Time::ZERO,
+            super::super::clocks::Frequencies {
+                main_hz: 1_000_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut s = Ssu::default();
+        s.set_gate(true, Time::ZERO, &c).unwrap();
+        s.write(0xf0e0, 0x8c, true, Time::ZERO, &c).unwrap();
+        s.write(0xf0e3, 0x40, true, Time::ZERO, &c).unwrap();
+        assert_eq!(s.deadline(&c).unwrap(), None);
+        let before = s.clone();
+        assert!(s
+            .read_at(
+                0xf0e9,
+                || Err(Error::Internal("unavailable access time")),
+                &c
+            )
+            .is_err());
+        assert_eq!(s, before);
+        assert_eq!(
+            s.read_at(0xf0e9, || Ok(Time::from_micros(123)), &c)
+                .unwrap(),
+            0
+        );
+        assert_eq!(s.deadline(&c).unwrap(), Some(Time::from_micros(124)));
+    }
     #[test]
     fn completed_external_frame_cannot_load_as_an_active_shifter() {
         let mut s = Ssu {

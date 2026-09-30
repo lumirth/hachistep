@@ -507,6 +507,8 @@ impl SavedCpu {
             interrupt_delay: self.interrupt_deferral,
             retired: 0,
             interrupt_entries: 0,
+            #[cfg(feature = "profile-work")]
+            phase_dispatches: Default::default(),
         })
     }
 }

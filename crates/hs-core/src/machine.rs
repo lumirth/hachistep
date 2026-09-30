@@ -5,6 +5,8 @@
 mod execution;
 mod serial;
 mod state;
+#[cfg(feature = "profile-work")]
+mod work;
 use crate::{
     cpu::{alu::I, Action, Cpu, Registers, Width},
     devices::{bma150::Bma150, m95512::M95512, nt7508::Nt7508},
@@ -24,16 +26,31 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Copy)]
 enum BoardChange {
     Configuration,
-    Peripherals,
+    Peripherals {
+        owners: u16,
+        clock_output: bool,
+        serial_devices: bool,
+    },
     Serial,
 }
 
+/// Persistent images for a new session. Construction validates and copies the
+/// supplied bytes; the resulting machine does not borrow them.
 #[derive(Clone, Copy, Debug)]
 pub struct Images<'a> {
+    /// Raw 49,152-byte H8 internal flash image, including vectors.
     pub firmware: &'a [u8],
+    /// Raw 65,536-byte external EEPROM array.
     pub eeprom: &'a [u8],
+    /// Persistent M95512 status bits. Transient WIP/WEL bits are rejected.
     pub eeprom_status: u8,
+    /// Optional 19-byte BMA150 nonvolatile image. `None` selects the modeled
+    /// calibrated default. A supplied image loads the sensor's working registers
+    /// as at a cold start; it does not restore an operation in progress.
+    pub sensor_nonvolatile: Option<&'a [u8]>,
 }
+/// Physical conditions at construction. Use timestamped [`Input`] changes for
+/// conditions that vary during execution.
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Conditions {
     pub clocks: Frequencies,
@@ -55,13 +72,28 @@ impl Default for Conditions {
         }
     }
 }
+/// Why a successful execution call returned. Faults return `Error` instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// All effects before the requested exclusive horizon have completed.
+    Horizon,
+    /// The output consumer requested control, including at the last instant.
+    Output,
+}
+/// Successful bounded execution. Resume with the unconsumed input suffix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunResult {
     /// Exclusive horizon reached, including an earlier return requested by output.
     pub now: Time,
+    /// Prefix of the supplied timeline consumed by this call.
     pub inputs_consumed: usize,
+    pub reason: StopReason,
+    /// Cumulative instructions retired since construction or snapshot restoration,
+    /// excluding incomplete work. Matches [`Machine::retired`].
     pub retired: u64,
 }
+/// Execution-cost counters. Captures exclude them and restoration resets
+/// them; they do not describe guest-visible state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Statistics {
     pub bus_reads: u64,
@@ -92,11 +124,15 @@ impl Resume {
         }
     }
 }
+/// In-memory hardware checkpoint, including unfinished operations and emulated
+/// time. Host input queues, delivered events and audio history remain caller state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     state: Machine,
 }
 
+/// One device with owned hardware state. Run calls require exclusive mutable
+/// access; independent instances share no hardware state or callbacks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Machine {
     firmware_origin: [u8; 32],
@@ -113,7 +149,9 @@ pub struct Machine {
     resume_after: Option<Resume>,
     next_devices: Option<Time>,
     appointments: Appointments,
+    board_appointments: [Option<Time>; 7],
     changed_peripherals: u16,
+    changed_board: u8,
     serial: SerialLevels,
     piezo: Piezo,
     incident_light: bool,
@@ -125,21 +163,18 @@ pub struct Machine {
     power: Power,
     fault: Option<Error>,
     stats: Statistics,
+    #[cfg(feature = "profile-work")]
+    work: crate::profile_work::MachineWork,
 }
 impl Machine {
+    /// Start a powered, oscillator-ready device at time zero with default
+    /// physical conditions. This starts a new session from persistent images.
     pub fn new(images: Images<'_>) -> Result<Self, Error> {
         Self::with_conditions(images, Conditions::default())
     }
+    /// Start a new session with the supplied physical conditions. Zero supply
+    /// starts a discharged board; a later supply input can energize it.
     pub fn with_conditions(images: Images<'_>, conditions: Conditions) -> Result<Self, Error> {
-        Self::with_persistent_state(images, conditions, None)
-    }
-    /// Construct with a sensor nonvolatile image exported by an earlier session.
-    /// `None` constructs the sensor with its default nonvolatile image.
-    pub fn with_persistent_state(
-        images: Images<'_>,
-        conditions: Conditions,
-        sensor_nonvolatile: Option<&[u8]>,
-    ) -> Result<Self, Error> {
         if conditions.avcc_override_millivolts == Some(0) {
             return Err(Error::BadInput("AVCC fixture must be positive"));
         }
@@ -152,7 +187,7 @@ impl Machine {
             cpu,
             mcu,
             eeprom: M95512::new(images.eeprom, images.eeprom_status)?,
-            sensor: match sensor_nonvolatile {
+            sensor: match images.sensor_nonvolatile {
                 Some(bytes) => Bma150::from_nonvolatile(Time::ZERO, bytes)?,
                 None => Bma150::new(Time::ZERO),
             },
@@ -163,7 +198,9 @@ impl Machine {
             resume_after: None,
             next_devices: None,
             appointments: Appointments::default(),
+            board_appointments: [None; 7],
             changed_peripherals: 0,
+            changed_board: 0,
             serial: SerialLevels::default(),
             piezo: Piezo::Neutral,
             incident_light: false,
@@ -175,6 +212,8 @@ impl Machine {
             power: Power::new(conditions.supply_millivolts)?,
             fault: None,
             stats: Statistics::default(),
+            #[cfg(feature = "profile-work")]
+            work: Default::default(),
         };
         m.sensor
             .set_temperature(conditions.temperature_millicelsius);
@@ -202,6 +241,7 @@ impl Machine {
     pub fn instruction_pc(&self) -> u16 {
         self.cpu.instruction_pc()
     }
+    /// Executor diagnostic. Exact labels may change; use `sleeping` for control.
     pub fn phase_name(&self) -> &'static str {
         self.cpu.phase_name()
     }
@@ -281,7 +321,10 @@ impl Machine {
     pub fn display_enabled(&self) -> bool {
         self.lcd.enabled()
     }
-    pub fn display_drive(&self) -> Result<crate::devices::nt7508::LcdDrive, Error> {
+    /// Digital scan selection and polarity at the current observation point.
+    /// Includes PWM/FRC and the output latch; excludes drive-voltage amplitudes
+    /// and regulator, follower or glass behavior. This does not advance execution.
+    pub fn display_drive(&self) -> Result<crate::LcdDrive, Error> {
         self.lcd.drive(self.observation_time())
     }
     pub fn display_start_line(&self) -> u8 {
@@ -295,6 +338,9 @@ impl Machine {
     pub fn ssu_counts(&self) -> (u64, u64) {
         (self.mcu.ssu.transmitted, self.mcu.ssu.received)
     }
+    /// Latched core failure. The session rejects further execution and edits;
+    /// restore a healthy checkpoint or construct a new machine to recover.
+    /// Rejected input validation and host callback failures do not latch a fault.
     pub fn fault(&self) -> Option<&Error> {
         self.fault.as_ref()
     }
@@ -316,11 +362,15 @@ impl Machine {
     fn observation_time(&self) -> Time {
         Time::from_raw(self.now.raw().saturating_sub(1)).max(self.last_effect)
     }
+    /// Capture without advancing execution or emitting events. Diagnostic totals
+    /// are excluded. Record the caller's input cursor and output position alongside it.
     pub fn snapshot(&self) -> Snapshot {
         let mut state = self.clone();
         state.cpu.retired = 0;
         state.cpu.interrupt_entries = 0;
         state.stats = Statistics::default();
+        #[cfg(feature = "profile-work")]
+        state.clear_work();
         state.mcu.ssu.transmitted = 0;
         state.mcu.ssu.received = 0;
         state.mcu.sci.transmitted = 0;
@@ -396,6 +446,7 @@ impl Machine {
         reset_drive: Option<bool>,
         out: &mut dyn Output,
     ) -> Result<(), Error> {
+        self.sensor.sync_local_until(self.now, true)?;
         self.last_effect = self.now;
         let old = self.power.rail;
         let old_eeprom = self.power.eeprom();
@@ -449,32 +500,54 @@ impl Machine {
         self.refresh_peripherals(schedule::ALL)
     }
     fn refresh_peripherals(&mut self, changed: u16) -> Result<(), Error> {
-        let serial = self.serial_deadline()?;
-        self.appointments.update(
-            changed | self.changed_peripherals | schedule::SSU,
-            &self.mcu,
-            serial,
-        )?;
+        let changed = changed | self.changed_peripherals;
+        let serial = if changed & schedule::SSU != 0 {
+            self.serial_deadline()?
+        } else {
+            None
+        };
+        self.appointments.update(changed, &self.mcu, serial)?;
         self.changed_peripherals = 0;
-        self.next_devices = [
-            self.power.deadline(),
-            self.lcd.deadline(),
-            self.appointments.next(),
-            self.mcu.clock_output_deadline(self.now)?,
-            self.eeprom.deadline(),
-            self.sensor.deadline(),
-            self.watchdog_reset
-                .as_ref()
-                .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?,
-            self.reset_release
-                .as_ref()
-                .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?,
-        ]
-        .into_iter()
-        .flatten()
-        .min();
+        // Owners report changes to external operations at the actual mutation,
+        // such as a sensor register write or EEPROM chip-select release.
+        if changed == schedule::ALL {
+            self.refresh_board_appointments(0x7f)?;
+        } else {
+            self.refresh_board_appointments(self.changed_board)?;
+        }
+        self.changed_board = 0;
+        self.next_devices = self
+            .board_appointments
+            .iter()
+            .copied()
+            .chain([self.appointments.next()])
+            .flatten()
+            .min();
         if self.next_devices.is_some_and(|t| t < self.now) {
             return Err(Error::Internal("peripheral appointment in the past"));
+        }
+        Ok(())
+    }
+    fn refresh_board_appointments(&mut self, mut dirty: u8) -> Result<(), Error> {
+        while dirty != 0 {
+            let i = dirty.trailing_zeros() as usize;
+            dirty &= dirty - 1;
+            self.board_appointments[i] = match i {
+                0 => self.power.deadline(),
+                1 => self.lcd.deadline(),
+                2 => self.mcu.clock_output_deadline(self.now)?,
+                3 => self.eeprom.deadline(),
+                4 => self.sensor.interaction_deadline(),
+                5 => self
+                    .watchdog_reset
+                    .as_ref()
+                    .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?,
+                6 => self
+                    .reset_release
+                    .as_ref()
+                    .map_or(Ok(None), |w| w.deadline(&self.mcu.clocks))?,
+                _ => unreachable!(),
+            };
         }
         Ok(())
     }
@@ -501,68 +574,64 @@ impl Machine {
         change: BoardChange,
         out: &mut dyn Output,
     ) -> Result<[bool; 4], Error> {
+        #[cfg(feature = "profile-work")]
+        self.work.board_settlements.add(1);
+        use crate::mcu::gpio::{ALL_PORTS, P1, P3, P8, P9, PB};
         let configuration_changed = matches!(change, BoardChange::Configuration);
+        let (owners, clock_output, serial_devices) = match change {
+            BoardChange::Configuration => (schedule::ALL, true, true),
+            BoardChange::Peripherals {
+                owners,
+                clock_output,
+                serial_devices,
+            } => (owners, clock_output, serial_devices),
+            BoardChange::Serial => (schedule::SSU, false, true),
+        };
+        let mut ports = if configuration_changed { ALL_PORTS } else { 0 };
+        if clock_output {
+            self.mcu.update_clock_output(self.now);
+            ports |= P1;
+        }
+        if owners & schedule::SCI != 0 {
+            self.mcu
+                .gpio
+                .set_sci_pins(self.mcu.sci.pins(), self.incident_light);
+            ports |= P3;
+        }
+        if owners & schedule::AEC != 0 {
+            self.mcu
+                .gpio
+                .set_aec_output(self.mcu.aec.pwm_enabled(), self.mcu.aec.pwm_output());
+            ports |= P1;
+        }
+        if owners & schedule::TIMER_W != 0 {
+            ports |= P1 | P8;
+        }
+        if owners & (schedule::SSU | schedule::IIC) != 0 {
+            self.mcu.gpio.set_iic_pins(self.mcu.iic.pins());
+            ports |= P9;
+        }
+        if serial_devices {
+            ports |= P9;
+        }
+        if ports == 0 {
+            return Ok(self.mcu.gpio.serial_inputs());
+        }
         let previous = self.mcu.gpio.levels;
-        self.mcu.update_clock_output(self.now);
-        let sci_pins = self.mcu.sci.pins();
-        self.mcu.gpio.set_sci_pins(sci_pins, self.incident_light);
-        self.mcu
-            .gpio
-            .set_aec_output(self.mcu.aec.pwm_enabled(), self.mcu.aec.pwm_output());
+        let sci_pins = (ports & P3 != 0).then(|| self.mcu.sci.pins());
         let pins = self.mcu.ssu.pins();
         let timer = self.mcu.timer_w.outputs() << 1;
         let timer_mask = self.mcu.timer_w.drives() << 1;
-        let iic_pins = self.mcu.iic.pins();
-        self.mcu.gpio.set_iic_pins(iic_pins);
-        let data = self.serial_data();
-        let levels = if self.power.mcu() {
-            if matches!(change, BoardChange::Serial) {
-                self.mcu.gpio.resolve_serial(pins, data)
-            } else {
-                self.mcu.gpio.resolve(pins, timer, timer_mask, data)
-            }
+        if self.power.mcu() {
+            self.mcu
+                .gpio
+                .resolve_ports(pins, timer, timer_mask, self.serial_data(), ports & !P9);
         } else {
-            self.mcu.gpio.resolve_unpowered(data)
-        };
-        let sampled = self.mcu.gpio.serial_inputs();
-        if self.power.eeprom() {
-            self.eeprom.set_selected(levels.eeprom_selected, self.now)?;
+            self.mcu.gpio.resolve_unpowered(self.serial_data());
         }
-        self.sensor.set_selected(levels.sensor_selected);
-        if !self.serial.sensor_selected
-            && !levels.sensor_selected
-            && (self.serial.clock != levels.clock || self.serial.mosi != levels.mosi)
-        {
-            self.sensor.i2c_pins(
-                [self.serial.clock, self.serial.mosi],
-                [levels.clock, levels.mosi],
-                self.now,
-            )?;
-        }
-        self.lcd.select(levels.lcd_selected);
-        self.lcd.command_data(levels.data);
-        if levels.clock != self.serial.clock {
-            if levels.clock {
-                if self.power.eeprom() {
-                    self.eeprom.rising(levels.mosi);
-                }
-                self.sensor.rising(levels.mosi, self.now)?;
-                self.lcd.rising(levels.mosi, self.now, out)?;
-            } else {
-                self.eeprom.falling();
-                self.sensor.falling();
-            }
-        }
-        let settled_data = self.serial_data();
-        // Only the external serial drivers can have changed since the first
-        // resolution. Preserve it when the electrical inputs are identical.
-        self.serial = if settled_data == data {
-            levels
-        } else if self.power.mcu() {
-            self.mcu.gpio.resolve_serial(pins, settled_data)
-        } else {
-            self.mcu.gpio.resolve_unpowered(settled_data)
-        };
+        let route = self.mcu.gpio.serial_route(pins);
+        let (sampled, mut feedback) =
+            self.settle_serial_network(&route, pins, configuration_changed, out)?;
         if !self.power.mcu() {
             if self.emitting {
                 self.emitting = false;
@@ -580,17 +649,16 @@ impl Machine {
             }
             return Ok(sampled);
         }
-        let serial = self.mcu.gpio.serial_inputs();
-        if let Some(edge) = self.mcu.ssu.input_pins(serial[0], serial[1]) {
-            self.changed_peripherals |= schedule::SSU;
-            if edge.sample {
-                self.mcu.ssu.sample(sampled[self.mcu.ssu.input_pin()]);
-            }
-            self.mcu.ssu.finish_edge(self.now, &self.mcu.clocks)?;
-        }
+        let changed_ports = previous
+            .iter()
+            .zip(self.mcu.gpio.levels)
+            .enumerate()
+            .fold(0u8, |mask, (port, (old, new))| {
+                mask | (u8::from(*old != new) << port)
+            });
         // Selection and an external clock edge can change the SSU's output
         // drivers. Resolve that electrical consequence at this same instant.
-        if configuration_changed || previous[1] != self.mcu.gpio.levels[1] {
+        if configuration_changed || changed_ports & P3 != 0 {
             let (sck, rxd) = self.mcu.gpio.sci_inputs();
             if self
                 .mcu
@@ -600,53 +668,58 @@ impl Machine {
                 self.changed_peripherals |= schedule::SCI;
             }
         }
-        let [scl, sda] = self.mcu.gpio.iic_inputs();
-        if self
-            .mcu
-            .iic
-            .input_pins(scl, sda, self.now, &self.mcu.clocks)?
-        {
-            self.changed_peripherals |= schedule::IIC;
+        if sci_pins.is_some_and(|old| self.mcu.sci.pins() != old) {
+            feedback |= schedule::SCI;
         }
-        if self.mcu.ssu.pins() != pins
-            || self.mcu.sci.pins() != sci_pins
-            || self.mcu.iic.pins() != iic_pins
-        {
-            self.resolve_board(out)?;
+        if feedback != 0 {
+            self.settle_board(
+                BoardChange::Peripherals {
+                    owners: feedback,
+                    clock_output: false,
+                    serial_devices: false,
+                },
+                out,
+            )?;
         }
-        let emitting = self.mcu.gpio.emitting();
-        if emitting != self.emitting {
-            self.emitting = emitting;
-            let _ = out.event(Event::Infrared {
-                at: self.now,
-                emitting,
-            });
+        if configuration_changed || changed_ports & P3 != 0 {
+            let emitting = self.mcu.gpio.emitting();
+            if emitting != self.emitting {
+                self.emitting = emitting;
+                let _ = out.event(Event::Infrared {
+                    at: self.now,
+                    emitting,
+                });
+            }
         }
-        self.mcu.control.pins(self.mcu.gpio.irq_levels());
-        let (b, c) = self.mcu.gpio.piezo_levels();
-        let drive = match (b, c) {
-            (true, false) => Piezo::Positive,
-            (false, true) => Piezo::Negative,
-            _ => Piezo::Neutral,
-        };
-        if drive != self.piezo {
-            self.piezo = drive;
-            let _ = out.event(Event::Buzzer {
-                at: self.now,
-                drive,
-            });
+        if configuration_changed || changed_ports & (P1 | P3 | P9 | PB) != 0 {
+            self.mcu.control.pins(self.mcu.gpio.irq_levels());
+        }
+        if configuration_changed || changed_ports & P8 != 0 {
+            let (b, c) = self.mcu.gpio.piezo_levels();
+            let drive = match (b, c) {
+                (true, false) => Piezo::Positive,
+                (false, true) => Piezo::Negative,
+                _ => Piezo::Neutral,
+            };
+            if drive != self.piezo {
+                self.piezo = drive;
+                let _ = out.event(Event::Buzzer {
+                    at: self.now,
+                    drive,
+                });
+            }
         }
         // Clock edges preserve pin routing. Notify analog and timer inputs
         // when their connected ports change; configuration writes revisit all.
         let connected_ports_changed = configuration_changed
-            || previous[0] != self.mcu.gpio.levels[0]
-            || previous[1] != self.mcu.gpio.levels[1]
-            || previous[2] != self.mcu.gpio.levels[2]
-            || previous[4] != self.mcu.gpio.levels[4];
+            || changed_ports & (P1 | P3 | P8 | PB) != 0
+            || owners & schedule::TIMER_W != 0;
         if !connected_ports_changed {
             return Ok(sampled);
         }
-        if self.mcu.comparators.enabled_mask() != 0 {
+        if self.mcu.comparators.enabled_mask() != 0
+            && (configuration_changed || changed_ports & (P3 | PB) != 0)
+        {
             self.changed_peripherals |= schedule::COMPARATORS;
             let (pb, vcref) = self.analog_values();
             self.mcu.comparators.set_inputs(
@@ -656,30 +729,41 @@ impl Machine {
                 [pb[4], pb[5]],
             )?;
         }
-        if self
-            .mcu
-            .timer_w
-            .input_pins(self.mcu.gpio.timer_inputs(), self.now, &self.mcu.clocks)?
+        // TIOR can enable capture while the pad remains at its old level.
+        // Establish that selected input's baseline before a later edge.
+        if (configuration_changed
+            || owners & schedule::TIMER_W != 0
+            || changed_ports & (P1 | P8) != 0)
+            && self.mcu.timer_w.input_pins(
+                self.mcu.gpio.timer_inputs(),
+                self.now,
+                &self.mcu.clocks,
+            )?
         {
             self.changed_peripherals |= schedule::TIMER_W;
         }
-        if self
-            .mcu
-            .aec
-            .input_pins(self.mcu.gpio.aec_inputs(), self.now, &self.mcu.clocks)?
+        if (configuration_changed || changed_ports & P1 != 0)
+            && self
+                .mcu
+                .aec
+                .input_pins(self.mcu.gpio.aec_inputs(), self.now, &self.mcu.clocks)?
         {
             self.changed_peripherals |= schedule::AEC;
         }
-        self.mcu.collect_aec_requests();
-        let (selected, high) = self.mcu.gpio.adc_trigger();
-        if self.mcu.adc.input_trigger(
-            selected,
-            high,
-            self.mcu.control.iegr & 0x20 != 0,
-            self.now,
-            &self.mcu.clocks,
-        )? {
-            self.changed_peripherals |= schedule::ADC;
+        if configuration_changed || changed_ports & P1 != 0 {
+            self.mcu.collect_aec_requests();
+        }
+        if configuration_changed {
+            let (selected, high) = self.mcu.gpio.adc_trigger();
+            if self.mcu.adc.input_trigger(
+                selected,
+                high,
+                self.mcu.control.iegr & 0x20 != 0,
+                self.now,
+                &self.mcu.clocks,
+            )? {
+                self.changed_peripherals |= schedule::ADC;
+            }
         }
         Ok(sampled)
     }
@@ -698,7 +782,7 @@ impl Machine {
             self.now,
             out,
         )?;
-        self.cpu = Cpu::reset();
+        self.reset_cpu();
         self.pending = None;
         self.resume_after = None;
         self.stats.resets = self.stats.resets.wrapping_add(1);
@@ -708,6 +792,17 @@ impl Machine {
         });
         self.resolve_board(out)?;
         self.refresh_deadline()
+    }
+    fn reset_cpu(&mut self) {
+        #[cfg(feature = "profile-work")]
+        self.work
+            .cpu_phase_carry
+            .add(self.cpu.phase_dispatches.get());
+        let retired = self.cpu.retired;
+        let interrupt_entries = self.cpu.interrupt_entries;
+        self.cpu = Cpu::reset();
+        self.cpu.retired = retired;
+        self.cpu.interrupt_entries = interrupt_entries;
     }
     fn analog_values(&self) -> ([u16; 6], u16) {
         let supply = self.conditions.supply_millivolts;
@@ -764,9 +859,18 @@ impl Machine {
     }
     fn devices_at_boundary(&mut self, out: &mut dyn Output) -> Result<(), Error> {
         self.sync_serial_before(self.now, out)?;
+        self.sensor.sync_local_until(self.now, false)?;
         self.last_effect = self.now;
         self.stats.peripheral_boundaries = self.stats.peripheral_boundaries.wrapping_add(1);
         let mut due = self.appointments.due(self.now);
+        let serial_drivers = self.serial_data();
+        let board_due = self
+            .board_appointments
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (i, at)| {
+                mask | (u8::from(*at == Some(self.now)) << i)
+            });
         if due & schedule::STARTUP != 0
             || self.power.deadline() == Some(self.now)
             || self
@@ -787,7 +891,7 @@ impl Machine {
                 self.mcu.lose_volatile(self.now, out)?;
                 self.lcd.lose_volatile();
                 self.sensor.lose_volatile();
-                self.cpu = Cpu::reset();
+                self.reset_cpu();
                 self.pending = None;
                 self.resume_after = None;
                 self.watchdog_reset = None;
@@ -802,8 +906,10 @@ impl Machine {
         if self.eeprom.deadline() == Some(self.now) {
             self.eeprom.complete(self.now, out)?;
         }
-        if self.sensor.deadline() == Some(self.now) {
+        if self.sensor.interaction_deadline() == Some(self.now) {
             self.sensor.at_deadline(self.now, out)?;
+        } else {
+            self.sensor.sync_local_until(self.now, true)?;
         }
         let reset = self.mcu.sync_peripherals(due, self.now, out)?;
         if reset {
@@ -857,7 +963,11 @@ impl Machine {
         let change = if due == schedule::ALL {
             BoardChange::Configuration
         } else {
-            BoardChange::Peripherals
+            BoardChange::Peripherals {
+                owners: due,
+                clock_output: board_due & (1 << 2) != 0,
+                serial_devices: self.serial_data() != serial_drivers,
+            }
         };
         if self.mcu.ssu.deadline(&self.mcu.clocks)? == Some(self.now) {
             self.serial_edge(change, out)?;
@@ -865,6 +975,7 @@ impl Machine {
         } else {
             self.settle_board(change, out)?;
         }
+        self.refresh_board_appointments(board_due)?;
         self.refresh_peripherals(due)
     }
     fn input_tag(input: Input) -> u8 {
@@ -920,6 +1031,7 @@ impl Machine {
         Ok(())
     }
     fn apply_batch(&mut self, changes: &[TimedInput], out: &mut dyn Output) -> Result<(), Error> {
+        self.sensor.sync_local_until(self.now, true)?;
         self.last_effect = self.now;
         if self.power.mcu() && self.mcu.sync(self.now, out)? {
             self.reset_mcu(true, out)?;
@@ -1011,5 +1123,51 @@ impl Machine {
             }
         }
         self.refresh_deadline()
+    }
+}
+
+#[cfg(test)]
+mod sensor_sync_tests {
+    use super::*;
+
+    #[test]
+    fn returned_horizons_and_input_changes_preserve_sensor_apertures() {
+        let mut rom = vec![0; 49152];
+        rom[..2].copy_from_slice(&[1, 0]);
+        rom[0x100..0x110].copy_from_slice(&[
+            0x07, 0x80, 0xf8, 0x10, 0x6a, 0x88, 0xff, 0xb1, 0xf8, 0, 0x6a, 0x88, 0xff, 0xb1, 0x40,
+            0xfe,
+        ]);
+        let mut m = Machine::new(Images {
+            firmware: &rom,
+            eeprom: &[255; 65536],
+            eeprom_status: 0,
+            sensor_nonvolatile: None,
+        })
+        .unwrap();
+        // The 3-ms readiness interval ends with T/X/Y/Z at 12 kHz.
+        let epoch = Time::from_micros(3000).raw() - (1u128 << 64) / 3000;
+        let phase = |n: u128| Time::from_raw(epoch + (n << 64) / 12000);
+        let temperature = TimedInput {
+            at: phase(1),
+            input: Input::TemperatureMillicelsius(50_000),
+        };
+        m.run_until(Time::from_raw(phase(1).raw() + 1), &[temperature], &mut ())
+            .unwrap();
+        assert_eq!(m.sensor.peek(8), Some(100)); // old 20 °C at the tied aperture
+        m.run_until(phase(4), &[], &mut ()).unwrap();
+        assert_eq!(m.sensor.peek(7), Some(0)); // Z at the horizon is pending
+        let saved = m.snapshot().encode().unwrap();
+        let snapshot = Snapshot::decode(&saved).unwrap();
+        let mut restored = Machine::from_snapshot(&snapshot);
+        let end = Time::from_raw(phase(5).raw() + 1);
+        m.run_until(end, &[], &mut ()).unwrap();
+        restored.run_until(end, &[], &mut ()).unwrap();
+        assert_eq!(m.sensor.peek(7), Some(32)); // +1 g at the default ±4 g range
+        assert_eq!(m.sensor.peek(8), Some(160)); // next T converts 50 °C
+        assert_eq!(
+            m.snapshot().encode().unwrap(),
+            restored.snapshot().encode().unwrap()
+        );
     }
 }

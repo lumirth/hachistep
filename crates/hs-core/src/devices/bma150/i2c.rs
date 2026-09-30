@@ -98,6 +98,37 @@ impl State {
 }
 
 impl Bma150 {
+    /// The board materializes converted state at writes, launches and read
+    /// acknowledgement. Quiet I2C shifts retain their parser-only behavior.
+    pub(crate) fn i2c_pins_at(
+        &mut self,
+        previous: [bool; 2],
+        current: [bool; 2],
+        now: Time,
+    ) -> Result<bool, Error> {
+        if !self.selected && self.unpowered_since.is_none() && self.serial_ready.is_none() {
+            let [old_clock, _] = previous;
+            let [clock, _] = current;
+            let consumes_conversion = if !old_clock && clock {
+                matches!(self.i2c.phase, Phase::Read { sampled: 0 })
+                    || matches!(self.i2c.phase, Phase::Receive(Receive::Data)) && self.i2c.bits == 7
+            } else if old_clock && !clock {
+                matches!(
+                    self.i2c.phase,
+                    Phase::Acknowledge {
+                        following: Following::Read,
+                        edge: 2
+                    } | Phase::MasterAcknowledge(Some(true))
+                )
+            } else {
+                false
+            };
+            if consumes_conversion && self.quiet_deadline.is_none() {
+                self.sync_local_until(now, true)?;
+            }
+        }
+        self.i2c_pins(previous, current, now)
+    }
     /// Observe the previous settled bus and current pins before slave effects.
     /// The board stores the newly settled pins after applying our SDA intent.
     pub(crate) fn i2c_pins(
@@ -105,11 +136,12 @@ impl Bma150 {
         previous: [bool; 2],
         current: [bool; 2],
         now: Time,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         if self.selected || self.unpowered_since.is_some() || self.serial_ready.is_some() {
             self.i2c.abort();
-            return Ok(());
+            return Ok(false);
         }
+        let mut deadline_changed = false;
         let [old_clock, old_data] = previous;
         let [clock, data] = current;
         if old_clock && clock && old_data != data {
@@ -136,7 +168,7 @@ impl Bma150 {
                             Receive::Address => match byte {
                                 0x70 => Following::Control,
                                 0x71 => Following::Read,
-                                _ => return Ok(()), // No address ACK; wait for START.
+                                _ => return Ok(false), // No address ACK; wait for START.
                             },
                             Receive::Control => {
                                 self.i2c.pointer = byte & 0x7f;
@@ -144,6 +176,7 @@ impl Bma150 {
                             }
                             Receive::Data => {
                                 self.write_register(self.i2c.pointer, byte, now)?;
+                                deadline_changed = true;
                                 if self.quiet_deadline.is_some() {
                                     Following::Idle // Finish the accepted reset's ACK.
                                 } else {
@@ -206,7 +239,7 @@ impl Bma150 {
                 _ => {}
             }
         }
-        Ok(())
+        Ok(deadline_changed)
     }
 
     fn i2c_read(&mut self) {

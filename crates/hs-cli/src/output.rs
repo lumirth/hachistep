@@ -197,6 +197,7 @@ mod tests {
             firmware: &[0; 49152],
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         })
         .unwrap();
         m.power_off(&mut ()).unwrap();

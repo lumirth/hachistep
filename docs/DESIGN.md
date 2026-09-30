@@ -9,8 +9,10 @@ and the task discussion.
 
 HachiStep is a Pokéwalker emulator core for downstream applications and frontend users.
 It should make ordinary Pokéwalker use practical and support custom firmware development
-with useful confidence in behavior on the physical device. Hardware fidelity,
-performance, interface usability and readable, compact code are joint design goals.
+with useful confidence in behavior on the physical device. Hardware fidelity and
+performance take priority, supported by a coherent design and usable interfaces. Use
+code size to identify disproportionate complexity and guide cleanup. Retain useful
+correctness and performance gains even when they require more code.
 
 One coherent architecture supplies the same hardware behavior for every firmware image.
 The current executor is a resumable interpreter. Execution techniques, state
@@ -100,6 +102,13 @@ that model when they preserve behavior and justify their combined complexity. Fu
 fidelity is the default; separate fast and accurate hardware models would undermine
 this contract. Assess architecture changes alongside local optimizations, including
 their effect on resumability, RAM execution and component interactions.
+
+Keep execution and clock projections valid across owner-local operations. Canonical
+register accesses report the consequences that require wider settlement: changes to
+connections, interrupt admission, clocks, appointments or outputs. Distinguish an
+unperformed access from a committed access awaiting settlement, and complete the CPU's
+semantic continuation after those consequences are resolved. Captures retain hardware
+progress; these disposable projections and consequence descriptions add no saved state.
 
 Near's synchronization model provides a useful precedent for advancing components when
 they interact. HachiStep retains that principle with explicit state instead of a
@@ -266,8 +275,10 @@ minimum. Moving another slot later leaves it valid; cancelling or postponing the
 requires recomputation. Collect slots due at the same timestamp together.
 
 Retain the owner of each appointment. Service the due owners and update appointments
-affected by the resulting connections. Register accesses synchronize their owning
-peripherals. Shared clock and power changes settle every affected consumer under its
+affected by the resulting connections. Register accesses settle continuous owner
+evolution when the observation needs it; event-driven state is current at its
+interaction appointments. Retained observations and flag qualification need no clock
+projection. Shared clock and power changes settle every affected consumer under its
 old configuration before establishing the new interval.
 
 ### 5.2 Execution
@@ -283,6 +294,26 @@ old configuration before establishing the new interval.
 A configuration write first settles elapsed work under the old configuration, resolves
 coincident activity, applies the write and updates retained phase and future
 appointments according to that register's rules.
+
+CPU windows count local clock edges and project timestamps when another owner observes
+an access, when tracing records it, or when execution suspends. A normal flash read and
+a RAM access can stay inside the window; flash programming and verification still use
+their timed owner. Suspended accesses retain their full clock obligation, including
+work beyond the caller's horizon. Reads that clear an interrupt or start a transfer
+invalidate the corresponding admission decision as writes do.
+
+Connection propagation identifies changed drivers and resolves their physical ports
+before notifying input consumers. Selecting a new input function requires notification
+even when the pad level is unchanged. A raw serial edge coincident with another
+appointment still advances the shifter, resolves its drivers and refreshes its own
+appointment. External owners report appointment changes at their actual mutations;
+ordinary serial acknowledgements do not require rebuilding unrelated deadlines.
+
+Ordinary BMA150 conversions retain their sequential recurrence locally. Synchronize
+them before serial observation, input or supply changes, explicit device consequences,
+capture and returned horizons. Merge deferred serial edges and conversions in timestamp
+order. Autonomous sleep retains conversion appointments because it can release an
+active serial driver.
 
 Pin delivery reports changes in levels or function selection. A repeated level leaves
 the owner's clock work pending until its next appointment or access. Reset settles
@@ -448,6 +479,11 @@ The MCU directly classifies the fixed memory regions and registers. Ordinary RAM
 flash reads use direct array access; registers dispatch to their owners. Carry physical
 width and access origin through the transaction. Native word accesses and ordered byte
 lanes have different timing and side effects.
+
+Classify a physical access once for timing, owner synchronization and commitment. Its
+routing description is disposable; captures retain the logical action, completed lanes
+and clock obligation. Reconstruct routing when suspended work resumes. Owners still
+resolve dynamic outcomes such as flash verification and read-qualified flag clears.
 
 An active access retains its address, target, direction, width, qualified origin, write
 data or partial read data, physical phase and remaining clock work. Include instruction
@@ -944,8 +980,9 @@ Interactive embedding shapes the public interface. Measure interactive use and b
 firmware execution as equally important workloads through the complete core.
 
 Use profiles to reconsider execution structure, synchronization and representations.
-An optimization must earn the added difficulty of reading, changing and verifying the
-code. Prefer simpler code when extra complexity buys only a small gain. Learn from
+Evaluate added complexity against correctness and measured performance gains. When a
+method adds substantial complexity for a small gain, reconsider the method while
+preserving useful progress. Learn from
 mature emulators of similarly modest systems, accounting for their hardware and workload
 differences.
 

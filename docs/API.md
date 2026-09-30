@@ -1,6 +1,20 @@
 # Embedding the core
 
-The runnable example is `crates/hs-core/examples/replay.rs`:
+`Machine` runs one Pokéwalker. An application loads images, supplies timestamped
+physical inputs and advances the device to an emulated-time deadline. It consumes
+events during execution and reads display data afterward. Host pacing, files, audio
+playback and connection transport belong to the application.
+
+Import embedding types from `hs_core`. The API is being refined before freezing it;
+current callers should update with the core.
+
+`diagnostic` exposes CPU, MCU and external-device components for controlled experiments.
+Those interfaces follow the hardware implementation and remain outside the embedding
+contract. Ordinary applications need no component construction or synchronization.
+The [API research](research/emulator-api.md) explains the consumer needs behind this
+boundary.
+
+The [replay example](../crates/hs-core/examples/replay.rs) is a complete caller:
 
 ```sh
 cargo run -p hs-core --release --example replay -- FIRMWARE EEPROM
@@ -10,15 +24,24 @@ The example requests 300 display frames at a 60 Hz cadence, delivers button inpu
 streams PCM, and verifies save state restoration. A frontend supplies its own window,
 audio device and host pacing.
 
-The crate documentation also includes a compiled doctest using an original synthetic
-branch loop, so it needs no proprietary inputs.
+The [README](../README.md#embed-a-device) shows construction with an original synthetic
+branch loop. The same example is a compiled crate doctest and needs no private images.
 
 ## Construction
 
-`Images` contains borrowed firmware/EEPROM bytes and the EEPROM's persistent status
-byte. Construction validates sizes (49,152 and 65,536), rejects invalid nonpersistent
-status bits, and copies the bytes into owned machine storage. Firmware identity does
-not restrict execution. The CPU reads the supplied reset vector through the normal bus.
+`Images` groups the persistent data used to start a new session:
+
+| Field | Contents |
+| --- | --- |
+| `firmware` | Raw 49,152-byte internal flash, including reset and exception vectors. |
+| `eeprom` | Raw 65,536-byte external EEPROM array. |
+| `eeprom_status` | Persistent M95512 status bits. WIP and WEL are transient and rejected. |
+| `sensor_nonvolatile` | Optional 19-byte BMA150 configuration/calibration image. `None` selects the modeled calibrated default. |
+
+Construction validates the image lengths and status bits, then copies the borrowed
+bytes into owned machine storage. The caller can release its buffers afterward.
+Firmware identity does not restrict execution. The CPU reads the supplied reset vector
+through the normal bus.
 
 `Machine::new(images)` selects default `Conditions`. `with_conditions(images,
 conditions)` selects main/watch/on-chip frequencies, supply voltage, temperature and the
@@ -26,9 +49,9 @@ nominal battery-sense voltage drop. AVCC follows supply by default;
 `avcc_override_millivolts` supplies an optional external analog-supply fixture.
 `battery_sense_drop_millivolts` defaults to 600; this inferred effective circuit
 parameter is independent of firmware and EEPROM calibration. P84 must actually drive
-high to enable the sense path. `with_persistent_state(images, conditions,
-Some(sensor_bytes))` additionally loads the 19-byte BMA nonvolatile image. `None`
-selects the default sensor image.
+high to enable the sense path. A supplied sensor image loads its volatile working
+registers as at a cold start. These images preserve stored bytes, not an in-progress
+session. Use a snapshot to resume partially completed hardware work.
 
 Time zero is a powered, oscillator-ready board at reset-vector entry. This explicit
 initial state avoids imposing an arbitrary battery-insertion history. Set the initial
@@ -48,28 +71,60 @@ cursor += result.inputs_consumed;
 ```
 
 The horizon is exclusive. Do not remove an input at exactly `end`; the next run must
-still see it. Timelines are monotonic and properties cannot be assigned twice at the
-same timestamp. Independent same-time changes are applied in one batch. Reversed
+still see it. Timelines are ordered by timestamp. A property cannot be assigned twice
+at the same timestamp. Independent same-time changes are applied in one batch. Reversed
 horizons and past inputs fail. The host must not run ahead of the input history it
 actually knows; no retroactive input insertion is supported.
 
-For frequent calls, pass the portion of the ordered timeline before that call's horizon,
-as above. Input validation then visits each consumed event once, avoiding repeated scans
-of future input.
+Each call validates the entire supplied slice before execution, including inputs beyond
+its horizon. For frequent calls, pass only the portion before that call's horizon, as
+above. This bounds validation to that interval. An early output stop leaves an
+unconsumed suffix, which the next call validates again. Keep the complete same-time
+batch together when partitioning a timeline.
 
-A custom `Output` implements `fn event(&mut self, event: Event) -> ControlFlow<()>`,
-using `std::ops::ControlFlow`. Return `Continue(())` to keep running or `Break(())` to
+A closure implements `Output` when it accepts `Event` and returns
+`std::ops::ControlFlow<()>`. A frontend can borrow its own buffers without creating a
+separate callback object:
+
+```rust,ignore
+use std::ops::ControlFlow;
+
+let mut events = Vec::new();
+let result = machine.run_until(end, inputs, &mut |event| {
+    events.push(event);
+    if matches!(event, Event::Infrared { .. }) {
+        ControlFlow::Break(())
+    } else {
+        ControlFlow::Continue(())
+    }
+})?;
+```
+
+Implement `Output::event` for a custom consumer when it needs reusable state or methods.
+`Vec<Event>` collects events, and `()` discards them. Return `Continue(())` to keep
+running or `Break(())` to
 return control after all effects at the current timestamp finish. Further events at
 that timestamp are still delivered, and the entire input batch is consumed. The callback
-is synchronous and must not re-enter the machine. A host sink can retain an I/O error
-and return `Break(())`; the CLI uses this pattern. A no-op sink is `&mut ()`.
+is synchronous and must not re-enter the machine.
 
-After a stop request, `RunResult.now` is the exclusive horizon one 64.64 time quantum
-(`2^-64` seconds) after the completed instant. It can precede the requested `end`. New
+After a stop request, `RunResult.now` is the exclusive horizon one 64.64 time quantum,
+`2^-64` seconds, after the completed instant. It can precede the requested `end`.
+`RunResult.reason` is `StopReason::Output` when
+the consumer requested a stop, including when the returned horizon equals `end`.
+`StopReason::Horizon` means the call reached its requested horizon without a stop
+request. Core faults return `Err` instead of a successful stop result. New
 input may start at the returned horizon; the completed instant is already past. Resume
 through another `run_until` call with the unconsumed inputs. The stop request belongs to
 the current call and is absent from save states. Immediate power operations always
 finish their complete operation and return.
+
+A stop request is not per-event backpressure. The consumer must accept the remaining
+events at that timestamp. If host delivery fails, retain the error and return
+`Break(())`; check the retained error after the run returns. The device remains healthy.
+Events already delivered to a callback are not emitted again on resume. Buffer them in
+the application if the transport needs retries.
+
+## Persistent updates and failures
 
 Persistent updates carry their data in `NvByte`; `NvCommit` or `NvInterrupted` then
 closes an address range containing the affected bytes. A wrapped EEPROM write spans
@@ -99,12 +154,7 @@ supplies a horizon within its known input timeline. The connection design and ti
 responsibilities are in [DESIGN
 §13.5](DESIGN.md#135-execution-pacing-and-external-connections).
 
-## Observation
-
-`registers`, `instruction_pc`, `phase_name`, `statistics`, `retired` and
-`interrupt_entries` provide diagnostic state. `peek(address)` is a diagnostic projection
-with no guest read side effects. It may clone MCU state, so frequent inspection can be
-expensive.
+## Display
 
 `display(&mut [u8; 6144])` returns row-major 96x64 pixels. Each value is the
 programmed PWM drive averaged over the selected FRC frames and scaled to 0..255,
@@ -121,10 +171,14 @@ the frontend's presentation. Pixel values describe duty; mapping this voltage co
 to visible contrast requires the frontend's panel response.
 
 `display_drive()` projects the LCD controller's digital output at the current
-observation point: selected COM (128 for the icon), two 64-bit SEG masks, and AC
+observation point: selected COM, 128 for the icon, two 64-bit SEG masks, and AC
 polarity. It includes PWM/FRC, the output latch, and frame-latched start line. It does
 not advance the guest or alter snapshot state. Power-save and display-off return
-inactive drive. This is separate from analog glass response.
+inactive drive. This projection contains no drive-voltage amplitudes, regulator or
+follower behavior, or analog glass response. See the
+[LCD accuracy contract](accuracy/lcd.md) for the modeled controls and limits.
+
+## Audio
 
 `machine.audio(sample_rate)` constructs an `Audio` renderer at the current time and
 buzzer drive. Pass output events to `audio.event(event, samples)` and call
@@ -143,6 +197,8 @@ interval, including a final advance through silence. After restoring or replacin
 machine, discard queued playback and construct a renderer for the new time and drive.
 Sample/filter history belongs to the frontend and is absent from native save states.
 
+## Stored bytes and inspection
+
 `firmware`, `ram`, `eeprom`, `eeprom_status`, `sensor_nonvolatile`, `lcd_ram` and
 `lcd_icons` return read-only data. RAM and EEPROM edits use the operations below.
 
@@ -152,6 +208,17 @@ construction. The CLI exports this as `flash.bin`; the input file is never modif
 Exporting or peeking at flash does not perform a guest read, trigger protection or
 finish a pulse. A raw image preserves readable bytes; an exact snapshot additionally
 preserves intermediate cell charge and controls.
+
+`registers`, `instruction_pc`, `phase_name`, `statistics`, `retired` and
+`interrupt_entries` provide diagnostic state. `peek(address)` is a projection
+with no guest read side effects. It may clone MCU state, so frequent inspection can be
+expensive. These operations do not advance the device or emit events.
+`phase_name` returns an implementation diagnostic; its exact labels may change.
+Use `sleeping` and run results to control execution.
+
+Instruction, interrupt, bus and serial totals accumulate across hardware resets. A
+snapshot excludes these diagnostic totals; restoration starts them at zero. Use
+differences between observations to measure a run interval.
 
 ## State editing
 
@@ -175,8 +242,8 @@ execution resumes. [mGBA's raw and bus access APIs][mgba-access] and
 operations distinct from physical input delivery. CPU and peripheral register mutation
 is not currently exposed by `Machine`.
 
-[mgba-access]: https://github.com/mgba-emu/mgba/blob/master/include/mgba/core/core.h
-[sameboy-access]: https://github.com/LIJI32/SameBoy/blob/master/Core/gb.h
+[mgba-access]: https://github.com/mgba-emu/mgba/blob/c3c8e5e813f245028de118a56734e1dc0f35ce2a/include/mgba/core/core.h
+[sameboy-access]: https://github.com/LIJI32/SameBoy/blob/213a12ce93d66b105a113debd9396306066a7cfc/Core/gb.h
 
 ## Checkpoint
 
@@ -223,9 +290,11 @@ a test mode. These modes return `Error::UnsupportedResetMode`. User mode execute
 supplied flash image. See the reset inputs in [INPUTS](INPUTS.md).
 
 `Input::AnalogPin { pin, millivolts }` and `Input::DigitalPin { pin, level }` accept
-optional fixture drives (`None` releases them). The actual names/variant field spelling
-are defined in `signals.rs`; see INPUTS for the CLI equivalents. These fixtures flow
-through the selected pin functions and their owning peripherals.
+optional fixture drives, where `None` releases them. `AnalogPin` and `DigitalPin`
+name the package nodes. See [INPUTS](INPUTS.md#physical-csv) for the CLI equivalents.
+These advanced electrical fixtures flow through the selected pin functions and their
+owning peripherals. Ordinary frontends supply board inputs such as buttons, acceleration
+and incident light.
 
 Supply changes affect the analog network and functional availability. Falling below a
 chip's operating range freezes or interrupts its physical work; this does not by itself
@@ -238,8 +307,8 @@ nominal constants and worked examples are in
 Each run holds exclusive mutable access to its machine. Independent instances can run on
 separate host threads. There are no global hardware variables or internal locks. A
 caller may allocate an output vector; the core itself does not allocate during ordinary
-execution. Snapshot/constructor/peek costs should not be confused with hot execution
-cost.
+execution. Construction, capture, encoding and some inspection operations allocate.
+Their cost belongs outside the frontend's ordinary run loop.
 
 Flash construction reserves at most 384 charge-page slots (about 3 MiB of address
 space); a slot is populated only when its page is exposed to a pulse. Normal firmware

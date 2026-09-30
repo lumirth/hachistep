@@ -10,6 +10,8 @@ pub enum Drive {
     Low = 1,
     High = 2,
 }
+/// Differential buzzer polarity. It contains no voltage amplitude or measured
+/// acoustic response.
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 #[borsh(use_discriminant = true)]
@@ -18,14 +20,22 @@ pub enum Piezo {
     Neutral = 1,
     Positive = 2,
 }
+/// Persistent storage affected by a nonvolatile output event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NvDomain {
+    /// External EEPROM. Event addresses index its 65,536-byte array.
     EepromArray,
+    /// Persistent EEPROM status byte, reported at address zero.
     EepromStatus,
+    /// Internal flash. Event addresses are guest addresses below `0xC000`.
     InternalFlash,
+    /// Sensor nonvolatile registers `0x2B..=0x3D`. Subtract `0x2B` to index
+    /// the 19-byte image returned by `Machine::sensor_nonvolatile`.
     Sensor,
 }
 
+/// Timed hardware output delivered through [`Output`]. Inspection and capture
+/// emit no events. Use [`Event::time`] for the exact timestamp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Event {
     Power {
@@ -83,8 +93,11 @@ pub enum Event {
         watchdog: bool,
     },
 }
-/// Events are delivered synchronously. NvByte reports persistent data when an
-/// operation's physical progress is settled; NvCommit/NvInterrupted close its
+/// Receives synchronous hardware events. A closure returning `ControlFlow<()>`,
+/// `Vec<Event>` and `()` also implement this trait.
+///
+/// NvByte reports persistent data when an operation's physical progress is
+/// settled; NvCommit/NvInterrupted close its
 /// enclosing address range after all affected bytes have been delivered. A
 /// wrapped EEPROM write encloses the whole page. A flash pulse can
 /// report progress before it ends. The callback must not re-enter the machine.
@@ -95,6 +108,11 @@ pub enum Event {
 /// Immediate power operations finish completely regardless of this return value.
 pub trait Output {
     fn event(&mut self, event: Event) -> ControlFlow<()>;
+}
+impl<F: FnMut(Event) -> ControlFlow<()>> Output for F {
+    fn event(&mut self, event: Event) -> ControlFlow<()> {
+        self(event)
+    }
 }
 impl Output for () {
     fn event(&mut self, _: Event) -> ControlFlow<()> {
@@ -108,6 +126,9 @@ impl Output for Vec<Event> {
     }
 }
 
+/// Specific force in micro-g in sensor coordinates, including gravity. Input
+/// values are held until the next acceleration input, forming a piecewise-constant
+/// trajectory. The sensor samples and filters it independently.
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Acceleration {
     pub x: i32,
@@ -199,6 +220,8 @@ pub enum Input {
         millivolts: Option<u16>,
     },
 }
+/// One physical change at an absolute emulated timestamp. Same-time independent
+/// properties form a batch; duplicate assignments to a property are rejected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimedInput {
     pub at: Time,

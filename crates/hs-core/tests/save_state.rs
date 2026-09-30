@@ -2,7 +2,7 @@
 //! unfinished bus work; the suite supplies independent hardware expectations.
 #[path = "support/state.rs"]
 mod state;
-use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Machine, Snapshot, Time};
+use hs_core::{Conditions, Frequencies, Images, Machine, Snapshot, Time};
 
 fn machine(words: &[u16]) -> Machine {
     let mut rom = vec![0; 49152];
@@ -18,6 +18,7 @@ fn machine(words: &[u16]) -> Machine {
             firmware: &rom,
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         Conditions {
             clocks: Frequencies {

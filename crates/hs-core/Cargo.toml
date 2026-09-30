@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 default = []
 trace = []
+profile-work = []
 
 [dependencies]
 blip_buf = "0.2.1"

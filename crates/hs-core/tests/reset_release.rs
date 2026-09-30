@@ -1,7 +1,7 @@
 //! REJ09B0152-0300 §19: the three-bit RES counter counts eight phi edges.
 #[path = "support/state.rs"]
 mod state;
-use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Input, Machine, Time, TimedInput};
+use hs_core::{Conditions, Frequencies, Images, Input, Machine, Time, TimedInput};
 fn ns(n: u64) -> Time {
     Time::from_raw((u128::from(n) << 64) / 1_000_000_000)
 }
@@ -20,6 +20,7 @@ fn machine() -> Machine {
             firmware: &rom,
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         Conditions {
             clocks: Frequencies {
@@ -65,4 +66,31 @@ fn reset_release_counts_edges_and_reassertion_discards_partial_qualification() {
             .unwrap();
         assert_eq!(m.statistics().bus_reads, 1);
     }
+}
+
+#[test]
+fn diagnostic_retirement_survives_hardware_reset_and_restarts_on_restore() {
+    let mut m = machine();
+    let at = ns(200_000);
+    m.run_until(at, &[], &mut ()).unwrap();
+    let retired = m.retired();
+    assert!(retired > 0);
+    let result = m
+        .run_until(
+            Time::from_raw(at.raw() + 1),
+            &[pin(200_000, false)],
+            &mut (),
+        )
+        .unwrap();
+    assert_eq!(result.retired, retired);
+    assert_eq!(m.statistics().resets, 1);
+
+    let mut restored = state::restore_file(&m.snapshot());
+    assert_eq!(restored.retired(), 0);
+    assert_eq!(restored.statistics().resets, 0);
+    let release = [pin(201_000, true)];
+    m.run_until(ns(300_000), &release, &mut ()).unwrap();
+    restored.run_until(ns(300_000), &release, &mut ()).unwrap();
+    assert_eq!(m.retired(), retired + restored.retired());
+    state::assert_same_state(&m, &restored);
 }

@@ -37,13 +37,14 @@ fn actual_guest_accesses_commit_at_the_documented_exclusive_boundary() {
                 firmware: &rom,
                 eeprom: &[0xff; 65536],
                 eeprom_status: 0,
+                sensor_nonvolatile: None,
             },
             conditions,
         )
         .unwrap();
         // Use the actual rational clock representation: from_micros floors
         // timestamps, and a boundary one quantum later includes the effect.
-        let boundary = hs_core::time::Clock::new(Time::ZERO, 1_000_000, 1)
+        let boundary = hs_core::diagnostic::Clock::new(Time::ZERO, 1_000_000, 1)
             .unwrap()
             .after(10 + data_states)
             .unwrap();
@@ -52,5 +53,33 @@ fn actual_guest_accesses_commit_at_the_documented_exclusive_boundary() {
         m.run_until(Time::from_raw(boundary.raw() + 1), &[], &mut ())
             .unwrap();
         assert_eq!(m.statistics().bus_reads, 5, "late access {address:04x}");
+    }
+}
+
+#[test]
+fn native_word_latches_keep_both_lanes_when_firmware_uses_byte_stores() {
+    use hs_core::diagnostic::{cpu::WriteOrigin, mcu::Mcu};
+    let mut mcu = Mcu::new(&[0; 49152], Default::default()).unwrap();
+    // The Timer W counter/compare registers and AEC period register
+    // accept a native word strobe. Byte reads select a lane, while byte stores
+    // cannot replace either half of the retained word (REJ09B0152-0300 §20.1).
+    for (address, value) in [
+        (0xf0f6u16, 0x1234u16),
+        (0xf0f8, 0x5678),
+        (0xf0fa, 0x9abc),
+        (0xf0fc, 0xdef0),
+        (0xf0fe, 0x2468),
+        (0xff8c, 0x1357),
+    ] {
+        mcu.write16(address + 1, value, Time::ZERO, &mut ())
+            .unwrap();
+        for (lane, expected) in value.to_be_bytes().into_iter().enumerate() {
+            let a = address + lane as u16;
+            assert_eq!(mcu.read8(a, Time::ZERO, &mut ()).unwrap(), expected);
+            assert_eq!(mcu.peek8(a).unwrap(), expected);
+            mcu.write8(a, !expected, WriteOrigin::Other, Time::ZERO, &mut ())
+                .unwrap();
+        }
+        assert_eq!(mcu.read16(address, Time::ZERO, &mut ()).unwrap(), value);
     }
 }

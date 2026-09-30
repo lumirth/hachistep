@@ -19,3 +19,13 @@ overflow-checks = true
 
 [profile.dev]
 overflow-checks = true
+
+# Native execution checks reuse incremental builds without per-test release LTO.
+# Keep dev assertions and overflow checks while making timing-heavy tests usable.
+[profile.iteration]
+inherits = "dev"
+opt-level = 2
+debug = 1
+incremental = true
+lto = "off"
+codegen-units = 16

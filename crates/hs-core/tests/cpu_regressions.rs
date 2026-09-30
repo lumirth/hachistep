@@ -1,6 +1,6 @@
 //! Instruction regressions using a fixture bus to supply bytes to the CPU.
 //! Expectations follow ADE-602-053A MOV usage notes and REJ09B0152-0300 §3.8.5.
-use hs_core::cpu::{
+use hs_core::diagnostic::cpu::{
     decode::{decode, Address, Decode, Instruction, Size},
     Action, Cpu, Width,
 };
@@ -557,4 +557,49 @@ fn eepmov_issued_read_is_stable_when_interrupt_offer_changes() {
             ..
         }
     ));
+}
+
+#[test]
+fn bit_indices_select_each_byte_alias_and_preserve_other_register_lanes() {
+    // ADE-602-053A BSET/BNOT/BCLR/BTST: register indices use the
+    // selected byte's low three bits; immediate indices are 0..7.
+    let initial = std::array::from_fn::<_, 8, _>(|r| {
+        0x5a39_0000 | ((0xe8 | (7 - r as u32)) << 8) | (0x90 | r as u32)
+    });
+    for code in [0x60u16, 0x61, 0x62, 0x63, 0x70, 0x71, 0x72, 0x73] {
+        let register_index = code < 0x70;
+        for index in 0..if register_index { 16 } else { 8 } {
+            for target in 0..16 {
+                for ccr in [0xf3, 0xff] {
+                    let opcode = (code << 8) | (index << 4) | target;
+                    let mut b = Bus::new(&[opcode, 0]);
+                    let mut c = Cpu::new(0x100);
+                    c.registers.er = initial;
+                    c.registers.ccr = ccr;
+                    b.action(&mut c, None);
+                    b.action(&mut c, None);
+
+                    let bit = if register_index {
+                        (initial[usize::from(index & 7)] >> if index < 8 { 8 } else { 0 }) & 7
+                    } else {
+                        u32::from(index)
+                    };
+                    let lane = if target < 8 { 8 } else { 0 };
+                    let mask = 1 << (bit + lane);
+                    let r = usize::from(target & 7);
+                    let mut expected = initial;
+                    let mut flags = ccr;
+                    match code & 3 {
+                        0 => expected[r] |= mask,
+                        1 => expected[r] ^= mask,
+                        2 => expected[r] &= !mask,
+                        _ => flags = (flags & !4) | if initial[r] & mask == 0 { 4 } else { 0 },
+                    }
+                    assert_eq!(c.registers.er, expected, "opcode {opcode:04x}");
+                    assert_eq!(c.registers.ccr, flags);
+                    assert_eq!(c.retired, 1);
+                }
+            }
+        }
+    }
 }

@@ -1,6 +1,6 @@
 #[path = "support/state.rs"]
 mod state;
-use hs_core::{Buttons, Event, Images, Input, Machine, Output, Time, TimedInput};
+use hs_core::{Buttons, Event, Images, Input, Machine, Output, StopReason, Time, TimedInput};
 use std::ops::ControlFlow;
 
 fn transmitting() -> Machine {
@@ -26,6 +26,7 @@ fn transmitting() -> Machine {
         firmware: &rom,
         eeprom: &[255; 65_536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap()
 }
@@ -128,6 +129,7 @@ fn a_stop_finishes_coincident_outputs_and_the_entire_input_batch() {
     let result = machine.run_until(end, &inputs, &mut output).unwrap();
     assert_eq!(result.now, after);
     assert_eq!(result.inputs_consumed, 2);
+    assert_eq!(result.reason, StopReason::Output);
     assert_eq!(machine.conditions().temperature_millicelsius, 27_000);
     assert!(!machine.powered());
     assert!(output.events.contains(&Event::Power { at, on: false }));
@@ -145,6 +147,7 @@ fn a_stop_finishes_coincident_outputs_and_the_entire_input_batch() {
     let result = machine.run_until(end, &inputs[2..], &mut ()).unwrap();
     assert_eq!(result.inputs_consumed, 1);
     assert_eq!(result.now, end);
+    assert_eq!(result.reason, StopReason::Horizon);
     assert!(machine.powered());
 }
 
@@ -158,16 +161,50 @@ fn an_event_at_the_horizon_remains_pending_until_the_next_call() {
     let at = output.requested_at.unwrap();
     let mut machine = transmitting();
     let mut output = StopOnce::new(|e| matches!(e, Event::Infrared { .. }));
-    assert_eq!(machine.run_until(at, &[], &mut output).unwrap().now, at);
+    let result = machine.run_until(at, &[], &mut output).unwrap();
+    assert_eq!(result.now, at);
+    assert_eq!(result.reason, StopReason::Horizon);
     assert_eq!(output.requested_at, None);
     let after = Time::from_raw(at.raw() + 1);
-    assert_eq!(
-        machine.run_until(after, &[], &mut output).unwrap().now,
-        after
-    );
+    let result = machine.run_until(after, &[], &mut output).unwrap();
+    assert_eq!(result.now, after);
+    assert_eq!(result.reason, StopReason::Output);
     assert_eq!(output.requested_at, Some(at));
     state::assert_same_state(&machine, &reference);
     let mut empty = Vec::new();
     machine.run_until(after, &[], &mut empty).unwrap();
     assert!(empty.is_empty());
+}
+
+#[test]
+fn a_borrowed_callback_can_return_a_host_failure_without_faulting_the_device() {
+    let end = Time::from_micros(1000);
+    let mut whole = transmitting();
+    let mut split = whole.clone();
+    let mut expected = Vec::new();
+    whole.run_until(end, &[], &mut expected).unwrap();
+
+    let mut observed = Vec::new();
+    let mut host_error = None;
+    let result = split
+        .run_until(end, &[], &mut |event| {
+            observed.push(event);
+            if matches!(event, Event::Infrared { .. }) && host_error.is_none() {
+                host_error = Some(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })
+        .unwrap();
+    assert_eq!(result.reason, StopReason::Output);
+    assert_eq!(host_error.unwrap().kind(), std::io::ErrorKind::BrokenPipe);
+    assert!(split.fault().is_none());
+
+    // Replacing the failed host connection requires no reset or guest repair.
+    split = state::restore_file(&split.snapshot());
+    let result = split.run_until(end, &[], &mut observed).unwrap();
+    assert_eq!(result.reason, StopReason::Horizon);
+    assert_eq!(observed, expected);
+    state::assert_same_state(&split, &whole);
 }

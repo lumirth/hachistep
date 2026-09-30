@@ -1,7 +1,7 @@
 //! Target §3.8.4: enable clearing retains one admission opportunity; I still masks it.
 #[path = "support/state.rs"]
 mod state;
-use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Machine, Time};
+use hs_core::{Conditions, Frequencies, Images, Machine, Time};
 
 #[test]
 fn disabled_enable_expires_at_its_instruction_boundary_and_survives_snapshot_before_it() {
@@ -36,6 +36,7 @@ fn disabled_enable_expires_at_its_instruction_boundary_and_survives_snapshot_bef
                 firmware: &rom,
                 eeprom: &[0xff; 65536],
                 eeprom_status: 0,
+                sensor_nonvolatile: None,
             },
             Conditions {
                 clocks: Frequencies {

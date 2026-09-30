@@ -10,7 +10,7 @@ follow the physical bus. Register masks, reset values, read side effects and pro
 writes are implemented by the relevant peripheral. GPIO resolution includes direction,
 output latches, open-drain selection, pull-ups and peripheral pin priority.
 
-The fixed board connects the shared serial bus, chip selects, sensor interrupt,
+The fixed board model connects the shared serial bus, chip selects,
 buttons, buzzer, battery sensing and infrared pins. Selecting an alternate function
 on a connected pin can affect another device. The BMA150's I²C uses its existing
 P91/P92 wiring; the MCU's IIC2 uses P90/P91. They are different bus connections.
@@ -24,6 +24,11 @@ Conflicting EEPROM and sensor MISO drivers resolve low. The cited drive strength
 support that nominal choice but do not determine contention voltage or damage.
 Analog fixtures use Vcc/2 as their digital threshold. Firmware relying on floating
 pins, marginal levels or prohibited accesses reaches these model choices.
+
+The BMA150 INT pad has no modeled MCU connection. The reviewed board notes do not
+identify its net; the [sensor topic](bma150.md#limits-and-open-questions) records the
+firmware evidence and the consequence for custom firmware. Do not infer a connection
+from the MCU's available IRQ routes.
 
 ## Primary evidence
 

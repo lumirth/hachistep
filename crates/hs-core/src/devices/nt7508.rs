@@ -237,7 +237,12 @@ impl Nt7508 {
                 0x44..=0x47 => self.initial_com = byte & 127,
                 0x48..=0x4b if (16..=128).contains(&byte) => self.duty = byte,
                 0x48..=0x4b => {}
-                0x4c..=0x4f => self.inversion_lines = byte & 31,
+                0x4c..=0x4f => {
+                    // NT7508 p.40: zero selects frame inversion; the other
+                    // register values encode intervals from three to 33 lines.
+                    let value = byte & 31;
+                    self.inversion_lines = if value == 0 { 0 } else { value + 2 };
+                }
                 0x81 => self.contrast = byte & 0x3f,
                 0x88..=0x8f => self.palette[usize::from(command - 0x88)] = byte,
                 0xf1 => self.temperature_slope = byte & 1,
@@ -357,7 +362,7 @@ impl Nt7508 {
                 && self.start_line < 128
                 && self.initial_com < 128
                 && (16..=128).contains(&self.duty)
-                && self.inversion_lines <= 31
+                && (self.inversion_lines == 0 || (3..=33).contains(&self.inversion_lines))
                 && self.oscillator_frequency <= 31
                 && self.gray_mode <= 7
                 && self.contrast <= 63

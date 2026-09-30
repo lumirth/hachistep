@@ -34,16 +34,28 @@ impl Appointments {
         if mask == 0 {
             return Ok(());
         }
+        let mut minimum_removed = false;
         while mask != 0 {
             let i = mask.trailing_zeros() as usize;
             mask &= mask - 1;
-            self.slots[i] = if 1 << i == SSU {
+            let before = self.slots[i];
+            let after = if 1 << i == SSU {
                 serial
             } else {
                 mcu.appointment(1 << i)?
             };
+            self.slots[i] = after;
+            minimum_removed |= before.is_some()
+                && before == self.next
+                && after.is_none_or(|at| at > before.unwrap());
+            if let Some(at) = after {
+                self.next = Some(self.next.map_or(at, |next| next.min(at)));
+            }
         }
-        self.next = self.slots.iter().flatten().copied().min();
+        // Moving an unrelated slot cannot invalidate the cached minimum.
+        if minimum_removed {
+            self.next = self.slots.iter().flatten().copied().min();
+        }
         Ok(())
     }
 }
@@ -83,9 +95,27 @@ impl Mcu {
         now: Time,
         out: &mut dyn Output,
     ) -> Result<bool, Error> {
-        if !self.startup.supplied() {
+        self.sync_peripherals_at(mask, || Ok(now), out)
+    }
+    pub(crate) fn sync_peripherals_at(
+        &mut self,
+        mask: u16,
+        now: impl FnOnce() -> Result<Time, Error>,
+        out: &mut dyn Output,
+    ) -> Result<bool, Error> {
+        #[cfg(feature = "profile-work")]
+        self.work.calls.add(1);
+        // SSU and IIC advance at their interaction appointments through the
+        // physical network. An owner identity alone is not a clock dependency.
+        if !self.startup.supplied() || mask & !(SSU | IIC) == 0 {
             return Ok(false);
         }
+        let now = now()?;
+        #[cfg(feature = "profile-work")]
+        self.work.owners.add(u64::from(
+            (mask & (RTC | TIMER_B1 | TIMER_W | WATCHDOG | SCI | ADC | COMPARATORS | AEC))
+                .count_ones(),
+        ));
         if mask & SCI != 0 {
             self.sci.sync(now, &self.clocks)?;
         }
@@ -110,39 +140,10 @@ impl Mcu {
         }
         let reset = mask & WATCHDOG != 0 && self.watchdog.sync(now, &self.clocks);
         if mask & STARTUP != 0 && self.startup.deadline() == Some(now) {
+            #[cfg(feature = "profile-work")]
+            self.work.owners.add(1);
             self.apply_gates(now, out)?;
         }
         Ok(reset)
-    }
-    pub(crate) fn access_peripherals(a: u16, write: bool) -> u16 {
-        // These writes can reselect or gate shared clock consumers. Settle the
-        // old interval before apply_gates rebases any consumer's phase.
-        if write
-            && (Control::handles(a)
-                || matches!(
-                    a,
-                    0xf06f | 0xf0d0 | 0xf0e2 | 0xf0f1 | 0xffb0..=0xffb3 | 0xffbe | 0xf022
-                )
-                || Aec::handles(a))
-        {
-            return ALL;
-        }
-        if Sci::handles(a) {
-            return SCI;
-        }
-        if Aec::handles(a) || (0xff8c..=0xff8f).contains(&a) {
-            return AEC;
-        }
-        match a {
-            0xf067..=0xf06f => RTC,
-            0xf0d0..=0xf0d1 => TIMER_B1,
-            0xf0dc..=0xf0de => COMPARATORS,
-            0xf0f0..=0xf0ff => TIMER_W,
-            0xffb0..=0xffb3 => WATCHDOG,
-            0xffbc..=0xffbf => ADC,
-            0xf0e0..=0xf0eb => SSU,
-            0xf078..=0xf07f => IIC,
-            _ => 0,
-        }
     }
 }

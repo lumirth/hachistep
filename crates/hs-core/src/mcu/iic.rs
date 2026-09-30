@@ -213,10 +213,21 @@ impl Iic {
         }
     }
     pub fn read(&mut self, address: u16, now: Time, clocks: &Clocks) -> Result<u8, Error> {
+        self.read_at(address, || Ok(now), clocks)
+    }
+    pub(crate) fn read_at(
+        &mut self,
+        address: u16,
+        now: impl FnOnce() -> Result<Time, Error>,
+        clocks: &Clocks,
+    ) -> Result<u8, Error> {
+        // RDR observes the eighth-fall tie even when no new receive frame starts.
+        let at = if address & 7 == 7 { Some(now()?) } else { None };
         let value = self.peek(address);
         match address & 7 {
             4 => self.seen = self.status,
             7 => {
+                let now = at.expect("RDR access timestamp");
                 self.status &= !RDRF;
                 self.seen &= !RDRF;
                 if self.eighth_fall == Some(now) {

@@ -1,4 +1,4 @@
-use hs_core::{signals::Piezo, Audio, Event, Time};
+use hs_core::{Audio, Event, Piezo, Time};
 
 fn waveform() -> Vec<Event> {
     // 400 Hz, with an abrupt switch to silence that cuts a negative half-cycle.
@@ -99,6 +99,7 @@ fn a_restored_machine_supplies_the_existing_buzzer_drive() {
         firmware: &firmware,
         eeprom: &[255; 65_536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     machine

@@ -298,7 +298,7 @@ impl Scan {
                 && matches!(self.frc_count, 3 | 4)
                 && self.frc < self.frc_count
                 && u16::from(self.row) < u16::from(self.duty) + u16::from(self.icon)
-                && self.inversion_lines <= 31
+                && (self.inversion_lines == 0 || (3..=33).contains(&self.inversion_lines))
                 && (self.inversion_lines == 0 || self.inversion_count < self.inversion_lines),
             "invalid LCD scan",
         )?;
@@ -379,8 +379,52 @@ mod tests {
         assert_eq!(lcd.drive(quantum(146)).unwrap().segments[0], 1);
     }
     #[test]
+    fn inversion_register_encodes_three_through_33_lines_and_ignores_high_bits() {
+        // NT7508 p.40 gives register 0/1/31 as frame/three/33-line inversion.
+        // Observe polarity on both sides of actual boundaries, including a
+        // frame wrap that must not restart the line divider.
+        let cases: &[(u8, &[(u64, bool)])] = &[
+            (0, &[(127, false), (128, true), (255, true), (256, false)]),
+            (
+                1,
+                &[
+                    (2, false),
+                    (3, true),
+                    (5, true),
+                    (6, false),
+                    (128, false),
+                    (129, true),
+                ],
+            ),
+            (
+                31,
+                &[
+                    (32, false),
+                    (33, true),
+                    (65, true),
+                    (66, false),
+                    (128, true),
+                    (132, false),
+                ],
+            ),
+            (0xe1, &[(2, false), (3, true), (6, false), (129, true)]),
+        ];
+        for &(register, edges) in cases {
+            let lcd = configured(&[0x48, 128, 0x44, 0, 0x4c, register]);
+            for &(line, inverted) in edges {
+                let drive = lcd.drive(quantum(line * 9)).unwrap();
+                assert_eq!(
+                    drive.inverted, inverted,
+                    "register {register:02x}, line {line}"
+                );
+                assert_eq!(drive.common, Some((line % 128) as u8));
+            }
+            lcd.validate(quantum(0)).unwrap();
+        }
+    }
+    #[test]
     fn n_line_inversion_carries_across_frame_wrap_and_chunking() {
-        let lcd = configured(&[0x48, 128, 0x44, 0, 0x4c, 5]);
+        let lcd = configured(&[0x48, 128, 0x44, 0, 0x4c, 3]); // Register 3 selects five lines.
         for (line, common, inverted) in [
             (124, 124, false),
             (125, 125, true),

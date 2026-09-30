@@ -1,99 +1,106 @@
 # HachiStep
 
-A Rust Pokéwalker emulator core for retail and custom firmware, built for use in
-downstream applications. The goal is faithful hardware behavior and high performance
-by default through a compact, coherent architecture. The core runs
-unmodified retail firmware through boot, menus, motion processing, Dowsing, Poké Radar,
-saving and peer exchanges. The
-[design](docs/DESIGN.md) defines the intended behavior;
-[hardware accuracy](docs/ACCURACY.md) describes supported behavior and remaining limits;
-[source catalogue](docs/SOURCES.md) collects hardware references and research leads.
+HachiStep is a Rust Pokéwalker emulator core for applications and custom firmware
+development. It runs retail and custom images through the H8/38606 CPU and connected
+hardware. Applications supply timestamped physical inputs and choose when to advance
+the device. The core provides display data, sound and infrared events, persistent
+storage, and exact session captures.
 
-## Build and run
+Retail integration checks cover boot, menus, walking, Dowsing, Poké Radar, saving
+and peer exchanges. The [hardware accuracy guide](docs/ACCURACY.md) explains which
+behavior has documented support and where physical measurements are still needed.
 
-Use Rust 1.95+ for the core. The supporting tools use Python's standard library;
-[uv](https://docs.astral.sh/uv/getting-started/installation/) selects the interpreter
-from `.python-version`. Fetch the locked crates once, then builds can run offline:
+## Embed a device
+
+Use Rust 1.95 or newer. From your application's directory, add the core from this
+checkout:
 
 ```sh
-cargo fetch --locked
-cargo build --workspace --release --locked --offline
-cargo test --workspace --locked --offline
+cargo add hs-core --path /path/to/hachistep/crates/hs-core
+```
 
+This complete program runs an original two-byte branch loop, so it needs no retail
+firmware. It checks that the emulated CPU ran:
+
+```rust
+use hs_core::{Images, Machine, Time};
+
+fn main() -> Result<(), hs_core::Error> {
+    let mut firmware = vec![0; 49_152];
+    firmware[..2].copy_from_slice(&0x0100u16.to_be_bytes());
+    firmware[0x100..0x102].copy_from_slice(&[0x40, 0xfe]);
+    let mut device = Machine::new(Images {
+        firmware: &firmware,
+        eeprom: &[0xff; 65_536],
+        eeprom_status: 0,
+        sensor_nonvolatile: None,
+    })?;
+    device.run_until(Time::from_micros(100), &[], &mut ())?;
+    assert!(device.retired() > 0);
+    Ok(())
+}
+```
+
+The horizon is exclusive and unfinished hardware work survives the return. A frontend
+can run to its next presentation deadline, consume output events synchronously, and
+request an early return for communication. The application controls host speed and
+storage. Ordinary execution allocates nothing with an allocation-free output consumer.
+
+The [embedding guide](docs/API.md) covers inputs, output stops, display and audio,
+persistence, state editing, and save states. The
+[replay example](crates/hs-core/examples/replay.rs) demonstrates a frontend loop with
+button input, 60 Hz presentation, streamed PCM, and restoration:
+
+```sh
+cargo run -p hs-core --release --example replay -- FIRMWARE EEPROM
+```
+
+The embedding API is being refined before freezing it. Component-level experiments
+use the separate `diagnostic` namespace.
+
+## Run firmware from the command line
+
+Supply your own 49,152-byte firmware and 65,536-byte EEPROM images:
+
+```sh
+cargo build --workspace --release --locked
 mkdir -p out
 ./target/release/hachistep run \
   --firmware inputs/pokewalker.bin --eeprom inputs/eeprom.bin \
   --milliseconds 10000 --out out/home
 ```
 
-Supply your own 49,152-byte firmware and 65,536-byte EEPROM images. Create ignored
-`inputs/` when placing them there, or pass paths elsewhere. Put generated reports,
-traces and recordings under ignored `out/`. The MIT license covers the source;
-private firmware and derived artwork or recordings retain their own terms.
-See [INPUTS](docs/INPUTS.md) and [SOURCES](docs/SOURCES.md).
-
-`out/home` must be new. It receives persistent images, memory/controller dumps,
-`frame.pgm`, `state.bin` and `report.json`. The CLI creates new files and leaves input
-files intact. Guest writes still affect the emulated nonvolatile cells.
-
-## Resume an exact session
+Use a new output directory. It receives persistent images, memory/controller dumps,
+`frame.pgm`, `state.bin`, and `report.json`. The input files remain intact. Resume the
+captured session with an absolute emulated endpoint:
 
 ```sh
 ./target/release/hachistep run --load-state out/home/state.bin \
   --milliseconds 12000 --out out/resumed
 ```
 
-The endpoint and any CSV inputs use absolute emulated time. An EEPROM export starts a
-fresh session; a native save state retains unfinished CPU accesses, serial shifts, clock
-phase, device history and programming operations. Loading validates a complete candidate
-before replacing a session. The native format remains changeable before release, without
-versions or compatibility layers. See [SAVE_STATES](docs/SAVE_STATES.md).
+[BUILD](docs/BUILD.md) covers toolchains and native/Wasm commands.
+[INPUTS](docs/INPUTS.md) describes physical input CSVs and image requirements.
+[SAVE_STATES](docs/SAVE_STATES.md) explains exact captures and persistent exports.
+The source is MIT licensed. Private firmware and derived artwork retain their own terms.
 
-## Implementation
+## Develop and verify
 
-`hs-core` owns one resumable H8 interpreter, physical bus accesses, rational clocks,
-interrupt admission, GPIO, timers, RTC, watchdog, ADC, comparators, AEC, SSU, SCI/IrDA,
-IIC2 and internal flash programming. External EEPROM, accelerometer and LCD controllers
-consume the resolved board signals. RAM and flash execute through the same interpreter.
+The [design contract](docs/DESIGN.md) explains execution, component ownership and
+performance requirements. [CONTEXT](CONTEXT.md) defines the project vocabulary, and the
+[source catalogue](docs/SOURCES.md) links the hardware evidence.
 
-Time advances to the next consequence and respects exclusive run horizons. Ordinary
-execution allocates nothing with an allocation-free output sink. Construction,
-inspection and explicit save/load may allocate. Production source forbids unsafe Rust.
-Borsh encodes selected hardware state; SHA-256 identifies firmware and checks state
-files. Clap owns CLI argument validation and help.
-
-`hs-cli` accepts physical input CSVs, exports persistent images, produces run reports
-and captures bounded traces. The core's `Audio` renderer streams PCM from buzzer events;
-`tools/render_audio.py` also converts saved traces to WAV. Frontends own device playback
-and file/slot management. [API](docs/API.md) describes the available embedding interface;
-[DESIGN §12](docs/DESIGN.md#12-outputs-and-presentation) defines the intended output support.
-
-## Verification
-
-The independent diagnostic suite lives in
-[hachiware](https://github.com/lumirth/hachiware):
+Independent guest diagnostics live in [hachiware](https://github.com/lumirth/hachiware).
+Clone it beside this repository and run the standard checks:
 
 ```sh
 gh repo clone lumirth/hachiware ../hachiware
 uv run tools/check.py --out out/check-1
+uv run tools/mutation_check.py --out out/mutations-1
 uv run tools/verify_retail.py --out out/retail-1
 ```
 
-Each destination must be new. Standard checks include debug/release/trace Rust tests,
-formatting, Clippy, host tools and independent guest diagnostics. Retail verification
-additionally needs private images and checks boot, menus, walking, idle, persistent saves,
-power interruption, infrared timeout and completed peer exchanges, including event
-histories and restoration.
-Expected hardware behavior
-comes from documented independent cases; retail hashes are software regression evidence.
-[TESTING](docs/TESTING.md) explains the coverage and [BUILD](docs/BUILD.md) lists
-toolchain requirements and commands.
-
-## Development
-
-Read [DESIGN](docs/DESIGN.md), [CONTEXT](CONTEXT.md), the affected
-[accuracy topic](docs/ACCURACY.md#what-can-i-rely-on) before changing behavior.
-Each topic combines supported behavior, known limits, source reasoning and relevant checks.
-Decisions come from hardware documentation, observations, the matching `pw` decompilation, and
-inferences that explain the mechanism for arbitrary firmware. Development history and
-work in progress belong in commits, issues, and the task discussion.
+The standard checks need no private firmware. Retail verification needs the private
+images and checks software regressions, complete event histories and restoration.
+[TESTING](docs/TESTING.md) explains what each result establishes and how to compare
+performance after verifying behavior.

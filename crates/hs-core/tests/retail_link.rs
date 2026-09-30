@@ -88,12 +88,14 @@ fn independent_walkers_complete_a_peer_exchange() {
         firmware: &firmware,
         eeprom: &a_image,
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     let mut b = Machine::new(Images {
         firmware: &firmware,
         eeprom: &b_image,
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     let mut ab = Channel {

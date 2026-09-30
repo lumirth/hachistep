@@ -57,6 +57,9 @@ pub struct Bma150 {
     unpowered_since: Option<Time>,
     cold: bool,
     serial_ready: Option<Time>,
+    #[cfg(feature = "profile-work")]
+    #[borsh(skip)]
+    pub(crate) sample_phases: crate::profile_work::Counter,
 }
 impl Bma150 {
     pub fn new(now: Time) -> Self {
@@ -107,6 +110,8 @@ impl Bma150 {
             unpowered_since: None,
             cold: false,
             serial_ready: None,
+            #[cfg(feature = "profile-work")]
+            sample_phases: Default::default(),
         }
     }
     /// Restore the sensor's own 0x2b..=0x3d nonvolatile image before execution.
@@ -162,10 +167,16 @@ impl Bma150 {
         Ok(())
     }
     pub fn power_on(&mut self, now: Time) {
+        #[cfg(feature = "profile-work")]
+        let sample_phases = self.sample_phases.clone();
         let image = self.nonvolatile;
         let input = self.input;
         let temperature = self.temperature_millicelsius;
         *self = Self::new(now);
+        #[cfg(feature = "profile-work")]
+        {
+            self.sample_phases = sample_phases;
+        }
         self.nonvolatile = image;
         self.input = input;
         self.temperature_millicelsius = temperature;
@@ -277,21 +288,36 @@ impl Bma150 {
         }
     }
     pub(crate) fn serial_effect_edges(&self) -> u8 {
-        // Read shadows and freshness acknowledgements can change on the first
-        // SPI edge. The deselected device continues to listen for I2C traffic.
-        if self.selected {
+        if !self.selected {
+            return self.i2c.effect_edges();
+        }
+        // Keep read launch/pair capture, first-bit acknowledgement and the
+        // three-wire turnaround explicit. Later bits and incoming address/data
+        // bits are local shifts until the byte completes. Every raw edge is
+        // still replayed before another owner observes the bus. Since SPI
+        // always receives on a rise, a falling next edge only makes this bound
+        // one half-cycle early, independently of the MCU's CPOL/CPHA.
+        if self.turnaround || matches!(self.serial, Serial::Read(_)) && self.rx_bits == 0 {
             1
         } else {
-            self.i2c.effect_edges()
+            (8 - self.rx_bits) * 2 - 1
         }
     }
     pub fn deadline(&self) -> Option<Time> {
+        self.next_deadline(true)
+    }
+    /// Autonomous sleep can release a serial driver. Ordinary conversions only
+    /// change retained sensor state until a connected owner observes it.
+    pub(crate) fn interaction_deadline(&self) -> Option<Time> {
+        self.next_deadline(self.automatic())
+    }
+    fn next_deadline(&self, samples: bool) -> Option<Time> {
         if self.unpowered_since.is_some() {
             return None;
         }
         [
             self.serial_ready,
-            self.next_sample(),
+            samples.then(|| self.next_sample()).flatten(),
             self.wake_deadline,
             self.pause_deadline,
             self.quiet_deadline,
@@ -302,6 +328,21 @@ impl Bma150 {
         .into_iter()
         .flatten()
         .min()
+    }
+    /// Consume local phases through the original recurrence. An explicit
+    /// interaction, including a tied conversion, belongs to board delivery.
+    pub(crate) fn sync_local_until(&mut self, end: Time, inclusive: bool) -> Result<(), Error> {
+        if self.automatic() {
+            return Ok(());
+        }
+        let within = |at: Time| at < end || (inclusive && at == end);
+        if self.interaction_deadline().is_some_and(within) {
+            return Err(Error::Internal("unprocessed sensor interaction"));
+        }
+        while let Some(at) = self.next_sample().filter(|at| within(*at)) {
+            self.at_deadline(at, &mut ())?;
+        }
+        Ok(())
     }
     pub fn at_deadline(&mut self, now: Time, output: &mut dyn Output) -> Result<(), Error> {
         if self.serial_ready == Some(now) {
@@ -378,6 +419,8 @@ impl Bma150 {
         self.filter.window()
     }
     fn sample_phase(&mut self, now: Time) -> Result<(), Error> {
+        #[cfg(feature = "profile-work")]
+        self.sample_phases.add(1);
         let phase = (self.sample_clock.ordinal() - 1) & 3;
         if let Some(left) = &mut self.test_phases {
             *left = left.saturating_sub(1);
@@ -559,6 +602,20 @@ impl Bma150 {
         }
         self.output()
     }
+    /// Output launch consumes the converted byte/pair; later falling edges
+    /// advance only the retained serial latch.
+    pub(crate) fn falling_at(&mut self, now: Time) -> Result<Drive, Error> {
+        if self.selected
+            && self.four_wire()
+            && matches!(self.serial, Serial::Read(_))
+            && self.tx_bit == 0
+            && self.serial_ready.is_none()
+            && self.quiet_deadline.is_none()
+        {
+            self.sync_local_until(now, true)?;
+        }
+        Ok(self.falling())
+    }
     fn shift_output(&mut self) {
         if let Serial::Read(address) = self.serial {
             if self.tx_bit == 0 {
@@ -581,15 +638,37 @@ impl Bma150 {
         };
         self.tx_bit = self.tx_bit.saturating_add(1).min(8);
     }
+    /// Board delivery materializes conversion state only when this bit consumes
+    /// it. Standalone diagnostic transport retains caller-driven deadlines.
+    pub(crate) fn rising_at(&mut self, mosi: bool, now: Time) -> Result<bool, Error> {
+        if self.selected && self.serial_ready.is_none() && self.quiet_deadline.is_none() {
+            // The first sampled bit acknowledges freshness. Completion can write
+            // controls or launch the next three-wire byte. Preserve tied conversions
+            // before those consumers, without revisiting them for quiet local bits.
+            if self.turnaround
+                || self.rx_bits == 7
+                || matches!(self.serial, Serial::Read(_)) && self.rx_bits == 0
+            {
+                self.sync_local_until(now, true)?;
+            }
+        }
+        self.rising_effect(mosi, now)
+    }
     pub fn rising(&mut self, mosi: bool, now: Time) -> Result<(), Error> {
+        self.rising_effect(mosi, now).map(|_| ())
+    }
+    /// Completed register writes can change the sensor's appointments. Read
+    /// acknowledgement and shifting retain the existing conversion schedule.
+    pub(crate) fn rising_effect(&mut self, mosi: bool, now: Time) -> Result<bool, Error> {
         if !self.selected || self.serial_ready.is_some() || self.quiet_deadline.is_some() {
-            return Ok(());
+            return Ok(false);
         }
         if self.turnaround {
             self.turnaround = false;
             self.shift_output();
-            return Ok(());
+            return Ok(false);
         }
+        let mut deadline_changed = false;
         if let Serial::Read(address) = self.serial {
             if self.rx_bits == 0 {
                 self.acknowledge_read(address);
@@ -620,6 +699,7 @@ impl Bma150 {
                 }
                 Serial::Write(address) => {
                     self.write_register(address, value, now)?;
+                    deadline_changed = true;
                     Serial::Address
                 }
             };
@@ -627,7 +707,7 @@ impl Bma150 {
         if !self.four_wire() && !self.turnaround {
             self.shift_output();
         }
-        Ok(())
+        Ok(deadline_changed)
     }
 }
 
@@ -695,6 +775,48 @@ impl Bma150 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_phases_keep_axis_apertures_and_exclusive_endpoints() {
+        let mut b = Bma150::new(Time::ZERO);
+        b.write_register(0x14, 6, Time::ZERO).unwrap(); // ±2 g, one sample
+        b.at_deadline(b.interaction_deadline().unwrap(), &mut ())
+            .unwrap();
+        assert_eq!(b.interaction_deadline(), None);
+        let temperature = b.next_sample().unwrap();
+        b.sync_local_until(temperature, false).unwrap();
+        assert_eq!(b.peek(8), Some(0));
+        b.sync_local_until(temperature, true).unwrap();
+        assert_eq!(b.peek(8), Some(100)); // 20 °C
+        for (axis, expected) in [[1, 0], [1, 0], [1, 64]].into_iter().enumerate() {
+            let at = b.next_sample().unwrap();
+            b.sync_local_until(at, false).unwrap();
+            assert_eq!(b.peek(2 + axis as u8 * 2), Some(0));
+            b.sync_local_until(at, true).unwrap();
+            assert_eq!(&b.registers[2 + axis * 2..4 + axis * 2], &expected);
+        }
+    }
+    #[test]
+    fn local_sync_leaves_a_tied_image_reload_to_board_delivery() {
+        let mut b = Bma150::new(Time::ZERO);
+        b.write_register(0x14, 6, Time::ZERO).unwrap(); // ±2 g
+        let wake = b.interaction_deadline().unwrap();
+        assert!(b.sync_local_until(wake, true).is_err());
+        b.at_deadline(wake, &mut ()).unwrap();
+        let mut clock = b.sample_clock;
+        clock.advance(8).unwrap();
+        let finish = clock.at; // Z of the second frame
+        let command = Time::from_raw(finish.raw() - Duration::from_micros(300).raw());
+        b.sync_local_until(command, true).unwrap();
+        b.write_register(0x0a, 0x20, command).unwrap();
+        assert_eq!(b.interaction_deadline(), Some(finish));
+        b.sync_local_until(finish, false).unwrap();
+        assert_eq!(b.registers[7], 64); // prior +1 g at ±2 g
+        assert!(b.sync_local_until(finish, true).is_err());
+        assert_eq!(b.next_sample(), Some(finish));
+        b.at_deadline(finish, &mut ()).unwrap();
+        assert_eq!(b.registers[0x14], 0x0e); // image restores ±4 g
+        assert_eq!(&b.registers[6..8], &[1, 32]);
+    }
     #[test]
     fn undervoltage_preserves_configuration_and_cold_return_qualifies_serial() {
         let mut b = Bma150::new(Time::ZERO);
@@ -835,6 +957,65 @@ mod tests {
             read(&mut b, 2);
             assert!(!b.interrupt());
         }
+    }
+    #[test]
+    fn spi_control_waits_for_the_eighth_rise_and_reads_keep_first_bit_effects() {
+        let mut b = Bma150::new(Time::ZERO);
+        b.set_selected(true);
+        assert_eq!(b.serial_effect_edges(), 15);
+        xfer(&mut b, 0x0a);
+        for _ in 0..7 {
+            b.falling();
+            assert!(!b.rising_effect(false, Time::ZERO).unwrap());
+            assert!(!b.sleeping());
+        }
+        assert_eq!(b.serial_effect_edges(), 1);
+        b.falling();
+        assert!(b.rising_effect(true, Time::ZERO).unwrap());
+        assert!(
+            b.sleeping(),
+            "sleep is accepted only with the eighth data bit"
+        );
+        b.set_selected(false);
+        write(&mut b, 0x0a, 0);
+        write(&mut b, 0x14, 14); // ±4 g, unaveraged output after waking.
+        for _ in 0..8 {
+            sample_cycle(&mut b);
+        }
+        b.set_selected(true);
+        xfer(&mut b, 0x86);
+        assert_eq!(b.serial_effect_edges(), 1);
+        b.falling(); // Launch Z LSB and hold its matching +1 g MSB.
+        assert_eq!(b.peek(6).unwrap() & 1, 1);
+        assert_eq!(b.serial_effect_edges(), 1);
+        b.rising(false, b.sample_clock.at).unwrap();
+        assert_eq!(b.peek(6).unwrap() & 1, 0);
+        assert_eq!(b.serial_effect_edges(), 13);
+        b.set_input(
+            Acceleration {
+                x: 0,
+                y: 0,
+                z: -1_000_000,
+            },
+            b.sample_clock.at,
+        )
+        .unwrap();
+        for _ in 0..8 {
+            sample_cycle(&mut b);
+        }
+        for _ in 0..7 {
+            b.falling();
+            b.rising(false, b.sample_clock.at).unwrap();
+        }
+        assert_eq!(b.serial_effect_edges(), 1);
+        assert_eq!(
+            xfer(&mut b, 0),
+            32,
+            "MSB belongs to the acknowledged +1 g pair"
+        );
+        b.set_selected(false);
+        assert_eq!(read(&mut b, 6) & 0xc0, 0);
+        assert_eq!(read(&mut b, 7), 224, "the following pair sees -1 g");
     }
     #[test]
     fn writes_are_address_data_pairs_and_unclocked_read_bytes_have_no_effect() {

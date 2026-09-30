@@ -12,6 +12,7 @@ fn retail_boot_and_button_replay_are_partition_invariant() {
         firmware: &firmware,
         eeprom: &eeprom,
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     let mut b = a.clone();

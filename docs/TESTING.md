@@ -6,6 +6,10 @@ checks and what their results establish.
 
 ## Different claims have different tests
 
+Use [focused checks](#focused-checks) while changing one behavior. The
+[execution selection](#execution-iteration-checks) covers a wider CPU, bus or scheduling
+change. The default command is a full check for substantive milestones.
+
 The standard suite needs no private images. It runs ordinary Rust tests, documentation
 tests, an all-features/trace build, Clippy, host-tool checks, and the independently
 encoded guest fixtures in hachiware. Run:
@@ -42,6 +46,85 @@ product-event vectors across randomized run partitions, then a further interval 
 snapshot restoration. The peripheral integration tests add clock/gate, analog-input,
 capture, AEC and NMI partition/snapshot cases. These establish representation/replay
 consistency, not agreement with silicon.
+
+## Focused checks
+
+While changing one behavior, select its tests directly:
+
+```sh
+uv run tools/check.py \
+  --test serial_appointments::stopping_on_a_completed_lcd_byte_preserves_serial_progress_and_restoration \
+  --out out/lcd-stop-1
+uv run tools/check.py --test sensor_spi --out out/sensor-spi-1
+uv run tools/check.py \
+  --test lib::cpu::decode::tests::known_forms_and_extension_boundaries \
+  --out out/cpu-decode-1
+uv run tools/check.py --case 'ssu-replace-queued-byte' --out out/ssu-queue-1
+```
+
+`--test TARGET` runs one core library or integration target. `--test TARGET::NAME`
+runs that exact test, with module paths included for library tests. Repeat `--test`
+or `--case` to combine selections. A misspelled target or a Rust selection that runs
+zero tests fails. Ignored tests alone cannot pass. To list names within an integration
+target, use `cargo test -p hs-core --profile iteration --test TARGET -- --list`.
+For library tests, replace `--test TARGET` with `--lib`.
+
+Focused checks run only the requested Rust targets and guest diagnostics. They skip
+formatting, Clippy, Python suites and every unselected test. Rust-only checks do not
+require hachiware or build the CLI. Guest selections build the native CLI through the
+cached `iteration` profile; `--runner PATH` uses a preserved candidate instead.
+`--features trace,profile-work` applies to selected Rust tests. It does not change
+the guest CLI build. Focused selectors cannot accompany `--execution`.
+
+The same source fingerprints and failure summaries apply to focused checks. They
+establish only the named coverage. Use the execution selection for a wider scheduling
+change and the default full check at a substantive milestone.
+
+## Execution iteration checks
+
+For changes to execution, bus access or scheduling, run:
+
+```sh
+uv run tools/check.py --execution --out out/execution-1
+```
+
+This runs all core library tests and the `cpu_regressions`, `kernel`,
+`register_access`, `clock_obligations`, `interrupt_admission`, `interrupt_reads`,
+`serial_appointments`, `serial_observers`, `reset_release`, `watchdog`, `sensor_spi`,
+`sensor_i2c`, `output_control`, `save_state`, `flash_execution` and `allocation`
+integration tests. They exercise
+ordered accesses, peripheral clock obligations, cleared interrupt requests,
+coincident serial appointments, host
+suspension, capture restoration and allocation guarantees.
+
+The `iteration` Cargo profile optimizes at level 2, retains development assertions and
+overflow checks, and uses incremental compilation without LTO. It shares the usual
+Cargo target directory across runs. Its CLI runs selected independent hachiware guests
+for register lanes, RAM execution, aliased operands, prefetch ordering, arithmetic,
+exceptions, interrupt cancellation, serial transfers and flash protection. The summary
+records the exact selections, executable hash, commands and each step's wall time.
+If a step fails, the summary retains its failure and the completed steps with both
+source fingerprints. Later checks do not run.
+Formatting, production library/binary Clippy checks, host-tool tests and hachiware's
+Python tests also run.
+
+Execution checks omit the full debug/release/trace matrices, other integration tests,
+Clippy on tests and trace features, and the remaining guest fixtures. They are native
+checks; Wasm, private firmware, hardware captures and performance measurements need
+their own verification. Run the default full check at a substantive milestone and
+add affected device tests when a change reaches beyond execution.
+
+To check a preserved native candidate without rebuilding its CLI:
+
+```sh
+uv run tools/check.py --execution --runner out/candidate/hachistep \
+  --out out/candidate-execution
+```
+
+Rust tests and Clippy still check this checkout. Guest diagnostics use the supplied
+candidate, whose source may differ. Preserve its source and build record with it.
+Build and test time depend on cache state; a new profile first compiles its dependencies.
+Reuse the target directory and inspect step timings before reducing useful coverage.
 
 ## Independent target expectations
 
@@ -80,9 +163,12 @@ site, and requires a compiled test to fail with the expected assertion. A compil
 error, missing test, zero tests, or unapplied mutation is not success. The tool leaves
 repository sources intact and removes its temporary copy.
 
-The three shipped mutations reintroduce a wrong RTC access duration, capture an aliased
-predecrement source too early, and suppress EEPMOV.W NMI acceptance. These tests
-demonstrate sensitivity to those bugs.
+The shipped mutations reintroduce a wrong RTC access duration, capture an aliased
+predecrement source too early, suppress EEPMOV.W NMI acceptance, retain an SCI
+interrupt after its data has been read, and omit serial-driver propagation at a
+coincident peripheral appointment. Another mutation protects an active flash pulse
+at a stale timestamp when RAM code executes a trap. These tests demonstrate sensitivity
+to those bugs.
 
 ## Private firmware: regression versus smoke
 

@@ -10,6 +10,7 @@ fn machine() -> Machine {
         firmware: &firmware,
         eeprom: &[255; 65_536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap()
 }
@@ -63,6 +64,7 @@ fn edited_ram_can_execute_without_a_firmware_specific_path() {
         firmware: &firmware,
         eeprom: &[255; 65_536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     m.write_ram(0xf780, &[0xf8, 42, 0x40, 0xfc]).unwrap();

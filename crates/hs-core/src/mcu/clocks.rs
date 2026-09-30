@@ -7,7 +7,7 @@ use crate::{
     error::Error,
     time::{Time, TimeError},
 };
-pub(crate) use cursor::CpuCursor;
+pub(crate) use cursor::{CpuCursor, CpuWindow};
 use domain::Domain;
 use prescaler::Prescaler;
 
@@ -101,6 +101,9 @@ pub struct Clocks {
     system_denominator: u64,
     #[borsh(skip)]
     revision: u64,
+    #[cfg(feature = "profile-work")]
+    #[borsh(skip)]
+    pub(crate) cpu_time_materializations: crate::profile_work::Counter,
 }
 pub(crate) mod startup;
 pub(crate) struct SourcePower {
@@ -132,6 +135,8 @@ impl Clocks {
             system_numerator: frequencies.main_hz,
             system_denominator: 1,
             revision: 0,
+            #[cfg(feature = "profile-work")]
+            cpu_time_materializations: Default::default(),
         })
     }
     fn source(&self, source: Source) -> &Domain {
@@ -182,6 +187,10 @@ impl Clocks {
         };
         let c = &self.source(tap.source).clock;
         let delta = target.checked_sub(c.ordinal()).ok_or(TimeError::Reversed)?;
+        #[cfg(feature = "profile-work")]
+        if tap.source == Source::Cpu {
+            self.cpu_time_materializations.add(1);
+        }
         Ok(c.after(delta)?)
     }
     /// Next physical level change of a routed clock. Falling edges matter

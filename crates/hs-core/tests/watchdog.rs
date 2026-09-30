@@ -2,9 +2,7 @@
 //! external RES overlap. Register expectations are exercised by hachiware.
 #[path = "support/state.rs"]
 mod state;
-use hs_core::{
-    mcu::clocks::Frequencies, Conditions, Event, Images, Input, Machine, Time, TimedInput,
-};
+use hs_core::{Conditions, Event, Frequencies, Images, Input, Machine, Time, TimedInput};
 
 fn machine() -> Machine {
     let mut rom = [0; 49152];
@@ -17,6 +15,7 @@ fn machine() -> Machine {
             firmware: &rom,
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         Conditions {
             clocks: Frequencies {
@@ -34,6 +33,9 @@ fn machine() -> Machine {
 fn watchdog_holds_reset_for_512_rosc_edges_and_restores_mid_hold() {
     let mut m = machine();
     let mut events = Vec::new();
+    m.run_until(Time::from_micros(2048), &[], &mut events)
+        .unwrap();
+    let retired = m.retired();
     m.run_until(Time::from_micros(2049), &[], &mut events)
         .unwrap();
     assert!(events.contains(&Event::Reset {
@@ -42,13 +44,14 @@ fn watchdog_holds_reset_for_512_rosc_edges_and_restores_mid_hold() {
     }));
     assert_eq!(m.peek(0xffb1).unwrap(), 0xaf);
     assert_eq!(m.peek(0xffb3).unwrap(), 0);
-    assert_eq!(m.retired(), 0);
+    assert_eq!(m.retired(), retired);
     let reads = m.statistics().bus_reads;
     let mut restored = state::restore_file(&m.snapshot());
     let mut a = Vec::new();
     let mut b = Vec::new();
     m.run_until(Time::from_micros(2560), &[], &mut a).unwrap();
     assert_eq!(m.statistics().bus_reads, reads);
+    assert_eq!(m.retired(), retired);
     assert_eq!(m.peek(0xffb3).unwrap(), 0);
     m.run_until(Time::from_micros(2600), &[], &mut a).unwrap();
     for us in (2050..2600).step_by(17).chain([2600]) {
@@ -59,7 +62,7 @@ fn watchdog_holds_reset_for_512_rosc_edges_and_restores_mid_hold() {
     assert_eq!(a, b);
     state::assert_same_state(&m, &restored);
     assert!(m.statistics().bus_reads > reads);
-    assert!(m.retired() > 0);
+    assert!(m.retired() > retired);
 }
 
 #[test]

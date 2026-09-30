@@ -37,6 +37,7 @@ fn ordinary_run_has_no_heap_allocation() {
         firmware: &firmware,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     let motion = [(3200, 1_000_000), (3250, 0)].map(|(us, x)| hs_core::TimedInput {
@@ -109,8 +110,7 @@ fn ordinary_run_has_no_heap_allocation() {
     assert_eq!(ALLOCATIONS.load(Ordering::SeqCst), 0);
 
     use hs_core::Time;
-    let mut audio =
-        hs_core::Audio::new(48_000, Time::ZERO, hs_core::signals::Piezo::Neutral).unwrap();
+    let mut audio = hs_core::Audio::new(48_000, Time::ZERO, hs_core::Piezo::Neutral).unwrap();
     let mut samples = 0;
     ENABLED.store(true, Ordering::SeqCst);
     let result = (|| -> Result<(), hs_core::Error> {
@@ -119,7 +119,7 @@ fn ordinary_run_has_no_heap_allocation() {
         audio.event(
             hs_core::Event::Buzzer {
                 at: Time::ZERO,
-                drive: hs_core::signals::Piezo::Positive,
+                drive: hs_core::Piezo::Positive,
             },
             &mut |block| samples += block.len(),
         )?;

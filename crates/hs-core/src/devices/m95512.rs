@@ -170,14 +170,20 @@ impl M95512 {
         self.write_protect_low = low;
     }
     pub fn set_selected(&mut self, selected: bool, now: Time) -> Result<(), Error> {
+        self.select_effect(selected, now).map(|_| ())
+    }
+    /// Releasing CS can start a self-timed write. Shifting and an unchanged
+    /// selection leave the programming appointment untouched.
+    pub(crate) fn select_effect(&mut self, selected: bool, now: Time) -> Result<bool, Error> {
         if !selected {
             self.select_high_seen = true;
         } else if !self.select_high_seen {
-            return Ok(());
+            return Ok(false);
         }
         if self.selected == selected {
-            return Ok(());
+            return Ok(false);
         }
+        let was_busy = self.busy();
         if !selected {
             let complete_byte = self.rx_bits == 0;
             if !self.busy() && complete_byte {
@@ -228,7 +234,7 @@ impl M95512 {
         if !self.busy() {
             self.written = [0; 2];
         }
-        Ok(())
+        Ok(!was_busy && self.busy())
     }
     pub fn rising(&mut self, mosi: bool) {
         if !self.selected {

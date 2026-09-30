@@ -9,6 +9,7 @@ fn machine(code: &[u8]) -> Machine {
         firmware: &flash,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap()
 }
@@ -42,6 +43,7 @@ fn timer_interrupts_preserve_elapsed_rtc_ticks_when_waking_from_sleep() {
         firmware: &rom,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     m.run_until(Time::from_micros(1_100_000), &[], &mut ())
@@ -76,9 +78,10 @@ fn watch_counter_keeps_the_last_tick_of_oscillator_stabilization() {
             firmware: &rom,
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         hs_core::Conditions {
-            clocks: hs_core::mcu::clocks::Frequencies {
+            clocks: hs_core::Frequencies {
                 main_hz: 1_000_000,
                 watch_hz: 1_000_000,
                 ..Default::default()
@@ -383,6 +386,7 @@ fn external_avcc_fixture_sets_the_adc_midpoint_transitions() {
                 firmware: &*base.firmware(),
                 eeprom: &base.eeprom(),
                 eeprom_status: 0,
+                sensor_nonvolatile: None,
             },
             hs_core::Conditions {
                 avcc_override_millivolts: Some(2048),
@@ -479,9 +483,10 @@ fn rtc_clock_output_is_a_physical_pin_even_with_the_counter_stopped() {
             firmware: &*base.firmware(),
             eeprom: &base.eeprom(),
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         hs_core::Conditions {
-            clocks: hs_core::mcu::clocks::Frequencies {
+            clocks: hs_core::Frequencies {
                 main_hz: 1_000_000,
                 watch_hz: 1000,
                 ..Default::default()
@@ -630,6 +635,7 @@ fn reset_pin_aborts_cpu_work_but_keeps_existing_ram() {
     let mut m = machine(LOOP);
     m.run_until(Time::from_micros(10), &[], &mut ()).unwrap();
     let old = m.ram()[0];
+    let retired = m.retired();
     let inputs = [
         TimedInput {
             at: Time::from_micros(10),
@@ -644,7 +650,7 @@ fn reset_pin_aborts_cpu_work_but_keeps_existing_ram() {
     m.run_until(Time::from_micros(99), &inputs, &mut events)
         .unwrap();
     assert_eq!(m.ram()[0], old);
-    assert_eq!(m.retired(), 0);
+    assert_eq!(m.retired(), retired);
     assert!(events.iter().any(|e| matches!(
         e,
         Event::Reset {
@@ -654,7 +660,7 @@ fn reset_pin_aborts_cpu_work_but_keeps_existing_ram() {
     )));
     m.run_until(Time::from_micros(120), &inputs[1..], &mut events)
         .unwrap();
-    assert!(m.retired() > 0);
+    assert!(m.retired() > retired);
 }
 #[test]
 fn peeking_does_not_change_causal_state() {
@@ -862,14 +868,14 @@ fn all_nonvolatile_domains_can_be_reloaded_without_a_snapshot() {
     let m = machine(LOOP);
     let mut sensor = m.sensor_nonvolatile();
     sensor[0x12 - 0x0b] = 0x5a; // BMA150 customer EEPROM working-image byte.
-    let mut restored = Machine::with_persistent_state(
+    let mut restored = Machine::with_conditions(
         Images {
             firmware: &*m.firmware(),
             eeprom: &m.eeprom(),
             eeprom_status: 0x84,
+            sensor_nonvolatile: Some(&sensor),
         },
         Conditions::default(),
-        Some(&sensor),
     )
     .unwrap();
     assert_eq!(restored.sensor_nonvolatile(), sensor);
@@ -878,14 +884,14 @@ fn all_nonvolatile_domains_can_be_reloaded_without_a_snapshot() {
     restored.power_on(&mut ()).unwrap();
     assert_eq!(restored.sensor_nonvolatile(), sensor);
     assert_eq!(restored.eeprom_status(), 0x84);
-    assert!(Machine::with_persistent_state(
+    assert!(Machine::with_conditions(
         Images {
             firmware: &*m.firmware(),
             eeprom: &m.eeprom(),
-            eeprom_status: 0
+            eeprom_status: 0,
+            sensor_nonvolatile: Some(&sensor[..18]),
         },
         Conditions::default(),
-        Some(&sensor[..18]),
     )
     .is_err());
 }
@@ -912,6 +918,7 @@ fn zero_supply_stops_the_board_and_restoration_uses_the_power_domain() {
             firmware: &*m.firmware(),
             eeprom: &m.eeprom(),
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         hs_core::Conditions {
             supply_millivolts: 0,
@@ -922,4 +929,32 @@ fn zero_supply_stops_the_board_and_restoration_uses_the_power_domain() {
     off.run_until(Time::from_micros(100), &[], &mut ()).unwrap();
     assert!(!off.powered());
     assert_eq!(off.retired(), 0);
+}
+
+#[test]
+fn a_fault_after_gpio_commit_preserves_the_write_and_counts_it_once() {
+    let code = [
+        0xf8, 7, 0x6a, 0x88, 0xff, 0xe4, // P1 pins are outputs.
+        0xf8, 5, 0x6a, 0x88, 0xff, 0xd4, // Physical retained-latch write.
+        0x57, 0xff, // Invalid TRAPA encoding.
+    ];
+    let mut m = machine(&code);
+    let error = m
+        .run_until(Time::from_micros(100), &[], &mut ())
+        .unwrap_err();
+    assert_eq!(m.peek(0xffd4).unwrap(), 5);
+    assert_eq!(m.statistics().bus_writes, 2);
+    let mut restored = state::restore_file(&m.snapshot());
+    state::assert_same_state(&m, &restored);
+    assert_eq!(
+        m.run_until(Time::from_micros(200), &[], &mut ()),
+        Err(error)
+    );
+    let stopped = restored.snapshot();
+    let stopped_statistics = restored.statistics();
+    assert!(restored
+        .run_until(Time::from_micros(200), &[], &mut ())
+        .is_err());
+    assert_eq!(restored.snapshot(), stopped);
+    assert_eq!(restored.statistics(), stopped_statistics);
 }

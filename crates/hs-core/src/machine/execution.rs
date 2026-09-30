@@ -1,6 +1,8 @@
 //! Execute CPU actions before the next device, input, or caller boundary.
 //! Reuse exact action deadlines while the clock configuration remains stable.
 use super::*;
+use crate::cpu::Request;
+use crate::mcu::bus::Access;
 use crate::mcu::clocks::CpuCursor;
 use core::ops::ControlFlow;
 
@@ -8,11 +10,13 @@ use core::ops::ControlFlow;
 struct Delivery<'a> {
     output: &'a mut dyn Output,
     end: Time,
+    stopped: bool,
 }
 impl Output for Delivery<'_> {
     fn event(&mut self, event: Event) -> ControlFlow<()> {
         let flow = self.output.event(event);
         if flow.is_break() {
+            self.stopped = true;
             self.end = self.end.min(Time::from_raw(event.time().raw() + 1));
         }
         flow
@@ -85,23 +89,13 @@ impl Machine {
             }
         }
         loop {
-            let boundary = self.cpu.boundary();
-            let action = match self.cpu.next(|| self.mcu.interrupt()) {
-                Ok(action) => action,
+            let (action, _) = match self.next_cpu_action(self.mcu.interrupt(), out) {
+                Ok(next) => next,
                 Err(error) => {
                     self.sync_serial(out)?;
                     return Err(error);
                 }
             };
-            if boundary {
-                self.mcu.instruction_boundary();
-            }
-            if let Some(vector) = self.cpu.take_accepted_vector() {
-                self.mcu.flash.protect(self.now, out)?;
-                if vector == 7 {
-                    self.mcu.control.acknowledge_nmi();
-                }
-            }
             match action {
                 Action::Sleep => {
                     if self.mcu.control.sleeping() {
@@ -133,23 +127,31 @@ impl Machine {
             }
         }
     }
-    fn queue_action(&mut self, action: Action, clock: &mut CpuCursor) -> Result<(), Error> {
-        let (states, split) = match action {
-            Action::Idle(states) => (u64::from(states), false),
-            Action::Read { address, width, .. } | Action::Write { address, width, .. } => {
-                let address = if width == Width::Word {
-                    address & !1
-                } else {
-                    address
-                };
-                let split = width == Width::Word && !Mcu::native_word(address);
-                (
-                    Mcu::access_states(address, if split { Width::Byte } else { width }),
-                    split,
-                )
+    fn next_cpu_action(
+        &mut self,
+        interrupt: Option<u8>,
+        out: &mut dyn Output,
+    ) -> Result<(Action, bool), Error> {
+        let request = self.cpu.request(interrupt)?;
+        self.apply_cpu_request(request, out)
+    }
+    fn apply_cpu_request(
+        &mut self,
+        request: Request,
+        out: &mut dyn Output,
+    ) -> Result<(Action, bool), Error> {
+        let mut changed = request.admission && self.mcu.instruction_boundary();
+        if let Some(vector) = request.exception {
+            self.mcu.flash.protect(self.now, out)?;
+            if vector == 7 {
+                self.mcu.control.acknowledge_nmi();
+                changed = true;
             }
-            Action::Sleep => return Err(Error::Internal("scheduled SLEEP access")),
-        };
+        }
+        Ok((request.action, changed))
+    }
+    fn queue_action(&mut self, action: Action, clock: &mut CpuCursor) -> Result<(), Error> {
+        let (states, split) = Self::action_timing(action, Self::classify_action(action))?;
         self.pending = Some(Pending {
             action,
             wait: clock.after(self.now, states, &self.mcu.clocks)?,
@@ -158,6 +160,26 @@ impl Machine {
             high: 0,
         });
         Ok(())
+    }
+    fn classify_action(action: Action) -> Option<Access> {
+        match action {
+            Action::Read { address, width, .. } => Some(Mcu::classify(address, width, false)),
+            Action::Write { address, width, .. } => Some(Mcu::classify(address, width, true)),
+            _ => None,
+        }
+    }
+    fn action_timing(action: Action, access: Option<Access>) -> Result<(u64, bool), Error> {
+        Ok(match action {
+            Action::Idle(states) => (u64::from(states), false),
+            Action::Read { .. } | Action::Write { .. } => {
+                let access = access.ok_or(Error::Internal("unclassified CPU access"))?;
+                (
+                    access.states(),
+                    access.width == Width::Word && !access.native_word(),
+                )
+            }
+            Action::Sleep => return Err(Error::Internal("scheduled SLEEP access")),
+        })
     }
     fn complete_action(&mut self, value: u16, out: &mut dyn Output) -> Result<(), Error> {
         let result = self.cpu.complete(value);
@@ -173,13 +195,14 @@ impl Machine {
             .pending
             .take()
             .ok_or(Error::Internal("CPU completion without pending access"))?;
-        let (address, width, write) = match pending.action {
+        let (address, width) = match pending.action {
             Action::Idle(_) => {
                 self.complete_action(0, out)?;
                 return Ok(false);
             }
-            Action::Read { address, width, .. } => (address, width, false),
-            Action::Write { address, width, .. } => (address, width, true),
+            Action::Read { address, width, .. } | Action::Write { address, width, .. } => {
+                (address, width)
+            }
             Action::Sleep => return Err(Error::Internal("scheduled SLEEP access")),
         };
         let base = if width == Width::Word {
@@ -189,54 +212,32 @@ impl Machine {
         };
         let a = base.wrapping_add(u16::from(pending.lane));
         let w = if pending.split { Width::Byte } else { width };
-        let memory = Mcu::is_memory(a);
-        let serial_changed = !memory && self.sync_serial(out)?;
-        let affected = Mcu::access_peripherals(a, write);
-        if !memory && self.mcu.sync_peripherals(affected, self.now, out)? {
-            self.reset_mcu(true, out)?;
-            return Ok(true);
-        }
-        let value = if let Action::Write {
+        let action = if let Action::Write {
             value, mov_byte, ..
         } = pending.action
         {
-            let v = if pending.split && pending.lane == 0 {
-                value >> 8
-            } else {
-                value
-            };
-            match w {
-                Width::Byte => {
-                    self.mcu
-                        .write8(a, v as u8, self.cpu.write_origin(mov_byte), self.now, out)?
-                }
-                Width::Word => self.mcu.write16(a, v, self.now, out)?,
-            };
-            self.stats.bus_writes = self.stats.bus_writes.wrapping_add(1);
-            v
+            Action::Write {
+                address: a,
+                width: w,
+                mov_byte,
+                value: if pending.split && pending.lane == 0 {
+                    value >> 8
+                } else {
+                    value
+                },
+            }
         } else {
-            self.stats.bus_reads = self.stats.bus_reads.wrapping_add(1);
-            match w {
-                Width::Byte => u16::from(self.mcu.read8(a, self.now, out)?),
-                Width::Word => self.mcu.read16(a, self.now, out)?,
+            Action::Read {
+                address: a,
+                width: w,
+                fetch: false,
             }
         };
-        #[cfg(feature = "trace")]
-        let _ = out.event(Event::Bus {
-            at: self.now,
-            pc: self.cpu.instruction_pc(),
-            address: a,
-            width: w.bytes(),
-            write,
-            value,
-        });
-        // Due peripheral effects were settled before this access. Other reads
-        // only observe state or qualify flags; they preserve pins and deadlines.
-        let changed = !memory && (write || Mcu::read_starts_transfer(a));
-        if changed {
-            self.resolve_board(out)?;
-            self.refresh_peripherals(affected)?;
-        }
+        let Some((value, changed)) =
+            self.commit_access(action, Self::classify_action(action), out)?
+        else {
+            return Ok(true);
+        };
         if pending.split && pending.lane == 0 {
             pending.high = value as u8;
             pending.lane = 1;
@@ -254,7 +255,235 @@ impl Machine {
             };
             self.complete_action(value, out)?;
         }
-        Ok(changed || serial_changed)
+        Ok(changed)
+    }
+    // Commit one physical access, synchronizing its owners and connections.
+    // None means that a watchdog reset replaced the CPU operation.
+    fn commit_access(
+        &mut self,
+        action: Action,
+        access: Option<Access>,
+        out: &mut dyn Output,
+    ) -> Result<Option<(u16, bool)>, Error> {
+        match action {
+            Action::Idle(_) => return Ok(Some((0, false))),
+            Action::Read { .. } | Action::Write { .. } => {}
+            Action::Sleep => return Err(Error::Internal("SLEEP physical access")),
+        };
+        let access = access.ok_or(Error::Internal("unclassified CPU access"))?;
+        let Some(serial_changed) = self.before_access(access, out)? else {
+            return Ok(None);
+        };
+        let (value, effects) = self.access_cpu(action, access, out)?;
+        let changed = self.after_access(access, effects, out)?;
+        Ok(Some((value, changed || serial_changed)))
+    }
+    // Settle the old interval before a physical owner transaction mutates it.
+    fn before_access(
+        &mut self,
+        access: Access,
+        out: &mut dyn Output,
+    ) -> Result<Option<bool>, Error> {
+        let memory = access.memory();
+        let serial_changed = !memory
+            && (cfg!(feature = "trace") || access.observes_serial())
+            && self.sync_serial(out)?;
+        if !memory && self.mcu.sync_peripherals(access.owners, self.now, out)? {
+            self.reset_mcu(true, out)?;
+            return Ok(None);
+        }
+        Ok(Some(serial_changed))
+    }
+    // Both local committed replies and ordinary owner delivery apply this same
+    // connection/appointment settlement before CPU semantic completion.
+    fn after_access(
+        &mut self,
+        access: Access,
+        effects: bool,
+        out: &mut dyn Output,
+    ) -> Result<bool, Error> {
+        let changed = !access.memory() && effects;
+        if changed {
+            self.settle_board(
+                if access.configures_board() {
+                    BoardChange::Configuration
+                } else {
+                    BoardChange::Peripherals {
+                        owners: access.owners,
+                        clock_output: false,
+                        serial_devices: false,
+                    }
+                },
+                out,
+            )?;
+            if access.address == 0xffc0 {
+                self.refresh_board_appointments(1 << 2)?;
+            }
+            self.refresh_peripherals(
+                access.owners
+                    | if access.configures_board() {
+                        schedule::SSU
+                    } else {
+                        0
+                    },
+            )?;
+        }
+        Ok(changed)
+    }
+    // Both local execution and suspended accesses commit through this bus path.
+    fn access_cpu(
+        &mut self,
+        action: Action,
+        access: Access,
+        out: &mut dyn Output,
+    ) -> Result<(u16, bool), Error> {
+        let (address, width, write, value, effects) = match action {
+            Action::Idle(_) => return Ok((0, false)),
+            Action::Read { .. } => {
+                self.stats.bus_reads = self.stats.bus_reads.wrapping_add(1);
+                let value = self.mcu.read_access(access, self.now, out)?;
+                (
+                    access.address,
+                    access.width,
+                    false,
+                    value,
+                    access.read_changes_state(),
+                )
+            }
+            Action::Write {
+                value, mov_byte, ..
+            } => {
+                let effects = self.mcu.write_access(
+                    access,
+                    value,
+                    self.cpu.write_origin(mov_byte),
+                    self.now,
+                    out,
+                )?;
+                self.stats.bus_writes = self.stats.bus_writes.wrapping_add(1);
+                (access.address, access.width, true, value, effects)
+            }
+            Action::Sleep => return Err(Error::Internal("SLEEP bus access")),
+        };
+        #[cfg(feature = "trace")]
+        let _ = out.event(Event::Bus {
+            at: self.now,
+            pc: self.cpu.instruction_pc(),
+            address,
+            width: width.bytes(),
+            write,
+            value,
+        });
+        #[cfg(not(feature = "trace"))]
+        let _ = (address, width, write);
+        Ok((value, effects))
+    }
+    // Run the canonical CPU phase executor between interacting appointments.
+    // An owner access commits one physical operation, then execution resumes
+    // here with refreshed admission and timing state.
+    fn advance_cpu(
+        &mut self,
+        boundary: Time,
+        clock: &mut CpuCursor,
+        out: &mut Delivery<'_>,
+    ) -> Result<bool, Error> {
+        loop {
+            let Some(pending) = self.pending else {
+                return Ok(false);
+            };
+            if pending.split {
+                return Ok(false);
+            }
+            let Some(at) = pending.wait.deadline(&self.mcu.clocks)? else {
+                return Ok(false);
+            };
+            if at >= boundary {
+                return Ok(false);
+            }
+            let window = clock.window(at, boundary, &self.mcu.clocks)?;
+            let mut bus = self.mcu.interval(window, at)?;
+            #[cfg(feature = "profile-work")]
+            self.work.interval_entries.add(1);
+            if cfg!(feature = "trace") || !bus.can_serve(pending.action) {
+                #[cfg(feature = "profile-work")]
+                self.work.request.add(1);
+                self.now = at;
+                let mut changed = self.complete_cpu(clock, out)?;
+                changed |= self.queue_cpu(clock, out)?;
+                if changed || out.end < boundary {
+                    return Ok(changed);
+                }
+                continue;
+            }
+            self.pending = None;
+            let result = self.cpu.run_interval(&mut bus);
+            let committed = bus.take_commit();
+            #[cfg(feature = "profile-work")]
+            let (at, reads, writes) = bus.finish(clock).inspect_err(|_| {
+                self.work.error.add(1);
+            })?;
+            #[cfg(not(feature = "profile-work"))]
+            let (at, reads, writes) = bus.finish(clock)?;
+            self.now = at;
+            self.last_effect = at;
+            self.stats.bus_reads = self.stats.bus_reads.wrapping_add(reads);
+            self.stats.bus_writes = self.stats.bus_writes.wrapping_add(writes);
+            match result {
+                Ok(crate::cpu::execution::Exit::Horizon(action)) => {
+                    #[cfg(feature = "profile-work")]
+                    self.work.horizon.add(1);
+                    self.pending = Some(Pending {
+                        action,
+                        wait: clock.wait(),
+                        split: false,
+                        lane: 0,
+                        high: 0,
+                    });
+                    return Ok(false);
+                }
+                Ok(crate::cpu::execution::Exit::Request(action)) => {
+                    #[cfg(feature = "profile-work")]
+                    self.work.request.add(1);
+                    self.queue_action(action, clock)?;
+                }
+                Ok(crate::cpu::execution::Exit::Exception(request)) => {
+                    #[cfg(feature = "profile-work")]
+                    self.work.exception.add(1);
+                    let (action, _) = self.apply_cpu_request(request, out)?;
+                    self.queue_action(action, clock)?;
+                    return Ok(true);
+                }
+                Ok(crate::cpu::execution::Exit::Sleep) => {
+                    #[cfg(feature = "profile-work")]
+                    self.work.sleep.add(1);
+                    return self.queue_cpu(clock, out);
+                }
+                Ok(crate::cpu::execution::Exit::CommittedOwner) => {
+                    #[cfg(feature = "profile-work")]
+                    self.work.committed_owner.add(1);
+                    let committed =
+                        committed.ok_or(Error::Internal("missing committed owner reply"))?;
+                    self.after_access(committed.access, true, out)?;
+                    self.complete_action(committed.value, out)?;
+                    self.queue_cpu(clock, out)?;
+                    return Ok(true);
+                }
+                Ok(crate::cpu::execution::Exit::Reset) => {
+                    #[cfg(feature = "profile-work")]
+                    self.work.reset.add(1);
+                    self.sync_serial(out)?;
+                    self.reset_mcu(true, out)?;
+                    self.queue_cpu(clock, out)?;
+                    return Ok(true);
+                }
+                Err(error) => {
+                    #[cfg(feature = "profile-work")]
+                    self.work.error.add(1);
+                    self.sync_serial(out)?;
+                    return Err(error);
+                }
+            }
+        }
     }
     /// Advance through effects before `end`, returning earlier if output requests it.
     /// Inputs at the returned exclusive horizon remain pending.
@@ -281,7 +510,11 @@ impl Machine {
         inputs: &[TimedInput],
         out: &mut dyn Output,
     ) -> Result<RunResult, Error> {
-        let mut out = Delivery { output: out, end };
+        let mut out = Delivery {
+            output: out,
+            end,
+            stopped: false,
+        };
         let mut clock = CpuCursor::new(&self.mcu.clocks);
         let mut consumed = 0;
         while self.now < out.end {
@@ -306,6 +539,9 @@ impl Machine {
                     changed = self.complete_cpu(&mut clock, &mut out)?;
                 }
                 changed |= self.queue_cpu(&mut clock, &mut out)?;
+                if !changed {
+                    changed |= self.advance_cpu(boundary, &mut clock, &mut out)?;
+                }
                 if changed || out.end < boundary {
                     boundary = self.execution_boundary(out.end, input)?;
                 }
@@ -322,9 +558,15 @@ impl Machine {
             }
         }
         self.sync_serial_before(self.now, &mut out)?;
+        self.sensor.sync_local_until(self.now, false)?;
         Ok(RunResult {
             now: self.now,
             inputs_consumed: consumed,
+            reason: if out.stopped {
+                StopReason::Output
+            } else {
+                StopReason::Horizon
+            },
             retired: self.cpu.retired,
         })
     }

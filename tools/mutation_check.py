@@ -21,16 +21,30 @@ VALUE = '''                let value = if ccr {
                 };
 '''
 CASES = (
-    ('rtc-extra-access-state', 'crates/hs-core/src/mcu/mod.rs',
+    ('rtc-extra-access-state', 'crates/hs-core/src/mcu/bus.rs',
      'if matches!(a, 0xf0e0..=0xf0e4 |', 'if matches!(a, 0xf068 | 0xf0e0..=0xf0e4 |',
      'register_access', 'actual_guest_accesses_commit_at_the_documented_exclusive_boundary'),
     ('predecrement-stale-source', 'crates/hs-core/src/cpu/mod.rs',
      ADDRESS + VALUE, VALUE + ADDRESS,
      'cpu_regressions', 'predecrement_reads_updated_aliased_source_at_every_width_and_register'),
     ('eepmov-word-defers-nmi', 'crates/hs-core/src/cpu/mod.rs',
-     'if word_count && stage == 2 && interrupt == Some(7) {',
-     'if false && word_count && stage == 2 && interrupt == Some(7) {',
+     'if word_count && interrupt() == Some(7) {',
+     'if false && word_count && interrupt() == Some(7) {',
      'cpu_regressions', 'eepmov_word_accepts_nmi_only_between_complete_byte_transfers'),
+    ('sci-read-retains-interrupt', 'crates/hs-core/src/mcu/bus.rs',
+     '0xf0e9 | 0xf07f | 0xff9d | 0xf0de', '0xf0e9 | 0xf07f | 0xf0de',
+     'interrupt_reads', 'reading_sci_data_while_masked_removes_the_request_before_unmasking'),
+    ('coincident-serial-edge-loses-driver', 'crates/hs-core/src/machine/serial.rs',
+     'owners: owners | schedule::SSU,', 'owners,',
+     'serial_appointments', 'serial_bytes_survive_unrelated_device_appointments'),
+    ('ram-trap-protects-flash-at-stale-time', 'crates/hs-core/src/machine/execution.rs',
+     '                    let (action, _) = self.apply_cpu_request(request, out)?;',
+     '''                    let completed_at = self.now;
+                    self.now = pending.wait.deadline(&self.mcu.clocks)?.unwrap();
+                    let result = self.apply_cpu_request(request, out);
+                    self.now = completed_at;
+                    let (action, _) = result?;''',
+     'flash_execution', 'a_ram_trap_protects_flash_at_exception_admission_after_the_completed_pulse_prefix'),
 )
 
 

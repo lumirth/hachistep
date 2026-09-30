@@ -34,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         firmware: &firmware,
         eeprom: &eeprom,
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })?;
     let inputs = [
         TimedInput {

@@ -1,7 +1,7 @@
 //! Package rules and the explicit nominal RC/startup/retention realization.
 #[path = "support/state.rs"]
 mod state;
-use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Input, Machine, Time, TimedInput};
+use hs_core::{Conditions, Frequencies, Images, Input, Machine, Time, TimedInput};
 
 fn t(us: u64) -> Time {
     Time::from_micros(us)
@@ -31,6 +31,7 @@ fn from_code(mv: u16, code: &[u8]) -> Machine {
             firmware: &rom,
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         Conditions {
             supply_millivolts: mv,

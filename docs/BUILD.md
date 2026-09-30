@@ -24,8 +24,8 @@ inspection, and save/load; ordinary execution allocates nothing.
 
 `--offline` does not install the toolchain or dependencies. No network service, hidden
 build download, GitHub Actions workflow or emulator runtime service is required.
-Standard `cargo fmt --all --check` works; the check script also invokes rustfmt directly
-so it can inspect all source and fixture helper files.
+The check script uses `cargo fmt --all -- --check` to inspect workspace targets and
+their modules, including fixture helpers.
 
 ## Development checks
 
@@ -36,14 +36,18 @@ gh repo clone lumirth/hachiware ../hachiware
 ```
 
 ```sh
+uv run tools/check.py --test sensor_spi --out out/sensor-spi-1
 uv run tools/check.py --out out/check-1
 uv run tools/verify_retail.py --out out/retail-1
 ```
 
-Each output directory must be new. `check.py` runs formatting, default and trace-feature
+Each output directory must be new. With no selectors, `check.py` runs formatting,
+default and trace-feature
 tests, Clippy, a release build, host-tool unit tests, independent fixture generation and
 fixture execution. Pass `--hachiware PATH` if the suite is elsewhere. Rust builds and
-local tests do not require the suite checkout. `verify_retail.py` separately requires
+local tests do not require the suite checkout. `--test TARGET[::EXACT_TEST]` and
+`--case GLOB` run only the selected checks; see [TESTING](TESTING.md#focused-checks).
+`verify_retail.py` separately requires
 private images and runs full event/state partition comparison, snapshot replay, and the
 retail workloads, including persistent writes, power interruption and infrared timeout.
 `--quick` selects home, menu and settings; `--list` describes the available cases without

@@ -133,7 +133,17 @@ impl Clock {
     #[inline]
     fn project(&self, edges: u64) -> Result<(Time, u64), TimeError> {
         let fractions = u128::from(self.fraction) + u128::from(edges) * u128::from(self.remainder);
-        let (carry, fraction) = if let Ok(fractions) = u64::try_from(fractions) {
+        let (carry, fraction) = if edges <= 3 {
+            // Short physical accesses and serial edges carry at most once per
+            // edge. Subtraction avoids a division without changing the phase.
+            let mut fraction = fractions;
+            let mut carry = 0;
+            while fraction >= u128::from(self.denominator) {
+                fraction -= u128::from(self.denominator);
+                carry += 1;
+            }
+            (carry, fraction as u64)
+        } else if let Ok(fractions) = u64::try_from(fractions) {
             (
                 u128::from(fractions / self.denominator),
                 fractions % self.denominator,

@@ -72,6 +72,12 @@ pub enum Source {
     Reg(u8),
     Imm(u32),
 }
+/// A byte-register alias or a three-bit immediate selecting the operand bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitIndex {
+    Reg(u8),
+    Imm(u8),
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Address {
     Absolute(u16),
@@ -139,7 +145,7 @@ pub enum Instruction {
     },
     Bit {
         op: Bit,
-        bit: Source,
+        bit: BitIndex,
         target: Target,
     },
     Memory {
@@ -645,14 +651,14 @@ pub fn decode(words: &[u16]) -> Decode {
         _ => invalid(),
     }
 }
-fn bit_operation(code: u8, selector: u8) -> Option<(Bit, Source)> {
-    let imm = Source::Imm(u32::from(selector & 7));
+fn bit_operation(code: u8, selector: u8) -> Option<(Bit, BitIndex)> {
+    let imm = BitIndex::Imm(selector & 7);
     let inv = selector & 8 != 0;
     Some(match code {
-        0x60 => (Bit::Set, Source::Reg(selector)),
-        0x61 => (Bit::Not, Source::Reg(selector)),
-        0x62 => (Bit::Clear, Source::Reg(selector)),
-        0x63 => (Bit::Test, Source::Reg(selector)),
+        0x60 => (Bit::Set, BitIndex::Reg(selector)),
+        0x61 => (Bit::Not, BitIndex::Reg(selector)),
+        0x62 => (Bit::Clear, BitIndex::Reg(selector)),
+        0x63 => (Bit::Test, BitIndex::Reg(selector)),
         0x67 => (Bit::Store(inv), imm),
         0x70 if !inv => (Bit::Set, imm),
         0x71 if !inv => (Bit::Not, imm),
@@ -828,7 +834,7 @@ mod tests {
             ready(
                 Instruction::Bit {
                     op: Bit::Load(false),
-                    bit: Source::Imm(0),
+                    bit: BitIndex::Imm(0),
                     target: Target::Memory(Address::Absolute(0xffb1))
                 },
                 2

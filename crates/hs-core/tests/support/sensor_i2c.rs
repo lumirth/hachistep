@@ -65,6 +65,7 @@ pub fn session() -> (Machine, Vec<TimedInput>, Time) {
         firmware: &rom,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     let mut bus = Bus {

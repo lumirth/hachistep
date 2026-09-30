@@ -3,8 +3,8 @@
 #[path = "support/state.rs"]
 mod state;
 use hs_core::{
-    cpu::WriteOrigin,
-    mcu::{
+    diagnostic::cpu::WriteOrigin,
+    diagnostic::mcu::{
         aec::Aec,
         clocks::{Clocks, Frequencies, Tap},
         control::Mode,
@@ -401,6 +401,7 @@ fn fixture(gate_irq: bool) -> Machine {
         firmware: &rom,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap()
 }
@@ -460,7 +461,7 @@ fn guest_gate_input_alone_vectors_18() {
 fn pwm_output_pin_route_and_digital_collision_validation() {
     let mut m = fixture(false);
     // The board resolves P12 and delivers its edges to the EEPROM.
-    let mut g = hs_core::mcu::gpio::Gpio::default();
+    let mut g = hs_core::diagnostic::mcu::gpio::Gpio::default();
     g.write(0xffc0, 0x20).unwrap();
     g.set_aec_output(true, Some(false));
     assert!(
@@ -491,12 +492,12 @@ fn inactive_module_does_not_replay_elapsed_clocks_when_reenabled() {
     a.input_pins(pins, Time::ZERO, &c).unwrap();
     let end = t(&c, 20000);
     a.sync(end, &c).unwrap();
-    c.select_system(end, hs_core::mcu::clocks::Source::Watch, 1)
+    c.select_system(end, hs_core::diagnostic::mcu::clocks::Source::Watch, 1)
         .unwrap();
     a.set_power(true, true, true, true, end, &c).unwrap();
     assert_eq!(a.peek(0xff97), 0);
     let next = c
-        .after(end, 2, hs_core::mcu::clocks::Tap::system(1))
+        .after(end, 2, hs_core::diagnostic::mcu::clocks::Tap::system(1))
         .unwrap();
     a.sync(next, &c).unwrap();
     assert_eq!(a.peek(0xff97), 1);

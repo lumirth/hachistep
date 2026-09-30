@@ -46,11 +46,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let firmware = fs::read(firmware.ok_or("--firmware is required")?)?;
         let eeprom = fs::read(eeprom.ok_or("--eeprom is required")?)?;
         let sensor_nv = sensor_nv.map(fs::read).transpose()?;
-        Machine::with_persistent_state(
+        Machine::with_conditions(
             Images {
                 firmware: &firmware,
                 eeprom: &eeprom,
                 eeprom_status: status,
+                sensor_nonvolatile: sensor_nv.as_deref(),
             },
             Conditions {
                 supply_millivolts: supply_mv,
@@ -58,7 +59,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 battery_sense_drop_millivolts: battery_drop_mv,
                 ..Conditions::default()
             },
-            sensor_nv.as_deref(),
         )?
     };
     let start = m.now();

@@ -1,7 +1,7 @@
 //! Clock phase and pending edge counts across clock selection, gating and startup.
 use hs_core::{
-    cpu::WriteOrigin,
-    mcu::{
+    diagnostic::cpu::WriteOrigin,
+    diagnostic::mcu::{
         adc::Adc,
         clocks::{ClockWait, Clocks, Frequencies, Source, Tap},
         control::{Control, Mode},

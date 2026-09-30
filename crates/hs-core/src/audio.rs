@@ -1,6 +1,6 @@
 //! Streaming mono audio from timed buzzer drive changes. The renderer owns
 //! resampling history; the emulated machine runs independently of playback.
-use crate::{signals::Piezo, Error, Event, Time};
+use crate::{Error, Event, Piezo, Time};
 use blip_buf::BlipBuf;
 
 const PHASES: u32 = 4096;

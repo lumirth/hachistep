@@ -1,8 +1,7 @@
 //! Flash register, pulse and persistent cell observations.
 use hs_core::{
-    mcu::{control::Mode, flash::Flash},
-    signals::NvDomain,
-    Event, Time,
+    diagnostic::mcu::{control::Mode, flash::Flash},
+    Event, NvDomain, Time,
 };
 
 fn t(us: u64) -> Time {

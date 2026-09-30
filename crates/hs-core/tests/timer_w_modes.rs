@@ -1,7 +1,7 @@
 //! Independent cases for the Timer W buffer and contention rules in §10.7.
 use hs_core::{
-    cpu::WriteOrigin,
-    mcu::{
+    diagnostic::cpu::WriteOrigin,
+    diagnostic::mcu::{
         clocks::{Clocks, Frequencies, Tap},
         control::Mode,
         timer_w::TimerW,
@@ -263,6 +263,7 @@ fn guest_gpio_edge_captures_stopped_timer_and_vectors_through_35() {
         firmware: &rom,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap();
     let mut b = a.clone();
@@ -286,7 +287,7 @@ fn expired_capture_visibility_does_not_survive_a_clock_epoch_change() {
     let mut w = capture(&c, true);
     let now = edge(&c, 12);
     w.sync(now, &c).unwrap();
-    c.select_system(now, hs_core::mcu::clocks::Source::Watch, 1)
+    c.select_system(now, hs_core::diagnostic::mcu::clocks::Source::Watch, 1)
         .unwrap();
     w.sync(now, &c).unwrap();
     assert_eq!(w.read_word(0xf0f8, &c).unwrap(), 5);

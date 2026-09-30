@@ -2,7 +2,7 @@
 //! Electrical fixture pulses below are much longer than the two-clock minimum.
 #[path = "support/state.rs"]
 mod state;
-use hs_core::{mcu::control::Control, Images, Input, Machine, Time, TimedInput};
+use hs_core::{diagnostic::mcu::control::Control, Images, Input, Machine, Time, TimedInput};
 fn t(us: u64) -> Time {
     Time::from_micros(us)
 }
@@ -19,6 +19,7 @@ fn program(code: &[u8]) -> Machine {
         firmware: &rom,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap()
 }

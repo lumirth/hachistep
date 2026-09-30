@@ -1,5 +1,4 @@
-use hs_core::signals::{AnalogPin, DigitalPin};
-use hs_core::{Acceleration, Buttons, Input, Time, TimedInput};
+use hs_core::{Acceleration, AnalogPin, Buttons, DigitalPin, Input, Time, TimedInput};
 use std::error::Error;
 
 /// Human-editable deterministic physical inputs. No firmware state is modified.

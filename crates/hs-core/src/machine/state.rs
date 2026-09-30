@@ -48,6 +48,8 @@ impl Saved {
             !mcu.sync(m.observation_time(), &mut ())?,
             "unprocessed reset at capture",
         )?;
+        let mut sensor = m.sensor.clone();
+        sensor.sync_local_until(m.observation_time(), true)?;
         Ok(Self {
             firmware_origin: m.firmware_origin,
             now: m.now,
@@ -55,7 +57,7 @@ impl Saved {
             cpu: m.cpu.save()?,
             mcu,
             eeprom: m.eeprom.clone(),
-            sensor: m.sensor.clone(),
+            sensor,
             lcd: m.lcd.clone(),
             conditions: m.conditions,
             analog_pins: m.analog_pins,
@@ -94,7 +96,9 @@ impl Saved {
             resume_after: self.resume_after,
             next_devices: None,
             appointments: Appointments::default(),
+            board_appointments: [None; 7],
             changed_peripherals: 0,
+            changed_board: 0,
             serial: self.serial,
             piezo: self.piezo,
             incident_light: self.incident_light,
@@ -108,6 +112,8 @@ impl Saved {
                 .stopped_by_core_fault
                 .then_some(Error::Snapshot("saved session was stopped by a core fault")),
             stats: Statistics::default(),
+            #[cfg(feature = "profile-work")]
+            work: Default::default(),
         };
         require(
             m.last_effect <= m.now
@@ -171,6 +177,8 @@ impl Saved {
         // These are pure projections. Board resolution would deliver edges and
         // chip-select effects again, and must never be used as a load helper.
         m.refresh_deadline()?;
+        #[cfg(feature = "profile-work")]
+        m.clear_work();
         Ok(m)
     }
 }
@@ -232,6 +240,7 @@ mod tests {
             firmware: &rom,
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         })
         .unwrap()
     }

@@ -1,6 +1,6 @@
 //! Original physical-bus fixtures; expected bytes/periods follow section 16.
 use hs_core::{
-    mcu::{
+    diagnostic::mcu::{
         clocks::{Clocks, Frequencies},
         iic::Iic,
     },

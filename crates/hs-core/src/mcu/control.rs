@@ -77,6 +77,9 @@ impl Control {
         }
         self.nmi_level = high;
     }
+    pub(crate) fn clock_register(a: u16) -> bool {
+        matches!(a, 0xfff0 | 0xfff1 | 0xfff5 | 0xfffa | 0xfffb)
+    }
     pub fn handles(a: u16) -> bool {
         matches!(a, 0xfff0..=0xfff7 | 0xfffa | 0xfffb)
     }

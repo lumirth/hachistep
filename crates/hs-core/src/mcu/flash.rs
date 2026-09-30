@@ -2,6 +2,7 @@
 //! a four-byte verify sense latch. See docs/accuracy/flash.md.
 use super::{control::Mode, FLASH_SIZE};
 use crate::{
+    cpu::Width,
     error::Error,
     signals::{Event, NvDomain, Output},
     time::{Duration, Time, TimeError},
@@ -93,6 +94,11 @@ enum Supply {
     Reduced = 1,
     Stopped = 2,
 }
+
+/// Ordinary-read permission for an exclusive MCU interval. Its holder must
+/// return before flash control, protection, supply or clock conditions change.
+#[derive(Clone, Copy)]
+pub(super) struct NormalRead(());
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Flash {
@@ -382,14 +388,26 @@ impl Flash {
         }
         Ok(())
     }
-    fn normal(&self, now: Time) -> bool {
+    pub(crate) fn normal(&self, now: Time) -> bool {
         self.control & 0x3f == 0
             && self.supply != Supply::Stopped
             && now >= self.ready.max(self.recovery)
     }
+    pub(super) fn normal_read(&self, now: Time) -> Option<NormalRead> {
+        self.normal(now).then_some(NormalRead(()))
+    }
+    #[inline]
+    pub(super) fn read_normal(&self, _: NormalRead, address: u16, width: Width) -> u16 {
+        let i = usize::from(address);
+        if width == Width::Word {
+            u16::from_be_bytes([self.bytes[i], self.bytes[i + 1]])
+        } else {
+            u16::from(self.bytes[i])
+        }
+    }
     pub fn read8(&mut self, address: u16, now: Time, out: &mut dyn Output) -> Result<u8, Error> {
-        if self.normal(now) {
-            return Ok(self.bytes[usize::from(address)]);
+        if let Some(normal) = self.normal_read(now) {
+            return Ok(self.read_normal(normal, address, Width::Byte) as u8);
         }
         let pulse = self.pulse().is_some();
         if pulse {
@@ -407,9 +425,8 @@ impl Flash {
         Ok(0xff)
     }
     pub fn read16(&mut self, address: u16, now: Time, out: &mut dyn Output) -> Result<u16, Error> {
-        if self.normal(now) {
-            let i = usize::from(address);
-            return Ok(u16::from_be_bytes([self.bytes[i], self.bytes[i + 1]]));
+        if let Some(normal) = self.normal_read(now) {
+            return Ok(self.read_normal(normal, address, Width::Word));
         }
         Ok(u16::from_be_bytes([
             self.read8(address, now, out)?,

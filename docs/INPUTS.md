@@ -128,7 +128,7 @@ runtime.
 ## Audio and display
 
 For streaming frontend audio, use the core's `Audio` renderer described in
-[API](API.md#observation).
+[API](API.md#audio).
 
 Render captured buzzer drive from a complete trace:
 

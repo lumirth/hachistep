@@ -6,9 +6,26 @@ live in [cpu/state.rs](../crates/hs-core/src/cpu/state.rs). The [file
 contract](SAVE_STATES.md) defines encoding, validation, and restoration. Changing
 executor layout does not change these meanings automatically.
 
+## Execution and suspension
+
+`Cpu::execute_phase` authors each physical operation together with its dependent CPU
+effects. Its bus adapter performs the operation before those effects commit. The
+production interval uses canonical MCU owners; diagnostic projection publishes an
+unperformed action, and a reply completes an operation already performed by Machine.
+These adapters share the same phase arms.
+
+An owner transaction that changes connections or appointments returns before CPU
+continuation. Machine settles its consequences, then supplies the reply. An unchanged
+retained GPIO write can complete within the existing interval. The distinction between
+an unperformed action and a committed owner reply prevents repeating a write after
+settlement or failure.
+
+Intervals, bus permissions and committed replies are disposable execution projections.
+Captures retain the CPU progress and physical clock obligation described below.
+
 ## Common retained fields
 
-Use one private `CpuState` with these fields, followed by a tagged `CpuProgress`.
+The private `CpuState` contains these fields, followed by a tagged `CpuProgress`.
 Integers have explicit widths; addresses are normal-mode 16-bit addresses, not host
 pointers. Give saved enums documented tags independently of the live Rust enum order.
 
@@ -37,7 +54,7 @@ avoids fragile phase-specific omission rules and preserves diagnostic attributio
 
 ## Complete progress mapping
 
-The following are concrete suggested saved variants. Each row maps in both directions;
+The following saved variants map in both directions;
 fields named below have their live field's value. A `frame` means `{ vector: u8,
 saved_pc: u16, saved_ccr: u8 }`. Where a row mentions `decoded`, reconstruct it from the
 captured words. Set inactive live `continuation` to `Boundary`. No serialized variant
@@ -242,8 +259,8 @@ counters, not hardware authority; initialize them under the codec's stated diagn
 policy. Consequently, restoration is inverse over causal progress, not bitwise equality
 of stale scratch fields or profiler totals.
 
-Capture and reconstruction use exhaustive matches beside the CPU owner; keep ordinary
-`next`/`complete` as the only executor. The meaningful regression checks are identical
+Capture and reconstruction use exhaustive matches beside the CPU owner; keep all
+execution adapters on the shared phase arms. The meaningful regression checks are identical
 subsequent bus effects and timing after a capture between longword halves, between split
 SFR lanes, during each exception stack phase, during EEPMOV admission/read/write, and
 before arithmetic/CCR commitment. Encoded round-trip equality alone does not establish

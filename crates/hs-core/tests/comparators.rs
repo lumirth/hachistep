@@ -3,10 +3,9 @@
 #[path = "support/state.rs"]
 mod state;
 use hs_core::{
-    cpu::WriteOrigin,
-    mcu::{comparators::Comparators, Mcu},
-    signals::AnalogPin,
-    Images, Input, Machine, Time, TimedInput,
+    diagnostic::cpu::WriteOrigin,
+    diagnostic::mcu::{comparators::Comparators, Mcu},
+    AnalogPin, Images, Input, Machine, Time, TimedInput,
 };
 fn at(us: u64) -> Time {
     Time::from_micros(us)
@@ -150,6 +149,7 @@ fn fixture() -> Machine {
         firmware: &rom,
         eeprom: &[0xff; 65536],
         eeprom_status: 0,
+        sensor_nonvolatile: None,
     })
     .unwrap()
 }
@@ -219,7 +219,7 @@ fn inspection_after_an_instant_power_toggle_keeps_retained_comparator_state() {
 #[test]
 fn vcref_is_p30_not_the_p32_transmit_pin() {
     // REJ09B0152-0300 §1.3 and §8.2: P30/SCK3/VCref, P32/TXD3/IrTXD.
-    let mut g = hs_core::mcu::gpio::Gpio::default();
+    let mut g = hs_core::diagnostic::mcu::gpio::Gpio::default();
     g.write(0xffc2, 1).unwrap();
     g.write(0xffe6, 4).unwrap(); // P32 output, leave P30 input
     g.write(0xffd6, 4).unwrap(); // preserve high transmitter output

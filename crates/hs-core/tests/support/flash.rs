@@ -1,4 +1,4 @@
-use hs_core::{mcu::clocks::Frequencies, Conditions, Images, Machine};
+use hs_core::{Conditions, Frequencies, Images, Machine};
 
 /// Original RAM routine with a six-millisecond pulse and subsequent verify.
 pub fn machine() -> Machine {
@@ -60,6 +60,7 @@ pub fn machine() -> Machine {
             firmware: &rom,
             eeprom: &[0xff; 65536],
             eeprom_status: 0,
+            sensor_nonvolatile: None,
         },
         Conditions {
             clocks: Frequencies {
