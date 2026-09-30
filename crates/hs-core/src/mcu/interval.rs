@@ -12,6 +12,7 @@ pub(crate) struct Interval<'a> {
     deferred_serial: bool,
     interrupt: Option<u8>,
     expired_interrupt: Option<u8>,
+    admission_boundaries: u8,
     window: CpuWindow,
     first_due: bool,
     overshoot: Option<u64>,
@@ -33,6 +34,10 @@ impl Mcu {
         } else {
             self.interrupt_with_retained([0; 10])
         };
+        let admission_boundaries = self
+            .control
+            .admission_boundaries()
+            .max(u8::from(self.admission_enables != [0; 10]));
         let normal_flash = self.flash.normal_read(at);
         // IIC and driver-changing external consequences bound this interval.
         // Only SSU's quiet edges can remain deferred across that bound.
@@ -43,6 +48,7 @@ impl Mcu {
             deferred_serial,
             interrupt,
             expired_interrupt,
+            admission_boundaries,
             window,
             first_due: true,
             overshoot: None,
@@ -195,6 +201,7 @@ impl Interval<'_> {
     }
 }
 impl Bus for Interval<'_> {
+    const RUN_AHEAD: bool = true;
     #[inline(always)]
     fn read(&mut self, address: u16, width: Width, fetch: bool) -> Result<u16, Stop> {
         let a = Self::base(address, width);
@@ -272,8 +279,13 @@ impl IntervalBus for Interval<'_> {
         self.interrupt
     }
     fn instruction_boundary(&mut self) {
-        self.mcu.instruction_boundary();
-        self.interrupt = self.expired_interrupt;
+        // All transactions that can rearm the history leave this interval.
+        // Once the owner-issued count reaches zero, no captured bits change.
+        if self.admission_boundaries != 0 {
+            self.mcu.instruction_boundary();
+            self.admission_boundaries -= 1;
+            self.interrupt = self.expired_interrupt;
+        }
     }
 }
 
@@ -295,6 +307,21 @@ mod tests {
         m.clocks.edge(n, Tap::system(1)).unwrap()
     }
 
+    #[test]
+    fn local_admission_ages_low_pin_clear_protection_for_exactly_two_boundaries() {
+        let mut m = mcu();
+        m.control.irq_switch(0, true);
+        for (boundary, expected) in [(1, 1), (2, 0)] {
+            let at = edge(&m, boundary * 2);
+            let mut cursor = CpuCursor::new(&m.clocks);
+            let window = cursor.window(at, edge(&m, 20), &m.clocks).unwrap();
+            let mut bus = m.interval(window, at).unwrap();
+            bus.instruction_boundary();
+            bus.finish(&mut cursor).unwrap();
+            m.control.write(0xfff6, 0).unwrap();
+            assert_eq!(m.control.irr1 & 1, expected);
+        }
+    }
     #[test]
     fn retained_serial_status_qualifies_flags_without_a_clock_observation() {
         let mut m = mcu();

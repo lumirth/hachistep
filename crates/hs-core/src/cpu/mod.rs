@@ -371,6 +371,33 @@ impl Cpu {
         }
         Ok(())
     }
+    /// Accept physical or retained fetch bytes through the same decoder bookkeeping.
+    /// The caller selects the instruction sequence; no synthetic bus completion occurs.
+    fn accept_fetched(&mut self, value: u16) -> Result<Option<Instruction>, Error> {
+        if self.word_count >= 5 {
+            return Err(Error::Internal("decoder requested more than ten bytes"));
+        }
+        self.words[usize::from(self.word_count)] = value;
+        self.word_count += 1;
+        self.registers.pc = self.registers.pc.wrapping_add(2);
+        match decode::decode(&self.words[..usize::from(self.word_count)]) {
+            Decode::NeedWord => self.phase = Phase::Fetch,
+            Decode::Ready { instruction, words } => {
+                if words != self.word_count {
+                    return Err(Error::Internal("decoder consumed a different fetch count"));
+                }
+                return Ok(Some(instruction));
+            }
+            Decode::Invalid => {
+                return Err(Error::Decode {
+                    pc: self.instruction_pc,
+                    words: self.words,
+                    count: self.word_count,
+                })
+            }
+        }
+        Ok(None)
+    }
     fn prepare(&mut self, i: Instruction) -> Result<(), Error> {
         // REJ09B0213-0300 §2.8: NEXT is a real retained bus fetch. Memory
         // bit operations and EEPMOV fetch it later in their own sequences.
@@ -468,30 +495,45 @@ impl Cpu {
             .or_else(|| self.sleeping().then_some(Action::Sleep))
             .ok_or(Error::Internal("CPU phase without issued work"))
     }
+    /// Sample the offer before the MCU expires retained enables. Sleeping and
+    /// accepted exceptions retain their own progress; normal admission consumes
+    /// actual prefetched bytes without invoking the physical-phase dispatcher.
+    fn admit(
+        &mut self,
+        mut interrupt: impl FnMut() -> Option<u8>,
+    ) -> Result<Option<Instruction>, Error> {
+        if self.interrupt_delay == 0 {
+            if let Some(v) = interrupt() {
+                if v == 7 || self.registers.ccr & I == 0 {
+                    self.enter_exception(v, false);
+                    return Ok(None);
+                }
+            }
+        }
+        if matches!(self.phase, Phase::Sleeping) {
+            return Ok(None);
+        }
+        self.interrupt_delay = self.interrupt_delay.saturating_sub(1);
+        self.instruction_pc = self.registers.pc;
+        self.word_count = 0;
+        self.words = [0; 5];
+        self.phase = Phase::Fetch;
+        if let Some((address, word)) = self.prefetch.take() {
+            if address == self.registers.pc {
+                return self.accept_fetched(word);
+            }
+        }
+        Ok(None)
+    }
     fn prepare_work(&mut self, mut interrupt: impl FnMut() -> Option<u8>) -> Result<(), Error> {
         loop {
             match self.phase {
                 Phase::Boundary | Phase::Sleeping => {
-                    if self.interrupt_delay == 0 {
-                        if let Some(v) = interrupt() {
-                            if v == 7 || self.registers.ccr & I == 0 {
-                                self.enter_exception(v, false);
-                                continue;
-                            }
-                        }
+                    if let Some(instruction) = self.admit(&mut interrupt)? {
+                        self.prepare(instruction)?;
                     }
-                    if matches!(self.phase, Phase::Sleeping) {
+                    if self.sleeping() {
                         return Ok(());
-                    }
-                    self.interrupt_delay = self.interrupt_delay.saturating_sub(1);
-                    self.instruction_pc = self.registers.pc;
-                    self.word_count = 0;
-                    self.words = [0; 5];
-                    self.phase = Phase::Fetch;
-                    if let Some((address, word)) = self.prefetch.take() {
-                        if address == self.registers.pc {
-                            self.complete(word)?;
-                        }
                     }
                 }
                 Phase::Ready(i) => self.prepare(i)?,
@@ -542,33 +584,50 @@ impl Cpu {
     #[inline]
     pub(crate) fn run_interval(&mut self, bus: &mut impl IntervalBus) -> Result<Exit, Error> {
         loop {
-            match self.execute_phase(bus) {
+            let result = if self.boundary() {
+                let instruction = self.admit(|| bus.interrupt())?;
+                bus.instruction_boundary();
+                if self.accepted_vector.is_some() {
+                    return self.exception_exit();
+                }
+                if self.sleeping() {
+                    return Ok(Exit::Sleep);
+                }
+                match instruction {
+                    Some(instruction) => self.run_instruction(instruction, bus, true),
+                    None => self.execute_phase(bus),
+                }
+            } else {
+                self.execute_phase(bus)
+            };
+            match result {
                 Ok(true) => {
                     if self.accepted_vector.is_some() {
                         return self.exception_exit();
                     }
-                    continue;
                 }
-                Ok(false) => {}
+                Ok(false) => {
+                    let admission = self.boundary();
+                    self.prepare_work(|| bus.interrupt())?;
+                    if admission {
+                        bus.instruction_boundary();
+                    }
+                    if self.accepted_vector.is_some() {
+                        return self.exception_exit();
+                    }
+                    if self.sleeping() {
+                        return Ok(Exit::Sleep);
+                    }
+                }
                 Err(Stop::Request(action)) => return Ok(Exit::Request(action)),
                 Err(Stop::Horizon(action)) => return Ok(Exit::Horizon(action)),
                 Err(Stop::Core(error)) => return Err(error),
                 Err(Stop::Reset) => return Ok(Exit::Reset),
                 Err(Stop::CommittedOwner) => return Ok(Exit::CommittedOwner),
             }
-            let admission = self.boundary();
-            self.prepare_work(|| bus.interrupt())?;
-            if admission {
-                bus.instruction_boundary();
-            }
-            if self.accepted_vector.is_some() {
-                return self.exception_exit();
-            }
-            if self.sleeping() {
-                return Ok(Exit::Sleep);
-            }
         }
     }
+
     fn exception_exit(&mut self) -> Result<Exit, Error> {
         let action = self
             .issued_action()
@@ -596,7 +655,7 @@ impl Cpu {
         self.request(interrupt)
     }
     #[inline(always)]
-    fn execute_phase(&mut self, bus: &mut impl Bus) -> Result<bool, Stop> {
+    fn execute_phase<B: Bus>(&mut self, bus: &mut B) -> Result<bool, Stop> {
         #[cfg(feature = "profile-work")]
         self.phase_dispatches.add(1);
         match self.phase {
@@ -659,62 +718,18 @@ impl Cpu {
             }
             Phase::Fetch => {
                 let value = bus.read(self.registers.pc & !1, Width::Word, true)?;
-                if self.word_count >= 5 {
-                    return Err(Error::Internal("decoder requested more than ten bytes").into());
-                }
-                self.words[usize::from(self.word_count)] = value;
-                self.word_count += 1;
-                self.registers.pc = self.registers.pc.wrapping_add(2);
-                match decode::decode(&self.words[..usize::from(self.word_count)]) {
-                    Decode::NeedWord => {}
-                    Decode::Ready { instruction, words } => {
-                        if words != self.word_count {
-                            return Err(Error::Internal(
-                                "decoder consumed a different fetch count",
-                            )
-                            .into());
-                        }
+                if let Some(instruction) = self.accept_fetched(value)? {
+                    if B::RUN_AHEAD {
+                        self.run_instruction(instruction, bus, true)?;
+                    } else {
                         self.prepare(instruction)?;
-                    }
-                    Decode::Invalid => {
-                        return Err(Error::Decode {
-                            pc: self.instruction_pc,
-                            words: self.words,
-                            count: self.word_count,
-                        }
-                        .into())
                     }
                 }
             }
-            Phase::Memory(mut t) => {
+            Phase::Memory(t) => {
                 let value = t.transact(bus)?;
-                let bytes = if t.size == Size::Byte { 1 } else { 2 };
-                if !t.store {
-                    t.value = if t.done == 0 {
-                        u32::from(value)
-                    } else {
-                        (t.value << 16) | u32::from(value)
-                    };
-                }
-                t.done += bytes;
-                if u16::from(t.done) < t.size.bytes() {
+                if let Some(t) = self.accept_transfer(t, value) {
                     self.phase = Phase::Memory(t);
-                } else {
-                    if let Some((r, v)) = t.post {
-                        self.registers.er[usize::from(r)] = v;
-                    }
-                    if t.ccr {
-                        if !t.store {
-                            self.registers.ccr = (t.value >> 8) as u8;
-                            self.interrupt_delay = 1;
-                        }
-                    } else {
-                        if !t.store {
-                            self.registers.write(t.size, t.register, t.value);
-                        }
-                        self.registers.ccr = alu::logical(t.value, t.size, self.registers.ccr);
-                    }
-                    self.finish();
                 }
             }
             Phase::BitRead { address, op, bit } => {
@@ -927,14 +942,62 @@ impl Cpu {
             }
         }
     }
-    fn begin(&mut self, instruction: Instruction) -> Result<(), Error> {
+    fn accept_transfer(&mut self, mut t: Transfer, value: u16) -> Option<Transfer> {
+        let bytes = if t.size == Size::Byte { 1 } else { 2 };
+        if !t.store {
+            t.value = if t.done == 0 {
+                u32::from(value)
+            } else {
+                (t.value << 16) | u32::from(value)
+            };
+        }
+        t.done += bytes;
+        if u16::from(t.done) < t.size.bytes() {
+            return Some(t);
+        } else {
+            if let Some((r, v)) = t.post {
+                self.registers.er[usize::from(r)] = v;
+            }
+            if t.ccr {
+                if !t.store {
+                    self.registers.ccr = (t.value >> 8) as u8;
+                    self.interrupt_delay = 1;
+                }
+            } else {
+                if !t.store {
+                    self.registers.write(t.size, t.register, t.value);
+                }
+                self.registers.ccr = alu::logical(t.value, t.size, self.registers.ccr);
+            }
+            self.finish();
+        }
+        None
+    }
+    /// NEXT and the instruction's register/operand continuation have one source.
+    /// Single-effect diagnostic adapters enter after NEXT; interval execution
+    /// proceeds directly and publishes the exact hardware phase only on a fence.
+    #[inline]
+    fn run_instruction<B: Bus>(
+        &mut self,
+        instruction: Instruction,
+        bus: &mut B,
+        next_due: bool,
+    ) -> Result<bool, Stop> {
+        // In this prototype the work witness includes both physical-phase and
+        // instruction-family selection; the predecessor counts phases only.
+        #[cfg(feature = "profile-work")]
+        self.phase_dispatches.add(1);
         match instruction {
-            Instruction::Nop => self.finish(),
-            Instruction::Sleep => {
-                self.retired = self.retired.wrapping_add(1);
-                self.phase = Phase::Sleeping;
+            Instruction::Nop => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
+                self.finish();
             }
             Instruction::Binary { op, size, dst, src } => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
                 let a = self.registers.read(size, dst);
                 let b = self.source(size, src);
                 let (r, f) = alu::binary(op, size, a, b, self.registers.ccr);
@@ -950,6 +1013,9 @@ impl Cpu {
                 dst,
                 amount,
             } => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
                 let (r, f) = alu::unary(
                     op,
                     size,
@@ -962,6 +1028,9 @@ impl Cpu {
                 self.finish();
             }
             Instruction::Shift { op, size, dst } => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
                 let (r, f) =
                     alu::shift(op, size, self.registers.read(size, dst), self.registers.ccr);
                 self.registers.write(size, dst, r);
@@ -969,9 +1038,145 @@ impl Cpu {
                 self.finish();
             }
             Instruction::Quick { dst, delta } => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
                 self.registers.er[usize::from(dst)] =
                     self.registers.er[usize::from(dst)].wrapping_add(i32::from(delta) as u32);
                 self.finish();
+            }
+            Instruction::Memory {
+                size,
+                reg,
+                address,
+                store,
+                ccr,
+            } => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
+                // MOV @-ERn updates the full address register before reading
+                // an aliased source (RnH/RnL/Rn/En/ERn). ADE-602-053A
+                // MOV.B/W/L usage notes, pp. 121/123/125. Loads still commit
+                // a post-increment before replacing the destination field.
+                let updating = matches!(
+                    address,
+                    Address::PreDecrement(_) | Address::PostIncrement(_)
+                );
+                let absolute8 = matches!(address, Address::Absolute(_)) && self.word_count == 1;
+                let (mut address, post) = self.target_address(address, size);
+                let value = if ccr {
+                    u32::from(self.registers.ccr) << 8
+                } else {
+                    self.registers.read(size, reg)
+                };
+                if size != Size::Byte {
+                    address &= !1;
+                }
+                let transfer = Transfer {
+                    address,
+                    size,
+                    register: reg,
+                    store,
+                    ccr,
+                    absolute8,
+                    value: if store { value } else { 0 },
+                    done: 0,
+                    post,
+                };
+                if updating {
+                    if B::RUN_AHEAD {
+                        if let Err(stop) = bus.idle(2) {
+                            self.delay_then(2, Phase::Memory(transfer));
+                            return Err(stop);
+                        }
+                    } else {
+                        self.delay_then(2, Phase::Memory(transfer));
+                        return Ok(true);
+                    }
+                }
+                if B::RUN_AHEAD {
+                    let mut t = transfer;
+                    loop {
+                        let value = match t.transact(bus) {
+                            Ok(value) => value,
+                            Err(stop) => {
+                                self.phase = Phase::Memory(t);
+                                return Err(stop);
+                            }
+                        };
+                        match self.accept_transfer(t, value) {
+                            Some(next) => t = next,
+                            None => break,
+                        }
+                    }
+                } else {
+                    self.phase = Phase::Memory(transfer);
+                }
+            }
+            Instruction::Ccr { op, source } => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
+                let v = self.source(Size::Byte, source) as u8;
+                self.registers.ccr = match op {
+                    CcrOp::Load => v,
+                    CcrOp::And => self.registers.ccr & v,
+                    CcrOp::Or => self.registers.ccr | v,
+                    CcrOp::Xor => self.registers.ccr ^ v,
+                };
+                self.interrupt_delay = 1;
+                self.finish();
+            }
+            Instruction::StoreCcr(r) => {
+                if next_due {
+                    self.instruction_next(instruction, bus)?;
+                }
+                self.registers
+                    .write(Size::Byte, r, u32::from(self.registers.ccr));
+                self.finish();
+            }
+            other => {
+                if next_due {
+                    self.prepare(other)?;
+                } else {
+                    self.begin_remaining(other)?;
+                }
+            }
+        }
+        Ok(true)
+    }
+    #[inline]
+    fn instruction_next(
+        &mut self,
+        instruction: Instruction,
+        bus: &mut impl Bus,
+    ) -> Result<(), Stop> {
+        let address = self.registers.pc & !1;
+        let word = match bus.read(address, Width::Word, true) {
+            Ok(word) => word,
+            Err(stop) => {
+                self.prefetch_then(address, true, Phase::Execute(instruction));
+                return Err(stop);
+            }
+        };
+        self.prefetch = Some((address, word));
+        Ok(())
+    }
+    fn begin(&mut self, instruction: Instruction) -> Result<(), Error> {
+        match self.run_instruction(instruction, &mut Reply(0), false) {
+            Ok(_) => Ok(()),
+            Err(Stop::Core(error)) => Err(error),
+            _ => Err(Error::Internal(
+                "instruction continuation requested a physical effect",
+            )),
+        }
+    }
+    fn begin_remaining(&mut self, instruction: Instruction) -> Result<(), Error> {
+        match instruction {
+            Instruction::Sleep => {
+                self.retired = self.retired.wrapping_add(1);
+                self.phase = Phase::Sleeping;
             }
             Instruction::Bit { op, bit, target } => {
                 let bit = match bit {
@@ -991,48 +1196,6 @@ impl Cpu {
                         let (address, _) = self.target_address(address, Size::Byte);
                         self.phase = Phase::BitRead { address, op, bit };
                     }
-                }
-            }
-            Instruction::Memory {
-                size,
-                reg,
-                address,
-                store,
-                ccr,
-            } => {
-                // MOV @-ERn updates the full address register before reading
-                // an aliased source (RnH/RnL/Rn/En/ERn). ADE-602-053A
-                // MOV.B/W/L usage notes, pp. 121/123/125. Loads still commit
-                // a post-increment before replacing the destination field.
-                let updating = matches!(
-                    address,
-                    Address::PreDecrement(_) | Address::PostIncrement(_)
-                );
-                let absolute8 = matches!(address, Address::Absolute(_)) && self.word_count == 1;
-                let (mut address, post) = self.target_address(address, size);
-                let value = if ccr {
-                    u32::from(self.registers.ccr) << 8
-                } else {
-                    self.registers.read(size, reg)
-                };
-                if size != Size::Byte {
-                    address &= !1;
-                }
-                let transfer = Phase::Memory(Transfer {
-                    address,
-                    size,
-                    register: reg,
-                    store,
-                    ccr,
-                    absolute8,
-                    value: if store { value } else { 0 },
-                    done: 0,
-                    post,
-                });
-                if updating {
-                    self.delay_then(2, transfer);
-                } else {
-                    self.phase = transfer;
                 }
             }
             Instruction::Branch {
@@ -1087,22 +1250,6 @@ impl Cpu {
                 self.retired = self.retired.wrapping_add(1);
                 self.enter_exception(8 + vector, true);
             }
-            Instruction::Ccr { op, source } => {
-                let v = self.source(Size::Byte, source) as u8;
-                self.registers.ccr = match op {
-                    CcrOp::Load => v,
-                    CcrOp::And => self.registers.ccr & v,
-                    CcrOp::Or => self.registers.ccr | v,
-                    CcrOp::Xor => self.registers.ccr ^ v,
-                };
-                self.interrupt_delay = 1;
-                self.finish();
-            }
-            Instruction::StoreCcr(r) => {
-                self.registers
-                    .write(Size::Byte, r, u32::from(self.registers.ccr));
-                self.finish();
-            }
             Instruction::MulDiv {
                 divide,
                 signed,
@@ -1140,6 +1287,7 @@ impl Cpu {
                     value: 0,
                 }
             }
+            _ => return Err(Error::Internal("instruction outside its semantic family")),
         }
         Ok(())
     }
@@ -1230,6 +1378,242 @@ impl Cpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct LimitedBus {
+        words: Vec<(u16, u16)>,
+        effects: Vec<Action>,
+        remaining: usize,
+        reset: bool,
+        irq_after: Option<usize>,
+    }
+    impl LimitedBus {
+        fn perform(&mut self, action: Action) -> Result<(), Stop> {
+            if self.remaining == 0 {
+                return Err(if self.reset {
+                    Stop::Reset
+                } else {
+                    Stop::Horizon(action)
+                });
+            }
+            self.remaining -= 1;
+            self.effects.push(action);
+            Ok(())
+        }
+    }
+    impl Bus for LimitedBus {
+        const RUN_AHEAD: bool = true;
+        fn read(&mut self, address: u16, width: Width, fetch: bool) -> Result<u16, Stop> {
+            self.perform(Action::Read {
+                address,
+                width,
+                fetch,
+            })?;
+            Ok(self
+                .words
+                .iter()
+                .find(|(at, _)| *at == address)
+                .map_or(0, |(_, value)| *value))
+        }
+        fn write(
+            &mut self,
+            address: u16,
+            width: Width,
+            value: u16,
+            mov_byte: bool,
+        ) -> Result<(), Stop> {
+            self.perform(Action::Write {
+                address,
+                width,
+                value,
+                mov_byte,
+            })
+        }
+        fn idle(&mut self, states: u32) -> Result<(), Stop> {
+            self.perform(Action::Idle(states))
+        }
+    }
+    impl IntervalBus for LimitedBus {
+        fn interrupt(&self) -> Option<u8> {
+            self.irq_after
+                .filter(|after| self.effects.len() >= *after)
+                .map(|_| 7)
+        }
+        fn instruction_boundary(&mut self) {}
+    }
+    #[test]
+    fn direct_long_store_retains_first_lane_and_restores_without_reissuing_it() {
+        for reset in [false, true] {
+            let mut cpu = Cpu::new(0x100);
+            cpu.registers.er[2] = 0x1234_ff00;
+            let mut bus = LimitedBus {
+                words: vec![(0x100, 0x0100), (0x102, 0x6da2)],
+                effects: Vec::new(),
+                remaining: 5,
+                reset,
+                irq_after: None,
+            };
+            let exit = cpu.run_interval(&mut bus).unwrap();
+            assert!(if reset {
+                matches!(exit, Exit::Reset)
+            } else {
+                matches!(exit, Exit::Horizon(_))
+            });
+            assert_eq!(
+                bus.effects,
+                vec![
+                    Action::Read {
+                        address: 0x100,
+                        width: Width::Word,
+                        fetch: true
+                    },
+                    Action::Read {
+                        address: 0x102,
+                        width: Width::Word,
+                        fetch: true
+                    },
+                    Action::Read {
+                        address: 0x104,
+                        width: Width::Word,
+                        fetch: true
+                    },
+                    Action::Idle(2),
+                    Action::Write {
+                        address: 0xfefc,
+                        width: Width::Word,
+                        value: 0x1234,
+                        mov_byte: false
+                    },
+                ]
+            );
+            assert_eq!(cpu.registers.er[2], 0x1234_fefc);
+            assert_eq!(cpu.retired, 0);
+            let mut restored = cpu.save().unwrap().restore(false).unwrap();
+            assert_eq!(
+                restored.next(|| Some(7)).unwrap(),
+                Action::Write {
+                    address: 0xfefe,
+                    width: Width::Word,
+                    value: 0xfefc,
+                    mov_byte: false,
+                }
+            );
+            restored.complete(0).unwrap();
+            assert_eq!(restored.retired, 1);
+            assert_eq!(restored.accepted_vector, None);
+        }
+    }
+    #[test]
+    fn direct_next_fence_keeps_register_destination_and_actual_prefetched_bytes() {
+        let mut cpu = Cpu::new(0x100);
+        cpu.registers.er[0] = 0x1122_3344;
+        let mut bus = LimitedBus {
+            words: vec![(0x100, 0xf8ab), (0x102, 0x0000)],
+            effects: Vec::new(),
+            remaining: 1,
+            reset: false,
+            irq_after: None,
+        };
+        assert!(matches!(
+            cpu.run_interval(&mut bus).unwrap(),
+            Exit::Horizon(Action::Read { address: 0x102, .. })
+        ));
+        assert_eq!(cpu.registers.er[0], 0x1122_3344);
+        let mut restored = cpu.save().unwrap().restore(false).unwrap();
+        restored.complete(0).unwrap();
+        assert_eq!(restored.registers.er[0], 0x1122_33ab);
+        assert_eq!(restored.retired, 1);
+        // Change code behind the hardware fetch: the retained NOP still executes.
+        let mut bus = LimitedBus {
+            words: vec![(0x102, 0xffff)],
+            effects: Vec::new(),
+            remaining: 1,
+            reset: false,
+            irq_after: None,
+        };
+        assert!(matches!(
+            restored.run_interval(&mut bus).unwrap(),
+            Exit::Horizon(_)
+        ));
+        assert_eq!(restored.retired, 2);
+        assert_eq!(
+            bus.effects,
+            vec![Action::Read {
+                address: 0x104,
+                width: Width::Word,
+                fetch: true
+            }]
+        );
+    }
+    #[test]
+    fn invalid_retained_word_preserves_fault_prefix_and_pc_after_direct_retirement() {
+        let mut cpu = Cpu::new(0x100);
+        let mut bus = LimitedBus {
+            words: vec![(0x100, 0xf801), (0x102, 0x0001)],
+            effects: Vec::new(),
+            remaining: 4,
+            reset: false,
+            irq_after: None,
+        };
+        assert!(matches!(
+            cpu.run_interval(&mut bus),
+            Err(Error::Decode {
+                pc: 0x102,
+                count: 1,
+                words: [0x0001, 0, 0, 0, 0]
+            })
+        ));
+        assert_eq!(cpu.registers.er[0], 1);
+        assert_eq!(cpu.registers.pc, 0x104);
+        assert_eq!(cpu.retired, 1);
+        assert!(cpu.save().unwrap().restore(true).is_ok());
+        assert_eq!(bus.effects.len(), 2);
+    }
+    #[test]
+    fn direct_ccr_write_defers_offered_nmi_for_one_intervening_instruction() {
+        let mut cpu = Cpu::new(0x100);
+        cpu.registers.er[7] = 0xff7c;
+        let mut bus = LimitedBus {
+            words: vec![(0x100, 0x0700), (0x102, 0xf801)],
+            effects: Vec::new(),
+            remaining: 5,
+            reset: false,
+            irq_after: Some(2),
+        };
+        let Exit::Exception(request) = cpu.run_interval(&mut bus).unwrap() else {
+            panic!("NMI was not admitted")
+        };
+        assert_eq!(request.exception, Some(7));
+        assert_eq!(
+            request.action,
+            Action::Read {
+                address: 0x106,
+                width: Width::Word,
+                fetch: true
+            }
+        );
+        assert_eq!(cpu.retired, 2);
+        assert_eq!(cpu.registers.er[0], 1);
+        assert_eq!(cpu.registers.pc, 0x104);
+        assert_eq!(
+            bus.effects,
+            vec![
+                Action::Read {
+                    address: 0x100,
+                    width: Width::Word,
+                    fetch: true
+                },
+                Action::Read {
+                    address: 0x102,
+                    width: Width::Word,
+                    fetch: true
+                },
+                Action::Read {
+                    address: 0x104,
+                    width: Width::Word,
+                    fetch: true
+                },
+            ]
+        );
+    }
     #[test]
     fn projection_preserves_the_operand_phase_and_reply_does_not_admit_nmi() {
         let mut cpu = Cpu::new(0x100);

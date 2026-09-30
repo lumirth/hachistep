@@ -142,6 +142,11 @@ impl Control {
         }
         self.irq_levels = levels;
     }
+    /// Number of subsequent instruction boundaries that can still change the
+    /// flag-clear protection. The interval cannot rearm it without fencing.
+    pub(crate) fn admission_boundaries(&self) -> u8 {
+        self.irq_clear_delay.into_iter().max().unwrap_or(0)
+    }
     pub(crate) fn instruction_boundary(&mut self) {
         for delay in &mut self.irq_clear_delay {
             *delay = delay.saturating_sub(1);

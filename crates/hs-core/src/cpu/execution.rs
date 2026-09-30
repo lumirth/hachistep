@@ -17,6 +17,8 @@ impl From<Error> for Stop {
 /// Physical operations are authored with their semantic completion in one CPU
 /// arm. Adapters choose whether to supply, project, or perform the transaction.
 pub(crate) trait Bus {
+    /// Diagnostic replies complete exactly one issued effect.
+    const RUN_AHEAD: bool = false;
     fn read(&mut self, address: u16, width: Width, fetch: bool) -> Result<u16, Stop>;
     fn write(&mut self, address: u16, width: Width, value: u16, mov_byte: bool)
         -> Result<(), Stop>;
