@@ -42,15 +42,6 @@ pub enum Event {
         at: Time,
         on: bool,
     },
-    #[cfg(feature = "trace")]
-    Bus {
-        at: Time,
-        pc: u16,
-        address: u16,
-        width: u8,
-        write: bool,
-        value: u16,
-    },
     LcdWrite {
         at: Time,
         page: u8,
@@ -241,8 +232,6 @@ impl Event {
             | Event::NvCommit { at, .. }
             | Event::NvInterrupted { at, .. }
             | Event::Reset { at, .. } => at,
-            #[cfg(feature = "trace")]
-            Event::Bus { at, .. } => at,
         }
     }
 }

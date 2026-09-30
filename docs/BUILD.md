@@ -104,8 +104,9 @@ export. The core does not write files.
 
 ## Features
 
-There is no execution-backend or accuracy feature. `trace` adds bus-observation
-callbacks to the same implementation:
+There is no execution-backend or accuracy feature. `trace` makes explicit diagnostic
+bus observation available through the same implementation. Ordinary execution and
+product events remain unchanged when the feature is compiled but unused:
 
 ```sh
 cargo build -p hs-cli --release --offline --features trace
@@ -115,10 +116,10 @@ mkdir -p out
   --trace out/boot-bus.txt --trace-limit 10000 --out out/bus
 ```
 
-A trace build is intentionally more expensive. Rebuild without the feature for
-performance measurements. The CLI reports truncation; a capped trace is not a complete
-hardware history. Do not run long private event-vector tests with bus tracing enabled
-unless the resulting memory use is intentional.
+Active bus observation is intentionally more expensive; omit `--bus-trace` for ordinary
+execution. Use ordinary builds for performance comparisons. The CLI reports truncation;
+a capped trace is not a complete hardware history. The caller owns retained bus records
+and their memory use.
 
 ## Source archives
 

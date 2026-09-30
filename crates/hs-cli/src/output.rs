@@ -1,5 +1,5 @@
 use crate::digest::sha256;
-use hs_core::{Event, Machine, Output, Time};
+use hs_core::{Event, Machine, Output, RunResult, Time, TimedInput};
 use std::{
     fs,
     io::{self, Write},
@@ -18,18 +18,10 @@ pub struct Events {
     pub trace_dropped: u64,
     pub trace_limit: u64,
     pub error: Option<io::Error>,
-    pub bus_trace: bool,
 }
 impl Output for Events {
     fn event(&mut self, event: Event) -> ControlFlow<()> {
-        let is_bus = match event {
-            #[cfg(feature = "trace")]
-            Event::Bus { .. } => true,
-            _ => false,
-        };
-        if !is_bus {
-            self.count += 1;
-        }
+        self.count += 1;
         match event {
             Event::LcdWrite { .. } | Event::LcdControl { .. } => self.lcd += 1,
             Event::NvCommit { .. } => self.nv += 1,
@@ -37,15 +29,45 @@ impl Output for Events {
             Event::Infrared { .. } => self.ir += 1,
             _ => {}
         }
-        if is_bus && !self.bus_trace {
-            return ControlFlow::Continue(());
+        self.record(event.time(), format_args!("{event:?}"))
+    }
+}
+impl Events {
+    // Product and diagnostic callbacks share one ordered, bounded file writer.
+    // The stack borrow is released before either callback returns to the core.
+    pub fn run_until(
+        &mut self,
+        machine: &mut Machine,
+        end: Time,
+        inputs: &[TimedInput],
+        bus_trace: bool,
+    ) -> Result<RunResult, hs_core::Error> {
+        #[cfg(feature = "trace")]
+        if bus_trace {
+            let shared = std::cell::RefCell::new(self);
+            return hs_core::diagnostic::run_until_traced(
+                machine,
+                end,
+                inputs,
+                &mut |event| shared.borrow_mut().event(event),
+                &mut |event: hs_core::diagnostic::BusEvent| {
+                    shared
+                        .borrow_mut()
+                        .record(event.at, format_args!("{event:?}"))
+                },
+            );
         }
+        #[cfg(not(feature = "trace"))]
+        let _ = bus_trace;
+        machine.run_until(end, inputs, self)
+    }
+    fn record(&mut self, at: Time, event: std::fmt::Arguments<'_>) -> ControlFlow<()> {
         if self.trace.is_some() && self.trace_count >= self.trace_limit {
             self.trace_dropped = self.trace_dropped.saturating_add(1);
         }
         if self.error.is_none() && self.trace_count < self.trace_limit {
             if let Some(f) = &mut self.trace {
-                if let Err(e) = writeln!(f, "{:032x}\t{event:?}", event.time().raw()) {
+                if let Err(e) = writeln!(f, "{:032x}\t{event}", at.raw()) {
                     self.error = Some(e);
                 }
                 self.trace_count += 1;
@@ -57,8 +79,6 @@ impl Output for Events {
             ControlFlow::Continue(())
         }
     }
-}
-impl Events {
     pub fn check(&mut self) -> io::Result<()> {
         if let Some(e) = self.error.take() {
             Err(e)

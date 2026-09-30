@@ -14,10 +14,6 @@ struct Events {
 }
 impl Output for Events {
     fn event(&mut self, event: Event) -> ControlFlow<()> {
-        #[cfg(feature = "trace")]
-        if matches!(event, Event::Bus { .. }) {
-            return ControlFlow::Continue(());
-        }
         self.count += 1;
         // Preserve the supplied legacy adapter's endpoint checksum. It omits
         // event time and several fields; only the exported history is complete.

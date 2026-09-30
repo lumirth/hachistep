@@ -108,7 +108,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut events = output::Events {
         trace,
         trace_limit,
-        bus_trace,
         ..Default::default()
     };
     let wall = Instant::now();
@@ -124,7 +123,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         while stop < changes.len() && changes[stop].at < to {
             stop += 1;
         }
-        match m.run_until(to, &changes[cursor..stop], &mut events) {
+        match events.run_until(&mut m, to, &changes[cursor..stop], bus_trace) {
             Ok(result) => cursor += result.inputs_consumed,
             Err(e) => {
                 failure = Some(e);

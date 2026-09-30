@@ -177,10 +177,11 @@ is separate from the embedding contract.
 [machine interface](../../crates/hs-core/src/machine.rs).
 
 Keep construction and inspection types deliberate as the API develops. Raw pin inputs
-and bus traces need a clearly documented diagnostic interface. Adding the trace Cargo feature
-currently adds `Event::Bus` to the product event enum. Decide whether trace delivery
-should have its own type before asking downstream users to exhaustively match the
-ordinary event contract. [Events and fixtures](../../crates/hs-core/src/signals.rs).
+and bus traces need a clearly documented diagnostic interface. HachiStep's optional
+bus observer now has a separate diagnostic type and an explicit borrowed sink. Enabling
+the Cargo feature does not change the product event enum or enable observation during
+ordinary execution. [Events and fixtures](../../crates/hs-core/src/signals.rs),
+[bus observation](../../crates/hs-core/src/trace.rs).
 
 Add stepping, breakpoints, or watchpoints when hachiware or a debugger needs their
 behavior. Preserve stopped, side-effect-free inspection regardless of diagnostic

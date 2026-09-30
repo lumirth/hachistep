@@ -245,6 +245,30 @@ is not currently exposed by `Machine`.
 [mgba-access]: https://github.com/mgba-emu/mgba/blob/c3c8e5e813f245028de118a56734e1dc0f35ce2a/include/mgba/core/core.h
 [sameboy-access]: https://github.com/LIJI32/SameBoy/blob/213a12ce93d66b105a113debd9396306066a7cfc/Core/gb.h
 
+## Bus observation
+
+The `trace` Cargo feature provides `diagnostic::{BusEvent, BusTrace,
+run_until_traced}`. It does not change `Event` or enable observation during ordinary
+`Machine::run_until` calls. A traced call takes separate borrowed sinks for product
+events and completed physical CPU accesses:
+
+```rust,ignore
+let result = hs_core::diagnostic::run_until_traced(
+    &mut machine, end, inputs, &mut product_events,
+    &mut |access: hs_core::diagnostic::BusEvent| {
+        bus_records.push(access);
+        std::ops::ControlFlow::Continue(())
+    },
+)?;
+```
+
+Either sink may request control using `Break(())`. The same completed-instant rule
+applies, and `RunResult.reason` is `StopReason::Output`. Retain the reason or host error
+in the sink. Bus records describe committed accesses; byte-wide register lanes produce
+separate records, with their values reduced to the physical width. Idle cycles produce
+no record. The bus observer is a diagnostic contract, and detailed observation costs
+more than ordinary execution.
+
 ## Checkpoint
 
 `snapshot()` captures typed state without advancing the machine. Its `encode()` method

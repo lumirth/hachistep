@@ -123,7 +123,8 @@ and a Rust diagnostic event. The trace text format is a development format, not 
 interchange protocol across versions. `--trace-limit` bounds records written;
 `trace_dropped` and `trace_complete` expose truncation. Reaching the cap never stops
 guest hardware. A bus trace needs the compile-time `trace` feature and `--bus-trace` at
-runtime.
+runtime. Bus records go to the diagnostic file; they do not enter product event counts.
+Compiling the feature alone does not enable bus observation.
 
 ## Audio and display
 

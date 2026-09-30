@@ -34,6 +34,8 @@ mod profile_work;
 mod signals;
 mod state;
 mod time;
+#[cfg(feature = "trace")]
+mod trace;
 pub use audio::Audio;
 pub use cpu::Registers;
 pub use devices::nt7508::LcdDrive;
@@ -54,6 +56,8 @@ pub use machine::{Conditions, Images, Machine, RunResult, Snapshot, Statistics, 
 pub mod diagnostic {
     #[cfg(feature = "profile-work")]
     pub use crate::profile_work::{IntervalExits, Work};
+    #[cfg(feature = "trace")]
+    pub use crate::trace::{run_until_traced, BusEvent, BusTrace};
     /// Host work frequencies; enabled separately from ordinary release timing.
     #[cfg(feature = "profile-work")]
     pub fn work(machine: &crate::Machine) -> Work {

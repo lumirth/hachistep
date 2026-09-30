@@ -123,7 +123,6 @@ fn caller_partition_cost_is_excluded_from_causal_state_and_capture_bytes() {
         partitioned.statistics().bus_writes
     );
     assert_eq!(whole.retired(), partitioned.retired());
-    #[cfg(not(feature = "trace"))]
     assert_ne!(
         diagnostic::work(&whole).interval_entries,
         diagnostic::work(&partitioned).interval_entries

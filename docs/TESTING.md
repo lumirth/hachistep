@@ -76,6 +76,11 @@ cached `iteration` profile; `--runner PATH` uses a preserved candidate instead.
 `--features trace,profile-work` applies to selected Rust tests. It does not change
 the guest CLI build. Focused selectors cannot accompany `--execution`.
 
+The `embedding_trace` target exercises a crate-root product-event consumer in both
+feature states. With `--features trace,profile-work`, it also checks explicit bus
+observation, committed physical widths, coincident output, caller-requested stops and
+restoration. Compiling tracing without an observer must retain ordinary execution.
+
 The same source fingerprints and failure summaries apply to focused checks. They
 establish only the named coverage. Use the execution selection for a wider scheduling
 change and the default full check at a substantive milestone.

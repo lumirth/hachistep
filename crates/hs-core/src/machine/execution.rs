@@ -9,15 +9,36 @@ use core::ops::ControlFlow;
 // Output can shorten the horizon; owners finish the current timestamp first.
 struct Delivery<'a> {
     output: &'a mut dyn Output,
+    #[cfg(feature = "trace")]
+    trace: Option<&'a mut dyn crate::trace::BusTrace>,
     end: Time,
     stopped: bool,
+}
+impl Delivery<'_> {
+    fn tracing(&self) -> bool {
+        #[cfg(feature = "trace")]
+        return self.trace.is_some();
+        #[cfg(not(feature = "trace"))]
+        false
+    }
+    fn stop_at(&mut self, at: Time) {
+        self.stopped = true;
+        self.end = self.end.min(Time::from_raw(at.raw() + 1));
+    }
+    #[cfg(feature = "trace")]
+    fn bus(&mut self, event: crate::trace::BusEvent) {
+        if let Some(trace) = &mut self.trace {
+            if trace.event(event).is_break() {
+                self.stop_at(event.at);
+            }
+        }
+    }
 }
 impl Output for Delivery<'_> {
     fn event(&mut self, event: Event) -> ControlFlow<()> {
         let flow = self.output.event(event);
         if flow.is_break() {
-            self.stopped = true;
-            self.end = self.end.min(Time::from_raw(event.time().raw() + 1));
+            self.stop_at(event.time());
         }
         flow
     }
@@ -189,7 +210,11 @@ impl Machine {
         }
         result
     }
-    fn complete_cpu(&mut self, clock: &mut CpuCursor, out: &mut dyn Output) -> Result<bool, Error> {
+    fn complete_cpu(
+        &mut self,
+        clock: &mut CpuCursor,
+        out: &mut Delivery<'_>,
+    ) -> Result<bool, Error> {
         self.last_effect = self.now;
         let mut pending = self
             .pending
@@ -263,7 +288,7 @@ impl Machine {
         &mut self,
         action: Action,
         access: Option<Access>,
-        out: &mut dyn Output,
+        out: &mut Delivery<'_>,
     ) -> Result<Option<(u16, bool)>, Error> {
         match action {
             Action::Idle(_) => return Ok(Some((0, false))),
@@ -282,12 +307,11 @@ impl Machine {
     fn before_access(
         &mut self,
         access: Access,
-        out: &mut dyn Output,
+        out: &mut Delivery<'_>,
     ) -> Result<Option<bool>, Error> {
         let memory = access.memory();
-        let serial_changed = !memory
-            && (cfg!(feature = "trace") || access.observes_serial())
-            && self.sync_serial(out)?;
+        let serial_changed =
+            !memory && (out.tracing() || access.observes_serial()) && self.sync_serial(out)?;
         if !memory && self.mcu.sync_peripherals(access.owners, self.now, out)? {
             self.reset_mcu(true, out)?;
             return Ok(None);
@@ -335,7 +359,7 @@ impl Machine {
         &mut self,
         action: Action,
         access: Access,
-        out: &mut dyn Output,
+        out: &mut Delivery<'_>,
     ) -> Result<(u16, bool), Error> {
         let (address, width, write, value, effects) = match action {
             Action::Idle(_) => return Ok((0, false)),
@@ -366,13 +390,17 @@ impl Machine {
             Action::Sleep => return Err(Error::Internal("SLEEP bus access")),
         };
         #[cfg(feature = "trace")]
-        let _ = out.event(Event::Bus {
+        out.bus(crate::trace::BusEvent {
             at: self.now,
             pc: self.cpu.instruction_pc(),
             address,
             width: width.bytes(),
             write,
-            value,
+            value: if width == Width::Byte {
+                value & 0xff
+            } else {
+                value
+            },
         });
         #[cfg(not(feature = "trace"))]
         let _ = (address, width, write);
@@ -404,7 +432,7 @@ impl Machine {
             let mut bus = self.mcu.interval(window, at)?;
             #[cfg(feature = "profile-work")]
             self.work.interval_entries.add(1);
-            if cfg!(feature = "trace") || !bus.can_serve(pending.action) {
+            if out.tracing() || !bus.can_serve(pending.action) {
                 #[cfg(feature = "profile-work")]
                 self.work.request.add(1);
                 self.now = at;
@@ -493,9 +521,30 @@ impl Machine {
         inputs: &[TimedInput],
         out: &mut dyn Output,
     ) -> Result<RunResult, Error> {
+        self.run_observed(
+            end,
+            inputs,
+            out,
+            #[cfg(feature = "trace")]
+            None,
+        )
+    }
+    pub(crate) fn run_observed(
+        &mut self,
+        end: Time,
+        inputs: &[TimedInput],
+        out: &mut dyn Output,
+        #[cfg(feature = "trace")] trace: Option<&mut dyn crate::trace::BusTrace>,
+    ) -> Result<RunResult, Error> {
         self.check_fault()?;
         self.validate_inputs(end, inputs)?;
-        let result = self.run_inner(end, inputs, out);
+        let result = self.run_inner(
+            end,
+            inputs,
+            out,
+            #[cfg(feature = "trace")]
+            trace,
+        );
         self.latch_error(result)
     }
     fn execution_boundary(&self, end: Time, input: Option<Time>) -> Result<Time, Error> {
@@ -509,9 +558,12 @@ impl Machine {
         end: Time,
         inputs: &[TimedInput],
         out: &mut dyn Output,
+        #[cfg(feature = "trace")] trace: Option<&mut dyn crate::trace::BusTrace>,
     ) -> Result<RunResult, Error> {
         let mut out = Delivery {
             output: out,
+            #[cfg(feature = "trace")]
+            trace,
             end,
             stopped: false,
         };
