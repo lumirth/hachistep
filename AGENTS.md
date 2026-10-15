@@ -1,44 +1,26 @@
 # Agent guidance
 
-## Fresh implementation
+Treat HachiStep as a fresh implementation. Never consult past HachiStep implementations,
+their documentation, or project memories. Ground decisions in this repository, agreed
+requirements, hardware documentation, observations, and the `pw` decompilation.
 
-Treat HachiStep as a fresh implementation. Never consult or reference past HachiStep
-implementations, their documentation, or their project memories. Ground decisions in
-this repository, requirements agreed here, hardware documentation, observed behavior,
-and the `pw` firmware decompilation.
+Before hardware, architecture, interface, or performance work, read `docs/DESIGN.md`.
+Revise a design choice when concrete consequences justify it. Keep source interpretations
+and unresolved physical assumptions in `docs/HARDWARE.md` or beside the mechanism.
 
-## Design baseline
+Demonstrate behavior through Hachiware guest programs and complete firmware sessions.
+Use `docs/TESTING.md`. Do not add unit, integration, tautological, or change-detector
+tests. Add a bug regression check only for a genuine behavioral coverage gap.
+Reuse completed checks unless a change, failure, or open concern warrants another run.
 
-Before hardware, architecture, interface, or performance work, read the relevant
-sections of `docs/DESIGN.md`. It records the design contract and agreed clarifications.
-Continue to question assumptions through concrete consequences; revise the design when
-those consequences justify a different choice.
+Keep docs minimal and useful to their reader. Preserve goals, usage contracts, primary
+sources, and nonobvious rationale. Let code explain its own structure. Update the owner
+of a topic, consolidate overlap, and fix affected references. Keep progress and individual
+validation reports in the task, commits, PRs, or issues. Apply `unslop` and `clean-copy`;
+use `writing-for-agents` when editing agent instructions.
 
-## Documentation and prose
+Use GitHub Issues through `gh`. Read an issue before ticket work and inspect existing
+labels before triage. Use a file with `--body-file` for multiline issue and PR prose.
 
-Keep durable contracts, usage instructions, references to primary sources, and nonobvious
-rationale in the repository. Keep progress, handoffs, completed audit reports, and
-individual validation summaries in the task, commits, or issues.
-
-Update the existing owner of a topic; consolidate overlap and remove superseded material
-after preserving useful reasoning. Split topics when it improves navigation. Resolve
-contradictions and affected references as part of the change, proportional to the work.
-
-Write for the reader: state the point directly, explain what matters, and preserve precise
-hardware terms and notation. Use lists when they help comparison or navigation. Comments
-should explain behavior, constraints or nonobvious reasoning. Cut filler, stock conclusions,
-rhetorical contrasts and invented labels. Use `writing-for-agents` for agent instructions,
-not general documentation.
-
-## Evidence and completion
-
-Use `docs/TESTING.md` for validation and evidence limits. At substantive milestones,
-explain the results and remaining gaps for the affected goals: hardware fidelity,
-frontend usability, realistic performance and a compact, coherent architecture. Keep
-this in the task or issue.
-
-## Project references
-
-- Before ticket work, read `docs/agents/issue-tracker.md`; use GitHub Issues through `gh`.
-- Before triaging or changing labels, read `docs/agents/triage-labels.md`.
-- Before exploring the codebase, read `docs/agents/domain.md` and root `CONTEXT.md`.
+At substantive milestones, report hardware fidelity, frontend usability, realistic
+performance, and architecture results, with remaining gaps, in the task or PR.

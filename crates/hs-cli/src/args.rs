@@ -37,7 +37,7 @@ pub struct Options {
     /// Restore the full session, including flash and all nonvolatile contents.
     #[arg(long, conflicts_with_all = ["sensor_nv", "status", "supply_mv", "avcc_mv", "battery_drop_mv"])]
     pub load_state: Option<PathBuf>,
-    /// Write the final state to a new file. Never overwrites an existing file.
+    /// Write the final state to a new file.
     #[arg(long)]
     pub save_state: Option<PathBuf>,
     /// Exclusive absolute horizon, in milliseconds from device time zero.
@@ -73,9 +73,9 @@ pub struct Options {
     pub avcc_mv: Option<u16>,
     #[arg(long, default_value_t = 600)]
     pub battery_drop_mv: u16,
-    /// Host-call partition; does not change emulation fidelity.
-    #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..))]
-    pub chunk_us: u64,
+    /// Bound each host call in microseconds; otherwise advance to the requested horizon.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub chunk_us: Option<u64>,
     /// Side-effect-free final inspection at a hexadecimal address; repeatable.
     #[arg(long, value_parser = address)]
     pub peek: Vec<u16>,

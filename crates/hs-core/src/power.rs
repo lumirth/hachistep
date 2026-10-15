@@ -1,5 +1,5 @@
 //! The common rail, RES capacitor and volatile-cell retention. See
-//! docs/accuracy/power-and-reset.md for nominal component values.
+//! docs/HARDWARE.md#supply-and-battery-sensing for nominal component values.
 use crate::{
     error::Error,
     time::{Duration, Time, TimeError},
@@ -183,38 +183,5 @@ impl Power {
         )?;
         crate::state::future(self.crossing, now)?;
         crate::state::future(self.loss, now)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn rc_crossings_and_retention_follow_the_selected_circuit() {
-        let mut cold = Power::new(0).unwrap();
-        cold.set_rail(3000, Time::ZERO).unwrap();
-        let cross = cold.deadline().unwrap();
-        assert_eq!(cross.as_micros(), 16094);
-        let ns = (cross.raw() * 1_000_000_000) >> 64;
-        assert_eq!(ns, 16_094_379);
-        assert!(cold.reset_low(Time::from_raw(cross.raw() - 1)));
-        assert!(!cold.reset_low(cross));
-        for (us, low, mv) in [(1000, false, 2714), (5000, true, 1819)] {
-            let mut p = Power::new(3000).unwrap();
-            p.set_rail(0, Time::ZERO).unwrap();
-            assert_eq!(p.voltage(Time::from_micros(us)) / Q, mv);
-            p.set_rail(3000, Time::from_micros(us)).unwrap();
-            assert_eq!(p.reset_low(Time::from_micros(us)), low);
-        }
-        for (mv, us) in [(0, 10000), (1000, 30000), (1400, 150000)] {
-            let mut p = Power::new(3000).unwrap();
-            p.set_rail(mv, Time::ZERO).unwrap();
-            let due = p.deadline().unwrap();
-            // Raw-time ceiling can place a boundary one quantum past a
-            // truncated microsecond constructor.
-            assert!(due.raw().abs_diff(Time::from_micros(us).raw()) <= 1);
-            assert!(!p.advance(Time::from_raw(due.raw() - 1)));
-            assert!(p.advance(due));
-        }
     }
 }

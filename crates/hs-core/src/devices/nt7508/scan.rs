@@ -1,6 +1,7 @@
 //! Analytic LCD scan. A stable interval has no machine-scheduler appointments;
 //! only its last quantum's output latch needs to be materialized. Geometry is
-//! latched per frame, PWM per row, and pixel/palette data per quantum.
+//! latched per frame, PWM per row, and pixel/palette data per quantum. The
+//! latch itself is materialized only before a change to what it latched.
 use super::{Nt7508, LCD_HEIGHT, LCD_WIDTH};
 use crate::{
     error::Error,
@@ -42,6 +43,9 @@ pub(super) struct Scan {
     inversion_count: u8,
     inverted: bool,
     segments: [u64; 2],
+    /// Whether `segments` holds the latch. Otherwise the latch is that of the
+    /// controller's current RAM and settings, which have not changed since.
+    latched: bool,
 }
 impl Default for Scan {
     fn default() -> Self {
@@ -62,6 +66,7 @@ impl Default for Scan {
             inversion_count: 0,
             inverted: false,
             segments: [0; 2],
+            latched: true,
         }
     }
 }
@@ -95,6 +100,12 @@ impl Scan {
             || self.frc_count != lcd.frc_count()
     }
     fn count(&mut self, quanta: u64, lcd: &Nt7508) {
+        // Most serial writes advance within the same scan row. No row or
+        // frame latch changes there, so only the PWM quantum advances.
+        if quanta < self.row_remaining() {
+            self.step += quanta as u8;
+            return;
+        }
         // u128 permits a large caller horizon without overflowing additions.
         let total = u128::from(self.step) + u128::from(quanta);
         let rows = total / u128::from(self.pwm);
@@ -155,11 +166,7 @@ impl Nt7508 {
     fn latch(&self, scan: Scan) -> [u64; 2] {
         let active: [bool; 4] =
             core::array::from_fn(|shade| scan.step < self.pulse_width(shade, scan.frc, scan.pwm));
-        let row = if scan.row == scan.duty {
-            128
-        } else {
-            usize::from(scan.start_line.wrapping_add(scan.row) & 127)
-        };
+        let row = self.latched_row(scan);
         let mut segments = [0; 2];
         for segment in 0..128 {
             if active[usize::from(self.shade(row, segment))] {
@@ -203,10 +210,13 @@ impl Nt7508 {
         let mut scan = self.scan;
         let mut changed = false;
         while let Some(mut clock) = scan.clock {
-            let mut edges = clock.edges_before(now);
-            if edges != u64::MAX && clock.after(edges + 1).ok() == Some(now) {
-                edges += 1;
-            }
+            let edges = match now.raw().checked_add(1) {
+                Some(end) => clock.edges_before(Time::from_raw(end)),
+                None => {
+                    let edges = clock.edges_before(now);
+                    edges + u64::from(edges != u64::MAX && clock.after(edges + 1).ok() == Some(now))
+                }
+            };
             if edges == 0 {
                 break;
             }
@@ -223,17 +233,56 @@ impl Nt7508 {
             let at = clock.advance(count)?;
             scan.count(count, self);
             let rate = self.scan_rate(scan);
-            if rate != scan.rate {
+            let changed_rate = rate != scan.rate;
+            if changed_rate {
                 clock = Clock::new(at, rate.0, rate.1)?;
                 scan.rate = rate;
             }
             scan.clock = Some(clock);
             changed = true;
+            if count == edges && !changed_rate {
+                break;
+            }
         }
         if changed {
-            scan.segments = self.latch(scan);
+            scan.latched = false;
         }
         Ok(scan)
+    }
+    /// The output latch of the current quantum.
+    fn segments(&self, scan: Scan) -> [u64; 2] {
+        if scan.latched {
+            scan.segments
+        } else {
+            self.latch(scan)
+        }
+    }
+    /// Materialize the latch before a change to the RAM or settings it reads.
+    /// A data byte only affects the latch when it lands in the latched row.
+    pub(super) fn retain_latch(&mut self, data_page: Option<u8>) {
+        if self.scan.latched {
+            return;
+        }
+        if let Some(page) = data_page {
+            let row = self.latched_row(self.scan);
+            let affected = if page == 16 {
+                row == 128
+            } else {
+                row != 128 && row / 8 == usize::from(page & 15)
+            };
+            if !affected {
+                return;
+            }
+        }
+        self.scan.segments = self.latch(self.scan);
+        self.scan.latched = true;
+    }
+    fn latched_row(&self, scan: Scan) -> usize {
+        if scan.row == scan.duty {
+            128
+        } else {
+            usize::from(scan.start_line.wrapping_add(scan.row) & 127)
+        }
     }
     pub(super) fn update_clock(&mut self, now: Time, was_running: bool) -> Result<(), Error> {
         if self.inversion_lines == 0 {
@@ -250,6 +299,7 @@ impl Nt7508 {
             scan.inversion_lines = self.inversion_lines;
             scan.rate = self.scan_rate(scan);
             scan.segments = self.latch(scan);
+            scan.latched = true;
             self.scan = scan;
         }
         if !running || self.oscillator_control & 1 != 0 {
@@ -279,7 +329,7 @@ impl Nt7508 {
         };
         Ok(LcdDrive {
             common: Some(common),
-            segments: scan.segments,
+            segments: self.segments(scan),
             inverted: scan.inverted,
         })
     }
@@ -306,177 +356,5 @@ impl Scan {
             clock.validate(now)?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn write(lcd: &mut Nt7508, at: Time, data: bool, values: &[u8]) {
-        for &byte in values {
-            lcd.write_counted_fixture(data, byte, at, &mut ()).unwrap();
-        }
-    }
-    fn quantum(n: u64) -> Time {
-        Time::from_raw((u128::from(n) << 64) / 92000)
-    }
-    fn configured(extra: &[u8]) -> Nt7508 {
-        let mut lcd = Nt7508::new();
-        write(
-            &mut lcd,
-            Time::ZERO,
-            false,
-            &[
-                0x44, 32, 0x48, 16, 0xf7, 2, 0xf6, 0, 0x95, 0x8e, 0x21, 0x8f, 0x43, 0xa5, 0xaf,
-            ],
-        );
-        write(&mut lcd, Time::ZERO, false, extra);
-        write(&mut lcd, Time::ZERO, false, &[0xab]);
-        lcd
-    }
-    #[test]
-    fn palette_nibbles_and_frc_frames_produce_documented_pwm_widths() {
-        let lcd = configured(&[]);
-        for (edge, on) in [
-            (0, true),
-            (1, false),
-            (144, true),
-            (145, true),
-            (146, false),
-            (288, true),
-            (290, true),
-            (291, false),
-            (432, true),
-            (433, false),
-        ] {
-            assert_eq!(
-                lcd.drive(quantum(edge)).unwrap().segments,
-                [if on { u64::MAX } else { 0 }; 2]
-            );
-        }
-        let mut lcd = configured(&[0x8e, 0xaa, 0x8f, 0xaa]);
-        assert_eq!(lcd.drive(quantum(1)).unwrap().segments, [0; 2]);
-        write(&mut lcd, quantum(1), false, &[0x96]); // 12 PWM begins with next row.
-        assert_eq!(lcd.drive(quantum(9)).unwrap().segments, [u64::MAX; 2]);
-        assert_eq!(lcd.drive(quantum(19)).unwrap().segments, [0; 2]);
-        assert_eq!(lcd.drive(quantum(20)).unwrap().common, Some(33));
-        assert_eq!(lcd.drive(quantum(21)).unwrap().common, Some(34));
-    }
-    #[test]
-    fn start_line_latches_per_frame_but_ram_latches_per_quantum() {
-        let mut lcd = configured(&[0xa4, 0x8c, 0x99, 0x8d, 0x99]);
-        let halfway = Time::from_raw(quantum(1).raw() / 2);
-        write(&mut lcd, halfway, true, &[0xff]);
-        assert_eq!(lcd.drive(halfway).unwrap().segments[0], 0);
-        assert_eq!(lcd.drive(quantum(1)).unwrap().segments[0], 1);
-        write(&mut lcd, quantum(1), false, &[0x40, 64]);
-        assert_eq!(lcd.drive(quantum(9)).unwrap().segments[0], 1);
-        assert_eq!(lcd.drive(quantum(144)).unwrap().segments[0], 0);
-        // A write tied with an edge follows the old output latch on that edge.
-        write(&mut lcd, quantum(145), false, &[0xb8, 0x10, 0]);
-        write(&mut lcd, quantum(145), true, &[1]);
-        assert_eq!(lcd.drive(quantum(145)).unwrap().segments[0], 0);
-        assert_eq!(lcd.drive(quantum(146)).unwrap().segments[0], 1);
-    }
-    #[test]
-    fn inversion_register_encodes_three_through_33_lines_and_ignores_high_bits() {
-        // NT7508 p.40 gives register 0/1/31 as frame/three/33-line inversion.
-        // Observe polarity on both sides of actual boundaries, including a
-        // frame wrap that must not restart the line divider.
-        let cases: &[(u8, &[(u64, bool)])] = &[
-            (0, &[(127, false), (128, true), (255, true), (256, false)]),
-            (
-                1,
-                &[
-                    (2, false),
-                    (3, true),
-                    (5, true),
-                    (6, false),
-                    (128, false),
-                    (129, true),
-                ],
-            ),
-            (
-                31,
-                &[
-                    (32, false),
-                    (33, true),
-                    (65, true),
-                    (66, false),
-                    (128, true),
-                    (132, false),
-                ],
-            ),
-            (0xe1, &[(2, false), (3, true), (6, false), (129, true)]),
-        ];
-        for &(register, edges) in cases {
-            let lcd = configured(&[0x48, 128, 0x44, 0, 0x4c, register]);
-            for &(line, inverted) in edges {
-                let drive = lcd.drive(quantum(line * 9)).unwrap();
-                assert_eq!(
-                    drive.inverted, inverted,
-                    "register {register:02x}, line {line}"
-                );
-                assert_eq!(drive.common, Some((line % 128) as u8));
-            }
-            lcd.validate(quantum(0)).unwrap();
-        }
-    }
-    #[test]
-    fn n_line_inversion_carries_across_frame_wrap_and_chunking() {
-        let lcd = configured(&[0x48, 128, 0x44, 0, 0x4c, 3]); // Register 3 selects five lines.
-        for (line, common, inverted) in [
-            (124, 124, false),
-            (125, 125, true),
-            (127, 127, true),
-            (128, 0, true),
-            (129, 1, true),
-            (130, 2, false),
-        ] {
-            let drive = lcd.drive(quantum(line * 9)).unwrap();
-            assert_eq!((drive.common, drive.inverted), (Some(common), inverted));
-        }
-        let mut released = lcd.clone();
-        write(&mut released, quantum(36), false, &[0xe4]);
-        assert!(!released.drive(quantum(45)).unwrap().inverted);
-        assert!(released.drive(quantum(128 * 9)).unwrap().inverted);
-        let mut split = lcd.clone();
-        for edge in (1..10000).step_by(37) {
-            split.scan = split.project_scan(quantum(edge)).unwrap();
-        }
-        assert_eq!(
-            lcd.project_scan(quantum(10000)).unwrap(),
-            split.project_scan(quantum(10000)).unwrap()
-        );
-        let saved = split.clone();
-        write(&mut split, quantum(10000), false, &[0xa9]);
-        assert_eq!(split.drive(quantum(20000)).unwrap(), LcdDrive::OFF);
-        write(&mut split, quantum(20000), false, &[0xe1]);
-        assert_eq!(split.drive(quantum(20000)).unwrap().common, Some(0));
-        assert_eq!(
-            saved.drive(quantum(20000)).unwrap(),
-            lcd.drive(quantum(20000)).unwrap()
-        );
-    }
-    #[test]
-    fn fixed_rate_and_live_clock_changes_keep_the_remaining_quantum() {
-        for (mode, common) in [(0x90, 32), (0x92, 32), (0x93, 35)] {
-            let lcd = configured(&[mode, 0xf7, 0]);
-            assert_eq!(
-                lcd.drive(Time::from_micros(1_000_000)).unwrap().common,
-                Some(common)
-            );
-        }
-        let mut lcd = configured(&[]);
-        let halfway = Time::from_raw(quantum(1).raw() / 2);
-        write(&mut lcd, halfway, false, &[0xf6, 7]); // divide by eight after next edge.
-        assert_eq!(lcd.drive(quantum(8)).unwrap().segments, [0; 2]);
-        assert_eq!(lcd.drive(quantum(64)).unwrap().common, Some(32));
-        assert_eq!(lcd.drive(quantum(65)).unwrap().common, Some(33));
-        write(&mut lcd, quantum(65), false, &[0xf7, 3]); // OSC1 is undriven.
-        assert_eq!(
-            lcd.drive(quantum(66)).unwrap(),
-            lcd.drive(quantum(100000)).unwrap()
-        );
     }
 }

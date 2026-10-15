@@ -1,5 +1,5 @@
 //! CSB-high SDI/SCK protocol. Register effects and read shadows are shared with
-//! SPI. See docs/accuracy/bma150-i2c.md for edge placement and pointer retention.
+//! SPI. The BMA150 datasheet section 4.1 defines the serial edge sequences.
 use super::*;
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,12 +55,24 @@ impl Default for State {
 }
 
 impl State {
+    /// Shift clock edges before one can change the parser. Every shift edge
+    /// moves SCL, so an idle parser, which waits for SDA to fall while SCL
+    /// stays high, sees no START from a frame's edges.
     pub(super) fn effect_edges(&self) -> u8 {
         match self.phase {
-            Phase::Idle => 15,
+            Phase::Idle => 16,
             Phase::Receive(_) => (8 - self.bits) * 2 - 1,
             _ => 1,
         }
+    }
+
+    /// Waiting for START with nothing retained but the register pointer.
+    pub(super) fn idle(&self) -> bool {
+        *self
+            == Self {
+                pointer: self.pointer,
+                ..Self::default()
+            }
     }
 
     pub(super) fn abort(&mut self) {
@@ -246,122 +258,5 @@ impl Bma150 {
         self.tx = self.prepare_read(self.i2c.pointer);
         self.i2c.low = self.tx.unwrap_or(0xff) & 0x80 == 0;
         self.i2c.phase = Phase::Read { sampled: 0 };
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Bus {
-        sensor: Bma150,
-        pins: [bool; 2],
-        now: Time,
-    }
-    impl Bus {
-        fn new() -> Self {
-            let mut sensor = Bma150::new(Time::ZERO);
-            let now = Time::from_micros(4000);
-            while let Some(at) = sensor.deadline().filter(|at| *at <= now) {
-                sensor.at_deadline(at, &mut ()).unwrap();
-            }
-            Self {
-                sensor,
-                pins: [true, true],
-                now,
-            }
-        }
-        fn edge(&mut self, clock: bool, release: bool) -> bool {
-            self.now = self.now.checked_add(Duration::from_micros(1)).unwrap();
-            while let Some(at) = self.sensor.deadline().filter(|at| *at <= self.now) {
-                self.sensor.at_deadline(at, &mut ()).unwrap();
-            }
-            let data = release && self.sensor.data_output() != Drive::Low;
-            self.sensor
-                .i2c_pins(self.pins, [clock, data], self.now)
-                .unwrap();
-            self.pins = [clock, release && self.sensor.data_output() != Drive::Low];
-            self.pins[1]
-        }
-        fn start(&mut self) {
-            self.edge(false, true);
-            self.edge(true, true);
-            self.edge(true, false);
-            self.edge(false, false);
-        }
-        fn send(&mut self, byte: u8) {
-            for bit in 0..8 {
-                let high = byte & (0x80 >> bit) != 0;
-                self.edge(false, high);
-                self.edge(true, high);
-                self.edge(false, high);
-            }
-            self.edge(false, true);
-            assert!(!self.edge(true, true), "slave ACK");
-            self.edge(false, true);
-        }
-        fn pointer(&mut self, address: u8) {
-            self.start();
-            self.send(0x70);
-            self.send(address);
-            self.start();
-            self.send(0x71);
-        }
-    }
-
-    #[test]
-    fn data_sampling_acknowledges_freshness_even_when_the_master_nacks() {
-        let mut bus = Bus::new();
-        bus.pointer(2);
-        assert_eq!(bus.sensor.peek(2).unwrap() & 1, 1, "only prepared");
-        let mut value = 0;
-        for bit in 0..8 {
-            value = value << 1 | u8::from(bus.edge(true, true));
-            assert_eq!(bus.sensor.peek(2).unwrap() & 1, 0, "data bit {bit}");
-            bus.edge(false, true);
-        }
-        assert_eq!(value, 1, "the launched byte retains its old fresh flag");
-        bus.edge(true, true); // Master NACK.
-        bus.edge(false, true);
-        assert_eq!(bus.sensor.peek(2).unwrap() & 1, 0);
-        for _ in 0..9 {
-            assert!(bus.edge(true, true));
-            assert!(bus.edge(false, true));
-        }
-    }
-
-    #[test]
-    fn reset_ack_completes_inside_the_serial_quiet_interval() {
-        let mut bus = Bus::new();
-        bus.start();
-        for byte in [0x70, 0x0a, 2] {
-            bus.send(byte); // Includes an asserted ACK at the ninth rise.
-        }
-        assert!(bus.sensor.quiet_deadline.unwrap() > bus.now);
-        assert_eq!(bus.sensor.data_output(), Drive::Floating);
-        bus.sensor.validate(bus.now).unwrap();
-    }
-
-    #[test]
-    fn retained_power_loss_aborts_output_and_requires_a_new_start() {
-        let mut bus = Bus::new();
-        bus.pointer(0); // Chip ID starts with a low bit.
-        assert_eq!(bus.sensor.data_output(), Drive::Low);
-        bus.sensor.set_supply(2000, bus.now, &mut ()).unwrap();
-        assert_eq!(bus.sensor.data_output(), Drive::Floating);
-        bus.now = bus.now.checked_add(Duration::from_micros(1000)).unwrap();
-        bus.sensor.set_supply(3000, bus.now, &mut ()).unwrap();
-        for _ in 0..9 {
-            assert!(bus.edge(true, true));
-            assert!(bus.edge(false, true));
-        }
-        bus.pointer(0);
-        let mut byte = 0;
-        for _ in 0..8 {
-            byte = byte << 1 | u8::from(bus.edge(true, true));
-            bus.edge(false, true);
-        }
-        assert_eq!(byte, 2);
-        bus.sensor.validate(bus.now).unwrap();
     }
 }

@@ -26,7 +26,7 @@ SCALARS = (
     "display_on",
     "display_start",
 )
-# Board assumptions are described in the power, ADC and BMA150 research notes.
+# Nominal board parameters, documented in docs/HARDWARE.md.
 CONDITIONS = {
     "reset_resistance_ohms": 100000,
     "reset_capacitance_nf": 100,

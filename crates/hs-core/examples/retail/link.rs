@@ -77,22 +77,18 @@ fn advance(
     machine.run_until(end, &inputs, outgoing).unwrap();
 }
 
-#[test]
-#[ignore = "requires HS_FIRMWARE and HS_EEPROM with a walking Pokemon"]
-fn independent_walkers_complete_a_peer_exchange() {
-    let firmware = std::fs::read(std::env::var("HS_FIRMWARE").expect("HS_FIRMWARE")).unwrap();
-    let source = std::fs::read(std::env::var("HS_EEPROM").expect("HS_EEPROM")).unwrap();
-    let a_image = image(&source, 0x21);
-    let b_image = image(&source, 0x42);
+pub fn run(firmware: &[u8], eeprom: &[u8]) {
+    let a_image = image(eeprom, 0x21);
+    let b_image = image(eeprom, 0x42);
     let mut a = Machine::new(Images {
-        firmware: &firmware,
+        firmware,
         eeprom: &a_image,
         eeprom_status: 0,
         sensor_nonvolatile: None,
     })
     .unwrap();
     let mut b = Machine::new(Images {
-        firmware: &firmware,
+        firmware,
         eeprom: &b_image,
         eeprom_status: 0,
         sensor_nonvolatile: None,
@@ -123,9 +119,11 @@ fn independent_walkers_complete_a_peer_exchange() {
         "optical transitions: {} / {}",
         ab.transitions, ba.transitions
     );
-    // pw's PeerFinalize shifts the received record into history slot 1.
+    // pw at 6dc7bc09950078fa3fe0dffa4dae34e9549a99da:
+    // PeerFinalize shifts the received record into history slot 1.
     // Slot 0 alone would establish only a partial transfer.
     let start = RECORDS + RECORD_SIZE + ID_OFFSET;
     assert_eq!(&a.eeprom()[start..start + 40], &[0x42; 40]);
     assert_eq!(&b.eeprom()[start..start + 40], &[0x21; 40]);
+    println!("Both firmwares committed the peer identity to encounter history.");
 }

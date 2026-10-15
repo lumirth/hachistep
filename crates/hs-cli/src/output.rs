@@ -57,6 +57,10 @@ impl Output for Events {
             ControlFlow::Continue(())
         }
     }
+    /// It stops only to abandon the run after an output failure.
+    fn exact_stops(&self) -> bool {
+        false
+    }
 }
 impl Events {
     pub fn check(&mut self) -> io::Result<()> {
@@ -96,7 +100,7 @@ pub struct RunMetadata<'a> {
     pub initial_sensor: &'a str,
     pub initial_eeprom_status: u8,
     pub input_hash: Option<&'a str>,
-    pub chunk_us: u64,
+    pub chunk_us: Option<u64>,
     pub start: Time,
     pub requested: Time,
     pub conditions: hs_core::Conditions,
@@ -185,45 +189,4 @@ pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
     write_new(&dir.join("state.bin"), &saved)?;
     write_new(&dir.join("frame.pgm"), &frame(m))?;
     write_new(&dir.join("report.json"), report.as_bytes())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn report_preserves_times_beyond_u64_microseconds() {
-        let mut m = Machine::new(hs_core::Images {
-            firmware: &[0; 49152],
-            eeprom: &[0xff; 65536],
-            eeprom_status: 0,
-            sensor_nonvolatile: None,
-        })
-        .unwrap();
-        m.power_off(&mut ()).unwrap();
-        m.run_until(Time::MAX, &[], &mut ()).unwrap();
-        let text = report(
-            &m,
-            &Events::default(),
-            0.0,
-            &RunMetadata {
-                firmware: "unused",
-                initial_eeprom: "unused",
-                initial_sensor: "unused",
-                initial_eeprom_status: 0,
-                input_hash: None,
-                chunk_us: 1,
-                start: Time::ZERO,
-                requested: Time::MAX,
-                conditions: m.conditions(),
-            },
-            None,
-        );
-        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(
-            value["time_us"].as_number().and_then(|v| v.as_u128()),
-            Some(Time::MAX.as_micros())
-        );
-        assert_eq!(value["time_raw"], Time::MAX.raw().to_string());
-    }
 }

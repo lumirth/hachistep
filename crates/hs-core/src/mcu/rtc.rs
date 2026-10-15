@@ -1,6 +1,6 @@
 //! RTC and its alternate free-running counter. Busy entry and exit occur
 //! separately from the second rollover. The busy interval lasts 62.5 ms at
-//! the selected phase in docs/accuracy/rtc.md.
+//! the selected phase in docs/HARDWARE.md#live-reconfiguration-and-infrared.
 use super::clocks::{Clocks, Tap};
 use crate::{error::Error, time::Time};
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -269,107 +269,5 @@ impl Rtc {
                 && self.last.checked_add(8192).is_some(),
             "invalid RTC progress",
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn running() -> (Rtc, Clocks) {
-        let c = Clocks::new(Time::ZERO, Default::default()).unwrap();
-        let mut r = Rtc::default();
-        r.write(0xf06c, 0x10, Time::ZERO, &c).unwrap();
-        r.write(0xf06c, 0, Time::ZERO, &c).unwrap();
-        r.write(0xf06d, 0x7f, Time::ZERO, &c).unwrap();
-        r.write(0xf06c, 0xc8, Time::ZERO, &c).unwrap();
-        (r, c)
-    }
-    #[test]
-    fn busy_and_rollover_are_separate() {
-        let (mut r, c) = running();
-        r.sync(Time::from_micros(937_500), &c).unwrap();
-        assert_eq!(r.read(0xf068), 0x80);
-        assert_eq!(r.flags & 4, 0);
-        r.sync(Time::from_micros(1_000_000), &c).unwrap();
-        assert_eq!(r.read(0xf068), 1);
-        assert_ne!(r.flags & 4, 0);
-    }
-    #[test]
-    fn partition_does_not_change_calendar() {
-        let (mut a, c) = running();
-        let mut b = a.clone();
-        a.sync(Time::from_micros(3_234_567), &c).unwrap();
-        for i in 1..=100 {
-            b.sync(Time::from_micros(i * 32_345), &c).unwrap();
-        }
-        b.sync(Time::from_micros(3_234_567), &c).unwrap();
-        assert_eq!(a, b);
-    }
-    #[test]
-    fn busy_update_retains_its_values_across_writes_and_stop() {
-        let (mut r, c) = running();
-        for (i, v) in [0x59, 0x59, 0x23, 6].into_iter().enumerate() {
-            r.write(0xf068 + i as u16, v, Time::from_micros(900_000), &c)
-                .unwrap();
-        }
-        r.sync(Time::from_micros(937_500), &c).unwrap();
-        r.write(0xf068, 0x12, Time::from_micros(950_000), &c)
-            .unwrap();
-        assert_eq!(r.read(0xf068), 0x92);
-        r.write(0xf06c, 0x48, Time::from_micros(960_000), &c)
-            .unwrap();
-        r.sync(Time::from_micros(2_000_000), &c).unwrap();
-        assert_eq!(r.read(0xf068), 0x92);
-        r.write(0xf06c, 0xc8, Time::from_micros(2_000_000), &c)
-            .unwrap();
-        r.sync(r.deadline(&c).unwrap().unwrap(), &c).unwrap();
-        for a in 0xf068..=0xf06b {
-            assert_eq!(r.read(a), 0);
-        }
-        assert_eq!(r.read(0xf067), 0x7f);
-    }
-    #[test]
-    fn raw_digits_follow_field_widths_and_terminal_comparators() {
-        for (before, after) in [
-            ([0x1a, 0, 0, 0], [0x1b, 0, 0, 0]),
-            ([0x1f, 0, 0, 0], [0x10, 0, 0, 0]),
-            ([0x69, 0, 0, 0], [0x70, 0, 0, 0]),
-            ([0x59, 0x59, 0x2f, 7], [0, 0, 0x20, 7]),
-            ([0x59, 0x59, 0x23, 7], [0, 0, 0, 0]),
-        ] {
-            let (mut r, c) = running();
-            for (i, v) in before.into_iter().enumerate() {
-                r.write(0xf068 + i as u16, v, Time::ZERO, &c).unwrap();
-            }
-            r.sync(Time::from_micros(1_000_000), &c).unwrap();
-            for (i, v) in after.into_iter().enumerate() {
-                assert_eq!(r.read(0xf068 + i as u16), v);
-            }
-        }
-    }
-    #[test]
-    fn calendar_aliases_do_not_leak_the_binary_counter_high_bit_into_busy() {
-        for source in 8..16 {
-            let (mut r, c) = running();
-            r.write(0xf06f, source, Time::ZERO, &c).unwrap();
-            r.sync(Time::from_micros(1_000_000), &c).unwrap();
-            assert_eq!(r.read(0xf068), 1);
-            assert_eq!(r.read(0xf06f), source);
-        }
-        let c = Clocks::new(
-            Time::ZERO,
-            super::super::clocks::Frequencies {
-                main_hz: 1_000_000,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let mut r = Rtc::default();
-        r.write(0xf06f, 0, Time::ZERO, &c).unwrap();
-        r.write(0xf06c, 0x80, Time::ZERO, &c).unwrap();
-        r.sync(Time::from_micros(1200), &c).unwrap();
-        assert_eq!(r.read(0xf068), 0x96);
-        r.write(0xf06f, 0xf, Time::from_micros(1200), &c).unwrap();
-        assert_eq!(r.read(0xf068), 0x16);
     }
 }

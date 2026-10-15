@@ -1,133 +1,51 @@
-# Build and tooling
+# Building HachiStep
 
-## Requirements
-
-The edition-2021 workspace requires Rust 1.95 or newer, a native linker, rustfmt and
-Clippy. Python tools use only the standard library. Install
-[uv](https://docs.astral.sh/uv/getting-started/installation/) and use `uv run` for the
-interpreter selected by `.python-version`. The first invocation may download Python.
-An existing Python 3.10+ interpreter can also run the scripts directly.
-
-Fetch the locked crates once before working offline:
+Use Rust 1.95 or newer with a native linker. Python tools require Python 3.10 or newer
+and use the standard library. `uv run` selects the version in `.python-version`.
 
 ```sh
-cargo fetch --locked
-cargo build --workspace --release --locked --offline
-cargo test --workspace --locked --offline
-cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings
+cargo build --workspace --release --locked
 ```
 
-Dependency roles and feature choices are explained in
-[the dependency rationale](research/emulator-dependencies.md). The manifests
-and lockfile define their versions. Hashing and serialization occur during construction,
-inspection, and save/load; ordinary execution allocates nothing.
+The CLI is `target/release/hachistep`, or `hachistep.exe` on Windows. Add `--offline`
+after fetching the locked dependencies to build without network access.
 
-`--offline` does not install the toolchain or dependencies. No network service, hidden
-build download, GitHub Actions workflow or emulator runtime service is required.
-The check script uses `cargo fmt --all -- --check` to inspect workspace targets and
-their modules, including fixture helpers.
+## Development
 
-## Development checks
-
-Clone the independent hardware suite once alongside this checkout:
+Install rustfmt and Clippy, then clone Hachiware alongside this checkout:
 
 ```sh
+rustup component add rustfmt clippy
 gh repo clone lumirth/hachiware ../hachiware
+uv run tools/check.py --out out/check-1
 ```
+
+This builds the release CLI, checks formatting and Clippy, and runs Hachiware's guest
+diagnostics. Pass `--hachiware PATH` for another checkout location. See
+[behavioral validation](TESTING.md) for firmware sessions and speed comparisons.
+
+## Bus tracing
 
 ```sh
-uv run tools/check.py --test sensor_spi --out out/sensor-spi-1
-uv run tools/check.py --out out/check-1
-uv run tools/verify_retail.py --out out/retail-1
+cargo build -p hs-cli --release --locked --features trace
+./target/release/hachistep run --firmware firmware.bin --eeprom eeprom.bin \
+  --milliseconds 100 --bus-trace --trace out/bus.txt --trace-limit 10000
 ```
 
-Each output directory must be new. With no selectors, `check.py` runs formatting,
-default and trace-feature
-tests, Clippy, a release build, host-tool unit tests, independent fixture generation and
-fixture execution. Pass `--hachiware PATH` if the suite is elsewhere. Rust builds and
-local tests do not require the suite checkout. `--test TARGET[::EXACT_TEST]` and
-`--case GLOB` run only the selected checks; see [TESTING](TESTING.md#focused-checks).
-`verify_retail.py` separately requires
-private images and runs full event/state partition comparison, snapshot replay, and the
-retail workloads, including persistent writes, power interruption and infrared timeout.
-`--quick` selects home, menu and settings; `--list` describes the available cases without
-private inputs. Repeat `--case NAME` to select individual scenarios.
+The `trace` feature adds bus observations. Rebuild without it for speed measurements.
+`trace_complete` in the report indicates whether the trace fit its record limit.
 
-The conformance report is `out/check-1/conformance/results.json`. Failed cases retain
-their observations and command logs beside it. To investigate one diagnostic, use
-hachiware's `--case` selection with those generated fixtures; see [TESTING](TESTING.md).
-Child Python commands use the same interpreter as the entry point.
+## WebAssembly
 
-On Windows the check/verification scripts select `hachistep.exe`; direct shell examples
-in the docs use Unix executable spelling. Verify builds and behavior on each supported
-host.
-
-## WebAssembly checks
-
-The `wasm32-wasip1` build runs the same core and CLI through
-[Wasmtime](https://docs.wasmtime.dev/cli.html). Install its command-line tool and add
-the Rust target before running:
+Install [Wasmtime](https://docs.wasmtime.dev/cli.html) and the WASI Rust target:
 
 ```sh
 rustup target add wasm32-wasip1
-cargo build -p hs-cli --release --target wasm32-wasip1 --locked --offline
-CARGO_TARGET_WASM32_WASIP1_RUNNER=wasmtime cargo test -p hs-core --release \
-  --target wasm32-wasip1 --locked --offline -- --test-threads=1
-uv run tools/verify_retail.py \
-  --runner target/wasm32-wasip1/release/hachistep.wasm --out out/wasm-retail-1
+cargo build -p hs-cli --release --locked --target wasm32-wasip1
+uv run tools/verify_retail.py --firmware firmware.bin --eeprom eeprom.bin \
+  --runner target/wasm32-wasip1/release/hachistep.wasm --quick --out out/wasm-1
 ```
 
-The retail verifier runs its native partition and peer tests, then uses the supplied
-module for the workloads and their saved continuations. The hachiware adapter's `--runner` and
-the benchmark's `--left` and `--right` also accept this module. The tools invoke
-Wasmtime with access to the directories containing the supplied inputs and outputs.
-
-The native test that selects a thread's stack size is ignored on Wasm because
-[this target cannot spawn threads](https://doc.rust-lang.org/rustc/platform-support/wasm32-wasip1.html#requirements).
-The remaining core tests exercise the Wasm build, including allocation and restoration.
-WASI supplies file and clock services for command-line verification. Browser embedding
-still needs host bindings and tests in actual browsers.
-
-## Output safety
-
-The CLI always opens outputs with create-new semantics. `--out` creates a new directory
-before running. It never writes back to input ROM, EEPROM or sensor files. On a model
-fault it reports the failing state and can export that stopped state to the newly
-created output directory. Trace I/O failures fail the run rather than silently
-certifying a complete trace.
-
-The native `state.bin` captures all hardware domains together. The surrounding output
-directory is not a transactional multi-file container. Files are synced, and the run
-report is written last, but interruption can leave a partial output directory. Keep
-original inputs and treat a directory missing its complete report as an interrupted
-export. The core does not write files.
-
-## Features
-
-There is no execution-backend or accuracy feature. `trace` adds bus-observation
-callbacks to the same implementation:
-
-```sh
-cargo build -p hs-cli --release --offline --features trace
-mkdir -p out
-./target/release/hachistep run --firmware inputs/pokewalker.bin \
-  --eeprom inputs/eeprom.bin --milliseconds 100 --bus-trace \
-  --trace out/boot-bus.txt --trace-limit 10000 --out out/bus
-```
-
-A trace build is intentionally more expensive. Rebuild without the feature for
-performance measurements. The CLI reports truncation; a capped trace is not a complete
-hardware history. Do not run long private event-vector tests with bus tracing enabled
-unless the resulting memory use is intentional.
-
-## Source archives
-
-Create a source archive from a committed revision with Git:
-
-```sh
-mkdir -p out
-git archive --format=zip --output=out/hachistep.zip HEAD
-```
-
-The archive contains the tracked source at that revision. Private inputs and generated
-outputs remain local. Preserve the source commit when distributing an archive.
+The Hachiware adapter and comparison tools also accept the `.wasm` CLI. They invoke
+Wasmtime with access to the input and output directories. Browser applications need
+host bindings for the core API.

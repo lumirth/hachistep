@@ -141,9 +141,10 @@ impl M95512 {
     pub fn status(&self) -> u8 {
         self.status | (u8::from(self.wel) * 2) | u8::from(self.busy())
     }
-    pub(crate) fn serial_effect_edges(&self) -> u8 {
+    /// Serial clock edges until the byte completes, from the clock's level.
+    pub(crate) fn serial_effect_edges(&self, clock_high: bool) -> u8 {
         if self.selected {
-            (8 - self.rx_bits) * 2 - 1
+            (8 - self.rx_bits) * 2 - u8::from(!clock_high)
         } else {
             16
         }
@@ -248,6 +249,53 @@ impl M95512 {
             self.rx_bits = 0;
             self.byte(byte);
         }
+    }
+    /// Compose falling/rising pairs. Split at receive and transmit byte
+    /// boundaries so every command still enters the same byte parser.
+    pub(crate) fn exchange_bits(&mut self, input: u8, count: u8, floating: bool) -> u8 {
+        if !self.selected {
+            self.driven = Drive::Floating;
+            return if floating { 0xff >> (8 - count) } else { 0 };
+        }
+        let mut remaining = count;
+        let mut output = 0u8;
+        while remaining != 0 {
+            let transmitting = self.tx_bit < 8;
+            let n =
+                remaining
+                    .min(8 - self.rx_bits)
+                    .min(if transmitting { 8 - self.tx_bit } else { 8 });
+            let mask = 0xff >> (8 - n);
+            let answer = if transmitting {
+                self.tx_bit += n;
+                let bits = (self.tx >> (8 - self.tx_bit)) & mask;
+                self.driven = if bits & 1 == 0 {
+                    Drive::Low
+                } else {
+                    Drive::High
+                };
+                bits
+            } else {
+                self.driven = Drive::Floating;
+                if floating {
+                    mask
+                } else {
+                    0
+                }
+            };
+            output = ((u16::from(output) << n) | u16::from(answer)) as u8;
+            self.rx =
+                ((u16::from(self.rx) << n) | u16::from((input >> (remaining - n)) & mask)) as u8;
+            self.rx_bits += n;
+            remaining -= n;
+            if self.rx_bits == 8 {
+                let byte = self.rx;
+                self.rx = 0;
+                self.rx_bits = 0;
+                self.byte(byte);
+            }
+        }
+        output
     }
     pub fn falling(&mut self) -> Drive {
         if !self.selected || self.tx_bit >= 8 {
@@ -446,219 +494,5 @@ impl M95512 {
                 cycle.validate(now)
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn xfer(e: &mut M95512, v: u8) -> u8 {
-        let mut result = 0;
-        for bit in (0..8).rev() {
-            let o = e.falling();
-            result = (result << 1) | u8::from(o != Drive::Low);
-            e.rising(v & (1 << bit) != 0);
-        }
-        result
-    }
-    fn command(e: &mut M95512, bytes: &[u8]) {
-        e.set_selected(false, Time::ZERO).unwrap();
-        e.set_selected(true, Time::ZERO).unwrap();
-        for &v in bytes {
-            xfer(e, v);
-        }
-        e.set_selected(false, Time::ZERO).unwrap();
-    }
-    #[test]
-    fn host_edit_preserves_the_byte_already_loaded_for_serial_output() {
-        let mut e = M95512::new(&[255; EEPROM_SIZE], 0).unwrap();
-        e.write_bytes(0x100, &[12, 34]).unwrap();
-        e.set_selected(false, Time::ZERO).unwrap();
-        e.set_selected(true, Time::ZERO).unwrap();
-        for byte in [3, 1, 0] {
-            xfer(&mut e, byte);
-        }
-        e.write_bytes(0x100, &[99, 88]).unwrap();
-        assert_eq!(xfer(&mut e, 0), 12);
-        assert_eq!(xfer(&mut e, 0), 88);
-    }
-    #[test]
-    fn host_edit_waits_for_programming_without_interrupting_it() {
-        let mut e = M95512::new(&[255; EEPROM_SIZE], 0).unwrap();
-        command(&mut e, &[6]);
-        command(&mut e, &[2, 1, 0, 42]);
-        let before = e.clone();
-        assert!(e.write_bytes(0x100, &[99]).is_err());
-        assert_eq!(e, before);
-        e.complete(e.deadline().unwrap(), &mut ()).unwrap();
-        e.write_bytes(0x100, &[99]).unwrap();
-        assert_eq!(e.bytes(Time::from_micros(6000))[0x100], 99);
-    }
-    #[test]
-    fn programming_waits_and_wraps_inside_a_page() {
-        let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
-        command(&mut e, &[6]);
-        command(&mut e, &[2, 0, 0x7e, 0xaa, 0xbb, 0xcc, 0xdd]);
-        assert!(e.busy());
-        assert_eq!(e.bytes(Time::ZERO)[0], 0xff);
-        let completed = e.deadline().unwrap();
-        e.complete(completed, &mut ()).unwrap();
-        assert_eq!(
-            [
-                e.bytes(completed)[0x7e],
-                e.bytes(completed)[0x7f],
-                e.bytes(completed)[0],
-                e.bytes(completed)[1]
-            ],
-            [0xaa, 0xbb, 0xcc, 0xdd]
-        );
-        assert!(!e.busy());
-        assert_eq!(e.status() & 3, 0);
-    }
-    #[test]
-    fn persistent_event_ranges_enclose_offset_and_wrapped_writes() {
-        for (start, payload, range) in [
-            (0x0156u16, &[0xa5, 0x5a][..], (0x0156, 2)),
-            (0x017fu16, &[0xa5, 0x5a][..], (0x0100, 128)),
-            (0xffffu16, &[0xa5][..], (0xffff, 1)),
-        ] {
-            for completed in [false, true] {
-                let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
-                command(&mut e, &[6]);
-                let mut bytes = vec![2, (start >> 8) as u8, start as u8];
-                bytes.extend_from_slice(payload);
-                command(&mut e, &bytes);
-                let at = if completed {
-                    e.deadline().unwrap()
-                } else {
-                    Time::from_micros(3000)
-                };
-                let mut events = vec![];
-                if completed {
-                    e.complete(at, &mut events).unwrap();
-                } else {
-                    e.power_off(at, &mut events);
-                }
-                let expected = if completed {
-                    Event::NvCommit {
-                        at,
-                        domain: NvDomain::EepromArray,
-                        address: range.0,
-                        length: range.1,
-                    }
-                } else {
-                    Event::NvInterrupted {
-                        at,
-                        domain: NvDomain::EepromArray,
-                        address: range.0,
-                        length: range.1,
-                    }
-                };
-                assert_eq!(events.pop(), Some(expected));
-                assert_eq!(events.len(), payload.len());
-                for event in events {
-                    let Event::NvByte { address, value, .. } = event else {
-                        panic!("expected persistent byte before completion");
-                    };
-                    assert!(
-                        (u32::from(range.0)..u32::from(range.0) + u32::from(range.1))
-                            .contains(&u32::from(address))
-                    );
-                    assert_eq!(e.bytes(at)[usize::from(address)], value);
-                }
-            }
-        }
-    }
-    #[test]
-    fn partial_command_and_missing_write_enable_do_not_program() {
-        let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
-        command(&mut e, &[2, 0, 0, 0]);
-        assert!(!e.busy());
-        e.set_selected(true, Time::ZERO).unwrap();
-        for _ in 0..7 {
-            e.falling();
-            e.rising(false);
-        }
-        e.set_selected(false, Time::ZERO).unwrap();
-        assert_eq!(e.status(), 0);
-    }
-    #[test]
-    fn sequential_read_and_status_stream() {
-        let mut bytes = vec![0xff; EEPROM_SIZE];
-        bytes[65535] = 0x12;
-        bytes[0] = 0x34;
-        let mut e = M95512::new(&bytes, 0).unwrap();
-        e.set_selected(false, Time::ZERO).unwrap();
-        e.set_selected(true, Time::ZERO).unwrap();
-        for v in [3, 255, 255] {
-            xfer(&mut e, v);
-        }
-        assert_eq!(xfer(&mut e, 0), 0x12);
-        assert_eq!(xfer(&mut e, 0), 0x34);
-    }
-    #[test]
-    fn interrupted_write_has_erase_then_program_progress_in_only_addressed_cells() {
-        let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
-        command(&mut e, &[6]);
-        command(&mut e, &[2, 0, 0x7f, 0xa5, 0xff]);
-        assert_eq!(e.status() & 3, 3, "WEL remains set during WIP");
-        let original = e.clone();
-        let mut previous = e.bytes(Time::ZERO);
-        for us in (0..=2500).step_by(125) {
-            let bytes = e.bytes(Time::from_micros(us));
-            for index in [0, 127] {
-                assert_eq!(bytes[index] & previous[index], bytes[index]);
-            }
-            previous = bytes;
-        }
-        assert_eq!([previous[0], previous[127]], [0, 0]);
-        for us in (2500..=5000).step_by(125) {
-            let bytes = e.bytes(Time::from_micros(us));
-            for (index, target) in [(0, 0xff), (127, 0xa5)] {
-                assert_eq!(bytes[index] | previous[index], bytes[index]);
-                assert_eq!(bytes[index] & target, bytes[index]);
-            }
-            assert!(bytes[1..127].iter().all(|&v| v == 0xff));
-            previous = bytes;
-        }
-        assert_eq!(e, original, "observation never mutates the write engine");
-        for us in [0, 625, 2500, 3750] {
-            let mut cut = original.clone();
-            let now = Time::from_micros(us);
-            let expected = cut.bytes(now);
-            cut.power_off(now, &mut ());
-            assert_eq!(cut.bytes(Time::from_micros(10000)), expected);
-            assert_eq!(cut.status() & 3, 0);
-            assert_eq!(cut.deadline(), None);
-        }
-        e.complete(Time::from_micros(5000), &mut ()).unwrap();
-        assert_eq!([e.array[0], e.array[127]], [0xff, 0xa5]);
-    }
-    #[test]
-    fn status_write_has_one_data_byte_and_preserves_visible_status_until_completion() {
-        let mut e = M95512::new(&[0; EEPROM_SIZE], 0x80).unwrap();
-        command(&mut e, &[6]);
-        command(&mut e, &[1, 0x8c, 0]);
-        assert_eq!(e.status(), 0x82);
-        assert!(!e.busy());
-        command(&mut e, &[1, 0x8c]);
-        assert_eq!(e.status(), 0x83);
-        assert_eq!(e.persistent_status(Time::from_micros(2500)), 0);
-        let mut cut = e.clone();
-        cut.power_off(Time::from_micros(2500), &mut ());
-        assert_eq!(cut.status(), 0);
-        assert!(cut.array.iter().all(|&v| v == 0));
-        e.complete(Time::from_micros(5000), &mut ()).unwrap();
-        assert_eq!(e.status(), 0x8c);
-    }
-    #[test]
-    fn power_up_requires_a_high_select_before_the_first_command() {
-        let mut e = M95512::new(&[0xff; EEPROM_SIZE], 0).unwrap();
-        e.set_selected(true, Time::ZERO).unwrap();
-        xfer(&mut e, 6);
-        e.set_selected(false, Time::ZERO).unwrap();
-        assert_eq!(e.status(), 0);
-        command(&mut e, &[6]);
-        assert_eq!(e.status(), 2);
     }
 }

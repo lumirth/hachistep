@@ -8,12 +8,8 @@ license.workspace = true
 [features]
 default = []
 trace = []
-profile-work = []
 
 [dependencies]
 blip_buf = "0.2.1"
 borsh.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
-proptest = { version = "1.11", default-features = false, features = ["std"] }

@@ -7,7 +7,7 @@
 //!
 //! The model resolves gate/clock coincidences at reference-clock edges. The
 //! manual bounds gating error by one count and interrupt synchronization by
-//! one cycle. See docs/accuracy/timers.md for phase and delay choices.
+//! one cycle. The exact phase within those bounds is a nominal choice.
 use super::clocks::{Clocks, Tap};
 use crate::{
     error::Error,
@@ -60,7 +60,7 @@ impl Default for Aec {
     }
 }
 impl Aec {
-    pub fn handles(a: u16) -> bool {
+    pub const fn handles(a: u16) -> bool {
         matches!(a, 0xff92 | 0xff94..=0xff97)
     }
     pub fn pwm_enabled(&self) -> bool {

@@ -10,7 +10,7 @@ license = "MIT"
 
 [workspace.dependencies]
 borsh = { version = "1.8.1", default-features = false, features = ["std", "derive"] }
-sha2 = { version = "0.10.9", default-features = false, features = ["force-soft"] }
+sha2 = { version = "0.10.9", default-features = false }
 
 [profile.release]
 lto = "thin"
@@ -20,12 +20,7 @@ overflow-checks = true
 [profile.dev]
 overflow-checks = true
 
-# Native execution checks reuse incremental builds without per-test release LTO.
-# Keep dev assertions and overflow checks while making timing-heavy tests usable.
-[profile.iteration]
-inherits = "dev"
-opt-level = 2
-debug = 1
-incremental = true
-lto = "off"
-codegen-units = 16
+# Release code with symbols for host profilers.
+[profile.profiling]
+inherits = "release"
+debug = true

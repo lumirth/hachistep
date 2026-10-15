@@ -45,43 +45,6 @@ fn hash(bytes: &[u8]) -> u64 {
     })
 }
 
-#[cfg(feature = "profile-work")]
-fn work_json(work: hs_core::diagnostic::Work) -> String {
-    let exits = work.interval_exits;
-    format!(
-        concat!(
-            ",\"work\":{{\"cpu_phase_dispatches\":{},\"interval_entries\":{},",
-            "\"interval_exits\":{{\"request\":{},\"committed_owner\":{},",
-            "\"horizon\":{},\"exception\":{},\"sleep\":{},\"reset\":{},\"error\":{}}},",
-            "\"owner_sync_calls\":{},\"owner_syncs\":{},\"board_settlements\":{},",
-            "\"board_resolutions\":{},\"serial_resolutions\":{},\"serial_resolution_lanes\":{},",
-            "\"serial_edge_deliveries\":{},\"sensor_sample_phases\":{},",
-            "\"serial_prefixes\":{},\"serial_prefix_edges\":{},",
-            "\"cpu_time_materializations\":{}}}"
-        ),
-        work.cpu_phase_dispatches,
-        work.interval_entries,
-        exits.request,
-        exits.committed_owner,
-        exits.horizon,
-        exits.exception,
-        exits.sleep,
-        exits.reset,
-        exits.error,
-        work.owner_sync_calls,
-        work.owner_syncs,
-        work.board_settlements,
-        work.board_resolutions,
-        work.serial_resolutions,
-        work.serial_resolution_lanes,
-        work.serial_edge_deliveries,
-        work.sensor_sample_phases,
-        work.serial_prefixes,
-        work.serial_prefix_edges,
-        work.cpu_time_materializations,
-    )
-}
-
 fn profile_replays(
     rom: &[u8],
     mode: &str,
@@ -91,10 +54,7 @@ fn profile_replays(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Sampling needs a sustained process. Each replay still executes the whole
     // supplied guest; construction is part of this profiling view, not timing.
-    println!(
-        "{{\"profile_ready\":true,\"instrumented\":{}}}",
-        cfg!(feature = "profile-work")
-    );
+    println!("{{\"profile_ready\":true}}");
     std::io::stdout().flush()?;
     let start = Instant::now();
     let mut replays = 0;
@@ -162,8 +122,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut horizon = 0;
     let mut calls = 0;
-    #[cfg(feature = "profile-work")]
-    let before = hs_core::diagnostic::work(&machine);
     let start = Instant::now();
     while horizon < limit {
         horizon = horizon.saturating_add(quantum).min(limit);
@@ -174,10 +132,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let ns = start.elapsed().as_nanos();
-    #[cfg(feature = "profile-work")]
-    let work = work_json(hs_core::diagnostic::work(&machine).since(before));
-    #[cfg(not(feature = "profile-work"))]
-    let work = "";
     let mut artifact_json = String::new();
     if let Some(directory) = artifacts {
         // The comparison tool creates this directory. Files are new so an old
@@ -209,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "\"calls\":{},\"retired\":{},\"sleeping\":{},\"completed\":{},",
             "\"pc\":{},\"ccr\":{},\"registers\":{:?},\"ram_hash\":{},",
             "\"lcd_hash\":{},\"eeprom_hash\":{},\"ssu_counts\":[{},{}],",
-            "\"events\":{},\"event_hash\":{},\"resets\":{},\"cumulative_counts\":true{}{}}}"
+            "\"events\":{},\"event_hash\":{},\"resets\":{},\"cumulative_counts\":true{}}}"
         ),
         args[0],
         ns,
@@ -230,7 +184,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         events.hash,
         machine.statistics().resets,
         artifact_json,
-        work,
     );
     Ok(())
 }

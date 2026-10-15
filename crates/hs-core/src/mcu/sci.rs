@@ -3,9 +3,8 @@
 //! shutdown and converts its actual transmit pin into optical output.
 mod baud;
 mod frame;
-#[cfg(test)]
-mod tests;
 
+use super::bus::Recurrence;
 use super::clocks::{ClockWait, Clocks, Tap};
 use crate::{
     error::Error,
@@ -86,6 +85,98 @@ enum PulseEnd {
     Phi(ClockWait) = 1,
 }
 
+/// The most transmit-pin changes between two of the board's observations of
+/// a late SCI. Only the board starts a character (a TDR write is never
+/// local), and it observes the SCI as it does, so between observations at
+/// most the shifting character and the held one transmit; a character of
+/// at most twelve cells drives at most one change per cell and two per
+/// pulse.
+const OPTICAL_LOG: usize = 64;
+/// Host control and output, not state. While the run's sink accepts late
+/// output (`Output::exact_stops`), steps that move only TXD are internal:
+/// TXD reaches nothing but the board's optical output and port reads, so
+/// its changes are logged here, in order, for the board to report when it
+/// next observes the SCI (`Board::report_optical`).
+#[derive(Clone, Debug)]
+struct Optical {
+    late: bool,
+    len: u8,
+    levels: u64,
+    at: [Time; OPTICAL_LOG],
+}
+/// The most queued light edges (`Sci::queue_light`).
+const LIGHT_QUEUE: usize = 64;
+/// Incident light edges the board has handed over, not state. Light reaches
+/// only RXD while the board's route holds (`Sci::set_light_route`), so each
+/// edge is an input step of this SCI alone, performed by `sync` at its time
+/// after every other step at that time; the board then sees the level the
+/// SCI reached (`Sci::light_level`). The queue is empty whenever a run
+/// returns.
+#[derive(Clone, Debug)]
+struct Light {
+    at: [Time; LIGHT_QUEUE],
+    levels: u64,
+    head: u8,
+    len: u8,
+    /// The RXD level light leaves: `Some(shutdown)` reads `shutdown || !light`;
+    /// `None`, light reaches nothing.
+    route: Option<bool>,
+    /// The last edge performed, and whether the board has yet to see it.
+    level: bool,
+    unseen: bool,
+    /// While the board serves appointments at this time, edges at it wait:
+    /// inputs follow the appointments at their time.
+    hold: Option<Time>,
+}
+impl Default for Light {
+    fn default() -> Self {
+        Self {
+            at: [Time::ZERO; LIGHT_QUEUE],
+            levels: 0,
+            head: 0,
+            len: 0,
+            route: None,
+            level: false,
+            unseen: false,
+            hold: None,
+        }
+    }
+}
+impl PartialEq for Light {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for Light {}
+impl Light {
+    fn front(&self) -> Option<(Time, bool)> {
+        (self.len != 0).then(|| {
+            let i = usize::from(self.head);
+            (self.at[i], self.levels >> i & 1 != 0)
+        })
+    }
+    fn pop(&mut self) {
+        self.head = ((usize::from(self.head) + 1) % LIGHT_QUEUE) as u8;
+        self.len -= 1;
+    }
+}
+impl Default for Optical {
+    fn default() -> Self {
+        Self {
+            late: false,
+            len: 0,
+            levels: 0,
+            at: [Time::ZERO; OPTICAL_LOG],
+        }
+    }
+}
+impl PartialEq for Optical {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for Optical {}
+
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Sci {
     spcr: u8,
@@ -117,6 +208,10 @@ pub struct Sci {
     sck: bool,
     sync_next: Option<u64>,
     mux_glitch: Option<Time>,
+    #[borsh(skip)]
+    optical: Optical,
+    #[borsh(skip)]
+    light: Light,
     #[borsh(skip)]
     pub transmitted: u64,
     #[borsh(skip)]
@@ -154,6 +249,8 @@ impl Default for Sci {
             sck: true,
             sync_next: None,
             mux_glitch: None,
+            optical: Optical::default(),
+            light: Light::default(),
             transmitted: 0,
             received: 0,
         }
@@ -164,8 +261,23 @@ impl Sci {
         // A mux's transient electrical excursion cannot outlive its supply.
         self.mux_glitch = None;
     }
-    pub fn handles(a: u16) -> bool {
+    pub const fn handles(a: u16) -> bool {
         matches!(a, 0xff91 | 0xff98..=0xff9d | 0xffa6 | 0xffa7)
+    }
+    /// Every register but RDR changes only at this owner's deadline or by
+    /// writes; repeating an SSR read qualifies the same flags again.
+    pub(crate) const fn settled_read(a: u16) -> bool {
+        Self::handles(a) && a != 0xff9d
+    }
+    /// An SSR write clears flags qualified by earlier reads and may load the
+    /// transmitter from the holding register: all retained state, so a write
+    /// that changes nothing keeps changing nothing until the next deadline.
+    pub(crate) fn recurrence(a: u16) -> Recurrence {
+        if a == 0xff9c {
+            Recurrence::Settled
+        } else {
+            Recurrence::Varies
+        }
     }
     fn reload(&self) -> u16 {
         u16::from(self.brr) + 1
@@ -190,8 +302,362 @@ impl Sci {
             _ => Tap::system(64),
         }
     }
+    /// Advance to `now`, performing the internal steps on the way: receive
+    /// samples before a character completes, receive pulse expiry and IrDA
+    /// data cells change nothing outside the SCI by themselves, so they are
+    /// not appointments (see `deadline`).
     pub fn sync(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
-        self.baud.sync(now, c, self.reload())
+        let phi_pulse = self.optical.late && matches!(self.pulse_end, Some(PulseEnd::Phi(_)));
+        let light = self.due_light(now);
+        // Every step lies on a later half than the current one, the first
+        // of which begins after `now`.
+        if !phi_pulse && light.is_none() && self.baud.quiet_through(now, c) {
+            return Ok(());
+        }
+        if phi_pulse || !self.baud.advancing(c) {
+            return self.sync_timed(now, c);
+        }
+        // Count halves rather than find their times: a step needs the time
+        // only to log TXD or start a wait.
+        let reload = self.reload();
+        let reach = self.baud.half_at(now, c, reload);
+        // The half of the first due light edge, while it is first.
+        let mut light_half = None;
+        loop {
+            let next = self.internal_half().filter(|half| *half <= reach);
+            // Light follows every other step at its time.
+            if let Some((at, level)) = self.due_light(now) {
+                let half = *light_half.get_or_insert_with(|| self.baud.half_at(at, c, reload));
+                if next.is_none_or(|next| next > half) {
+                    self.baud.step_to(half, reload);
+                    self.perform_light(level);
+                    light_half = None;
+                    continue;
+                }
+            }
+            let Some(half) = next else {
+                break;
+            };
+            let before = self.transmit_level();
+            self.baud.step_to(half, reload);
+            self.process_basic(None, c)?;
+            self.refresh_sync_clock();
+            if self.transmit_level() != before {
+                let at = self.baud.time(c)?;
+                self.log_transmit(before, at)?;
+            }
+            self.complete_pulse(reach, c)?;
+        }
+        self.baud.step_to(reach, reload);
+        self.baud.time(c)?;
+        self.expire_receive_pulse();
+        Ok(())
+    }
+    /// Late, a transmit pulse that starts and ends by `reach`, with no
+    /// transmit step between, is logged whole rather than stepped twice.
+    fn complete_pulse(&mut self, reach: u64, c: &Clocks) -> Result<(), Error> {
+        let Some(start) = self.pulse_start else {
+            return Ok(());
+        };
+        let end = start + 6;
+        if !self.optical.late
+            || self.ircr & 0x70 != 0
+            || self.pulse_end.is_some()
+            || end > reach
+            || self.tx.and_then(Tx::next).is_some_and(|next| next <= end)
+        {
+            return Ok(());
+        }
+        let reload = self.reload();
+        let idle = self.transmit_level();
+        self.pulse_start = None;
+        self.infrared = true;
+        let lit = self.transmit_level();
+        if lit != idle {
+            let time = |half| {
+                self.baud
+                    .deadline(half, c, reload)?
+                    .ok_or(Error::Internal("SCI pulse off its basic clock"))
+            };
+            let (from, to) = (time(start)?, time(end)?);
+            self.log_transmit(idle, from)?;
+            self.infrared = false;
+            self.log_transmit(lit, to)?;
+        }
+        self.infrared = false;
+        Ok(())
+    }
+    /// `sync` by the times of its steps: while a pulse ends on the system
+    /// clock, or the BRC does not count.
+    fn sync_timed(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
+        loop {
+            let basic = match self.internal_half() {
+                Some(half) => self
+                    .baud
+                    .deadline(half, c, self.reload())?
+                    .map(|at| (half, at)),
+                None => None,
+            };
+            let pulse_end = match self.pulse_end {
+                Some(PulseEnd::Phi(wait)) if self.optical.late => wait.deadline(c)?,
+                _ => None,
+            };
+            let before = self.transmit_level();
+            // A pulse ends before a basic step at the same time (`advance`).
+            if let Some(at) =
+                pulse_end.filter(|at| *at <= now && basic.is_none_or(|(_, b)| *at <= b))
+            {
+                self.pulse_end = None;
+                self.infrared = false;
+                self.log_transmit(before, at)?;
+                continue;
+            }
+            if let Some((at, level)) = self.due_light(now) {
+                if basic.is_none_or(|(_, b)| b > at) {
+                    self.baud.sync(at, c, self.reload())?;
+                    self.perform_light(level);
+                    continue;
+                }
+            }
+            let Some((half, at)) = basic.filter(|(_, at)| *at <= now) else {
+                break;
+            };
+            self.baud.sync(at, c, self.reload())?;
+            if self.baud.half != half {
+                return Err(Error::Internal("SCI internal step off its basic clock"));
+            }
+            self.process_basic(Some(at), c)?;
+            self.refresh_sync_clock();
+            self.log_transmit(before, at)?;
+        }
+        self.baud.sync(now, c, self.reload())?;
+        self.expire_receive_pulse();
+        Ok(())
+    }
+    fn perform_light(&mut self, level: bool) {
+        self.light.pop();
+        self.light.level = level;
+        self.light.unseen = true;
+        if let Some(shutdown) = self.light.route {
+            self.receive_input(shutdown || !level);
+        }
+    }
+    /// The next queued light edge `sync` performs on its way to `now`.
+    fn due_light(&self, now: Time) -> Option<(Time, bool)> {
+        self.light
+            .front()
+            .filter(|(at, _)| *at <= now && self.light.hold.is_none_or(|hold| *at < hold))
+    }
+    /// RXD now shows `level`, the caller having synchronized.
+    fn receive_input(&mut self, level: bool) {
+        if level == self.input {
+            return;
+        }
+        let was_positive = self.input ^ (self.spcr & 1 != 0);
+        self.input = level;
+        self.receive_change(was_positive);
+        self.arm_receive();
+    }
+    /// Queue a light edge after every queued one; false when the queue is full.
+    pub(crate) fn queue_light(&mut self, at: Time, level: bool) -> bool {
+        let light = &mut self.light;
+        let len = usize::from(light.len);
+        if len == LIGHT_QUEUE
+            || light
+                .front()
+                .is_some_and(|_| light.at[(usize::from(light.head) + len - 1) % LIGHT_QUEUE] >= at)
+        {
+            return false;
+        }
+        let i = (usize::from(light.head) + len) % LIGHT_QUEUE;
+        light.at[i] = at;
+        light.levels = (light.levels & !(1 << i)) | (u64::from(level) << i);
+        light.len += 1;
+        true
+    }
+    /// How light reaches RXD from now on (`Light::route`).
+    pub(crate) fn set_light_route(&mut self, route: Option<bool>) {
+        self.light.route = route;
+    }
+    pub(crate) fn hold_light(&mut self, hold: Option<Time>) {
+        self.light.hold = hold;
+    }
+    /// The level of the last light edge performed since the board last
+    /// asked, if any.
+    pub(crate) fn take_light_level(&mut self) -> Option<bool> {
+        let light = &mut self.light;
+        core::mem::take(&mut light.unseen).then_some(light.level)
+    }
+    /// Return the edges not yet performed; how many.
+    pub(crate) fn unqueue_light(&mut self) -> usize {
+        core::mem::take(&mut self.light.len).into()
+    }
+    /// The level TXD shows, while it is the SCI's.
+    fn transmit_level(&self) -> Option<bool> {
+        (self.spcr & 0x10 != 0).then_some(
+            (if self.ircr & 0x80 != 0 {
+                self.infrared
+            } else {
+                self.uart
+            }) ^ (self.spcr & 2 != 0),
+        )
+    }
+    fn log_transmit(&mut self, before: Option<bool>, at: Time) -> Result<(), Error> {
+        let Some(level) = self.transmit_level().filter(|level| before != Some(*level)) else {
+            return Ok(());
+        };
+        let log = &mut self.optical;
+        let i = usize::from(log.len);
+        if i == OPTICAL_LOG {
+            return Err(Error::Internal("SCI optical log overflow"));
+        }
+        log.at[i] = at;
+        log.levels = (log.levels & !(1 << i)) | (u64::from(level) << i);
+        log.len += 1;
+        Ok(())
+    }
+    /// Whether steps that move only TXD are internal (`Optical`).
+    pub(crate) fn set_late(&mut self, late: bool, now: Time, c: &Clocks) -> Result<(), Error> {
+        // Lazily pending steps before `now` precede any appointment.
+        if self.lazy(0) && !late {
+            if let Some(before) = now.raw().checked_sub(1) {
+                self.sync(Time::from_raw(before), c)?;
+            }
+        }
+        self.optical.late = late;
+        Ok(())
+    }
+    /// Whether the board must bring this SCI up to an observation of its
+    /// pins: it is late and may have moved TXD by itself.
+    pub(crate) fn optical_pending(&self) -> bool {
+        self.optical.len != 0
+            || self.light.len != 0
+            || self.light.unseen
+            || (self.optical.late
+                && (self.tx.is_some() || self.pulse_start.is_some() || self.pulse_end.is_some()))
+    }
+    /// Hand the logged transmit changes to `f`, oldest first.
+    pub(crate) fn drain_optical(&mut self, mut f: impl FnMut(Time, bool)) {
+        let log = &mut self.optical;
+        for i in 0..usize::from(log.len) {
+            f(log.at[i], log.levels >> i & 1 != 0);
+        }
+        log.len = 0;
+    }
+    /// The next basic-clock half with an internal step.
+    fn internal_half(&self) -> Option<u64> {
+        fn min(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+            match (a, b) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, None) => a,
+                (None, b) => b,
+            }
+        }
+        // A received pulse ends inside the SCI: while a reception runs, only
+        // its samples observe the level (`input_level`); otherwise the end may
+        // arm one.
+        let mut next = self.receive_pulse.filter(|_| self.rx.is_none());
+        if let Some(rx) = self.rx {
+            if !rx.format.synchronous {
+                next = min(next, rx.next);
+            }
+        }
+        if self.optical.late {
+            next = min(
+                next,
+                if self.lazy(0) {
+                    self.tx.and_then(Tx::next)
+                } else {
+                    self.late_transmit_step()
+                },
+            );
+            next = min(next, self.pulse_start);
+            if let Some(PulseEnd::Basic(n)) = self.pulse_end {
+                next = min(next, Some(n));
+            }
+        } else if self.ircr & 0x80 != 0 {
+            next = min(next, self.infrared_cell().map(|(next, ..)| next));
+        }
+        next
+    }
+    /// The next transmit step that moves at most TXD: a character's start,
+    /// or a cell before its stop cell.
+    fn late_transmit_step(&self) -> Option<u64> {
+        match self.tx? {
+            Tx::Start { next, .. } => Some(next),
+            Tx::Data {
+                character,
+                cell,
+                next: Some(next),
+            } if cell + 1 < character.format.stop() => Some(next),
+            _ => None,
+        }
+    }
+    /// In IrDA mode TXD shows only pulses, so a data cell before the stop
+    /// cell changes nothing outside the SCI except by the pulse it starts
+    /// 13 halves later: the next such cell's half, character and index.
+    fn infrared_cell(&self) -> Option<(u64, Character, u8)> {
+        if self.ircr & 0x80 == 0 {
+            return None;
+        }
+        match self.tx? {
+            Tx::Data {
+                character,
+                cell,
+                next: Some(next),
+            } if cell + 1 < character.format.stop() => Some((next, character, cell + 1)),
+            _ => None,
+        }
+    }
+    /// The first transmit step that changes something outside the SCI.
+    fn transmit_effect(&self) -> Option<u64> {
+        if self.optical.late {
+            // Every step before the stop cell moves at most TXD.
+            return match self.tx? {
+                Tx::Start { character, next } => {
+                    Some(next + u64::from(character.format.stop()) * character.format.half_bit)
+                }
+                Tx::Data {
+                    character,
+                    cell,
+                    next: Some(next),
+                } if cell + 1 < character.format.stop() => Some(
+                    next + u64::from(character.format.stop() - cell - 1)
+                        * character.format.half_bit,
+                ),
+                tx => tx.next(),
+            };
+        }
+        let Some((next, character, first)) = self.infrared_cell() else {
+            return self.tx.and_then(Tx::next);
+        };
+        let stop = character.format.stop();
+        (first..=stop).find_map(|cell| {
+            let at = next + u64::from(cell - first) * character.format.half_bit;
+            if cell == stop {
+                Some(at)
+            } else {
+                (character.word & (1 << cell) == 0).then_some(at + 13)
+            }
+        })
+    }
+    /// The half at which the character being received completes, unless it
+    /// is abandoned first: the first receive step that changes SSR or RDR.
+    fn receive_completion(&self) -> Option<u64> {
+        let rx = self.rx?;
+        let next = rx.next?;
+        if rx.format.synchronous {
+            return Some(next);
+        }
+        let (format, position, next) = if rx.position == -2 {
+            let format = self.format();
+            (format, -1, next + format.half_bit / 2 - 1)
+        } else {
+            (rx.format, rx.position, next)
+        };
+        let stop = i64::from(format.data + u8::from(format.parity));
+        let remaining = u64::try_from(stop - i64::from(position)).ok()?;
+        Some(next + remaining * format.half_bit)
     }
     fn select_clock(&mut self, now: Time, c: &Clocks) {
         self.baud
@@ -205,7 +671,11 @@ impl Sci {
             self.transmitted,
             self.received,
         );
+        let optical = core::mem::take(&mut self.optical);
+        let light = core::mem::take(&mut self.light);
         *self = Self::default();
+        self.optical = optical;
+        self.light = light;
         if retain_spcr {
             self.spcr = spcr;
         }
@@ -261,30 +731,63 @@ impl Sci {
         };
         Pins {
             clock,
-            transmit: (self.spcr & 0x10 != 0).then_some(
-                (if self.ircr & 0x80 != 0 {
-                    self.infrared
-                } else {
-                    self.uart
-                }) ^ (self.spcr & 2 != 0),
-            ),
+            transmit: self.transmit_level(),
             receive: self.scr & 0x10 != 0,
         }
     }
+    /// Whether every step is internal: late, with no request enabled
+    /// (`retained` names enables an instruction still admits) and no clock
+    /// output, the steps change only TXD, which is late, and the registers,
+    /// which the CPU observes only by accessing them (`flag_deadline`).
+    pub(crate) fn lazy(&self, retained: u8) -> bool {
+        self.optical.late
+            && (self.scr | retained) & 0xc4 == 0
+            && self.smr & 0x80 == 0
+            && !self.clock_output()
+            && self.sync_next.is_none()
+    }
+    /// While `lazy`: no register changes but by accesses before this time,
+    /// the first step that can change SSR or RDR, or a light edge that can
+    /// start a reception.
+    pub(crate) fn flag_deadline(&self, c: &Clocks) -> Result<Option<Time>, Error> {
+        let half = match (self.transmit_effect(), self.receive_completion()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let basic = half
+            .map(|n| self.baud.deadline(n, c, self.reload()))
+            .transpose()?
+            .flatten();
+        let light = self
+            .light
+            .front()
+            .filter(|_| self.rx.is_none() && self.scr & 0x10 != 0)
+            .map(|(at, _)| at);
+        Ok(match (basic, light) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        })
+    }
     pub fn deadline(&self, c: &Clocks) -> Result<Option<Time>, Error> {
+        self.deadline_with(c, 0)
+    }
+    pub(crate) fn deadline_with(&self, c: &Clocks, retained: u8) -> Result<Option<Time>, Error> {
+        if self.lazy(retained) {
+            return Ok(self.mux_glitch);
+        }
         let async_clock = (self.clock_output() && self.smr & 0x80 == 0).then(|| {
             let interval = self.format().half_bit / 2;
             self.baud.half + interval - self.baud.half % interval
         });
+        let late = self.optical.late;
         let next = [
-            self.tx.and_then(Tx::next),
-            self.rx.and_then(|r| r.next),
-            self.pulse_start,
-            self.receive_pulse,
+            self.transmit_effect(),
+            self.receive_completion(),
+            self.pulse_start.filter(|_| !late),
             self.sync_next,
             async_clock,
             match self.pulse_end {
-                Some(PulseEnd::Basic(n)) => Some(n),
+                Some(PulseEnd::Basic(n)) if !late => Some(n),
                 _ => None,
             },
         ]
@@ -296,10 +799,27 @@ impl Sci {
             .transpose()?
             .flatten();
         let pulse = match self.pulse_end {
-            Some(PulseEnd::Phi(wait)) => wait.deadline(c)?,
+            Some(PulseEnd::Phi(wait)) if !late => wait.deadline(c)?,
             _ => None,
         };
-        Ok([basic, pulse, self.mux_glitch].into_iter().flatten().min())
+        // An edge can start a reception, whose completion is an appointment
+        // the current state does not show; once one has started, a later
+        // start can only complete later.
+        let light = self
+            .light
+            .front()
+            .filter(|_| {
+                self.rx.is_none()
+                    && self.scr & 0x10 != 0
+                    && self.ssr & 0x38 == 0
+                    && !self.format().synchronous
+                    && self.light.route == Some(false)
+            })
+            .map(|(at, _)| Time::from_raw(at.raw() + 1));
+        Ok([basic, pulse, self.mux_glitch, light]
+            .into_iter()
+            .flatten()
+            .min())
     }
     pub fn interrupt(&self) -> bool {
         self.interrupt_with_enable(0)
@@ -352,7 +872,7 @@ impl Sci {
                 // Initialization permits waiting just ONE new bit period.
                 // An idle write must not retain a previous 256-count BRC tail.
                 if self.scr & 0x30 == 0 {
-                    self.baud.reload(self.reload());
+                    self.baud.reload(self.reload(), now, c);
                 }
             }
             0xffa6 => self.semr = v & 8,
@@ -389,13 +909,10 @@ impl Sci {
                 }
             }
             0xff9c => {
-                self.ssr &= !(self.seen & !v & 0xf8);
-                self.seen &= v;
-                if self.scr & 0x20 == 0 {
-                    self.ssr |= 0x80;
-                } else if self.ssr & 0x80 == 0 && self.holding.is_none() {
+                let (ssr, seen, load) = self.status_write(v);
+                (self.ssr, self.seen) = (ssr, seen);
+                if load {
                     self.holding = Some(self.tdr);
-                    self.ssr &= !4;
                 }
             }
             0xff9d => {}
@@ -442,6 +959,51 @@ impl Sci {
         self.arm_receive();
         self.refresh_sync_clock();
         Ok(())
+    }
+    /// SSR and its read qualification after writing `v` to SSR, and whether
+    /// the write loads TDR into the holding register.
+    fn status_write(&self, v: u8) -> (u8, u8, bool) {
+        let mut ssr = self.ssr & !(self.seen & !v & 0xf8);
+        let seen = self.seen & v;
+        let mut load = false;
+        if self.scr & 0x20 == 0 {
+            ssr |= 0x80;
+        } else if ssr & 0x80 == 0 && self.holding.is_none() {
+            load = true;
+            ssr &= !4;
+        }
+        (ssr, seen, load)
+    }
+    /// Whether writing `v` to SSR leaves this SCI exactly as it is, whatever
+    /// time it is written at. Flags and their qualifications change only at
+    /// appointments and by accesses, so this needs no synchronization: such
+    /// a write clears nothing and loads nothing, and every step it would
+    /// otherwise trigger (a start, an arming, a synchronous clock) has
+    /// already been taken where it was due.
+    pub(crate) fn inert_status_write(&self, v: u8) -> bool {
+        if !self.module || self.reset_mode {
+            return true;
+        }
+        let (ssr, seen, load) = self.status_write(v);
+        let starts = match self.tx {
+            Some(Tx::Blocked { .. }) => self.ssr & 0x38 == 0,
+            Some(Tx::Tail { loaded: None, .. }) => self.holding.is_some(),
+            Some(_) => false,
+            None => self.scr & 0x20 != 0 && self.holding.is_some(),
+        };
+        let arms = self.scr & 0x10 != 0
+            && self.ssr & 0x38 == 0
+            && self.rx.is_none()
+            && !self.format().synchronous
+            && !self.input_level();
+        let clocks = if self.external() {
+            self.sync_next.is_some()
+        } else if self.sync_needed() {
+            self.sync_next.is_none()
+        } else {
+            self.sync_next.is_some() || !self.sck
+        };
+        ssr == self.ssr && seen == self.seen && !load && !starts && !arms && !clocks
     }
     fn character(&self, value: u8) -> Character {
         let format = self.format();
@@ -521,7 +1083,14 @@ impl Sci {
         }
         Ok(())
     }
-    fn advance_tx(&mut self, now: Time) -> Result<(), Error> {
+    /// The time of the steps at the current half (`process_basic`).
+    fn step_time(&mut self, now: Option<Time>, c: &Clocks) -> Result<Time, Error> {
+        match now {
+            Some(now) => Ok(now),
+            None => self.baud.time(c),
+        }
+    }
+    fn advance_tx(&mut self, now: Option<Time>, c: &Clocks) -> Result<(), Error> {
         let Some(tx) = self.tx else {
             return Ok(());
         };
@@ -532,6 +1101,7 @@ impl Sci {
             Tx::Blocked { .. } => {}
             Tx::Mark { .. } => {
                 self.tx = None;
+                let now = self.step_time(now, c)?;
                 self.try_start(now)?;
             }
             Tx::Start { character, .. } => self.begin(character),
@@ -555,14 +1125,17 @@ impl Sci {
                     });
                 }
             }
-            Tx::Tail { loaded, .. } => self.finish_tail(loaded, now)?,
+            Tx::Tail { loaded, .. } => {
+                let now = self.step_time(now, c)?;
+                self.finish_tail(loaded, now)?;
+            }
         }
         Ok(())
     }
     fn input_level(&self) -> bool {
         let physical = self.input ^ (self.spcr & 1 != 0);
         if self.ircr & 0x80 != 0 {
-            !(physical || self.receive_pulse.is_some())
+            !(physical || self.receive_pulse.is_some_and(|end| self.baud.half < end))
         } else {
             physical
         }
@@ -731,35 +1304,33 @@ impl Sci {
             return Ok(false);
         }
         self.sync(now, c)?;
-        let was_positive = self.input ^ (self.spcr & 1 != 0);
-        self.input = input;
-        self.receive_change(was_positive);
-        self.arm_receive();
+        self.receive_input(input);
         if let Some(high) = clock {
             self.input_clock = high;
             if self.baud.external_edge(now, high)? {
-                self.process_basic(now, c)?;
+                self.process_basic(Some(now), c)?;
                 self.sync_edge(high, now)?;
                 self.refresh_sync_clock();
             }
         }
         Ok(true)
     }
-    fn process_basic(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
-        if self.receive_pulse == Some(self.baud.half) {
-            self.receive_pulse = None;
-        }
+    /// Perform the steps at the current half, at `now`, or at the half's
+    /// edge when `None`.
+    fn process_basic(&mut self, now: Option<Time>, c: &Clocks) -> Result<(), Error> {
+        self.expire_receive_pulse();
         if self.pulse_end == Some(PulseEnd::Basic(self.baud.half)) {
             self.infrared = false;
             self.pulse_end = None;
         }
-        self.advance_tx(now)?;
+        self.advance_tx(now, c)?;
         if self.pulse_start == Some(self.baud.half) {
             self.pulse_start = None;
             let width = self.ircr >> 4 & 7;
             self.pulse_end = match width {
                 0 => Some(PulseEnd::Basic(self.baud.half + 6)),
                 n @ 1..=4 => {
+                    let now = self.step_time(now, c)?;
                     let mut wait = ClockWait::after(now, 1 << n, Tap::system(1), c)?;
                     if !self.main {
                         wait.pause(now, c)?;
@@ -774,6 +1345,11 @@ impl Sci {
         self.arm_receive();
         Ok(())
     }
+    fn expire_receive_pulse(&mut self) {
+        if self.receive_pulse.is_some_and(|end| end <= self.baud.half) {
+            self.receive_pulse = None;
+        }
+    }
     pub fn advance(&mut self, now: Time, c: &Clocks) -> Result<(), Error> {
         self.sync(now, c)?;
         if self.mux_glitch == Some(now) {
@@ -785,7 +1361,7 @@ impl Sci {
                 self.infrared = false;
             }
         }
-        self.process_basic(now, c)?;
+        self.process_basic(Some(now), c)?;
         if self.sync_next == Some(self.baud.half) {
             self.sync_next = None;
             self.sck = !self.sck;

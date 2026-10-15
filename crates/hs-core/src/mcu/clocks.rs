@@ -100,11 +100,64 @@ pub struct Clocks {
     system_numerator: u64,
     system_denominator: u64,
     #[borsh(skip)]
-    revision: u64,
-    #[cfg(feature = "profile-work")]
+    revision: Revision,
     #[borsh(skip)]
-    pub(crate) cpu_time_materializations: crate::profile_work::Counter,
+    lock: LockMemo,
+    #[borsh(skip)]
+    projection: Projection,
 }
+/// The source ticks last projected for each source, with the span of times
+/// that projects to the same count; not state. Owners synchronized at one
+/// instant, and slow sources polled between their edges, reuse it.
+#[derive(Clone, Debug, Default)]
+struct Projection([core::cell::Cell<Span>; 6]);
+#[derive(Clone, Copy, Debug, Default)]
+struct Span {
+    /// The clock revision the span was projected under: every domain is
+    /// fixed within one.
+    revision: u64,
+    /// `ticks` is the count for every time in `from..until` (raw times).
+    from: u128,
+    until: u128,
+    ticks: u64,
+}
+impl PartialEq for Projection {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for Projection {}
+/// A clock revision no projection has seen: revisions are unique across
+/// every `Clocks`, so a projection cached under one is never mistaken for
+/// another's. Zero is never issued; deserialized caches hold it.
+pub(crate) fn fresh_revision() -> u64 {
+    static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+}
+/// Identifies the clock configuration projections were cached under; not
+/// state, so equal machines may hold different revisions.
+#[derive(Clone, Copy, Debug)]
+struct Revision(u64);
+impl Default for Revision {
+    fn default() -> Self {
+        Self(fresh_revision())
+    }
+}
+impl PartialEq for Revision {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for Revision {}
+/// `Clocks::cpu_lock` for one revision; not state.
+#[derive(Clone, Debug, Default)]
+struct LockMemo(core::cell::Cell<Option<(u64, Option<u64>)>>);
+impl PartialEq for LockMemo {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for LockMemo {}
 pub(crate) mod startup;
 pub(crate) struct SourcePower {
     pub main: bool,
@@ -134,9 +187,9 @@ impl Clocks {
             system_divide: 1,
             system_numerator: frequencies.main_hz,
             system_denominator: 1,
-            revision: 0,
-            #[cfg(feature = "profile-work")]
-            cpu_time_materializations: Default::default(),
+            revision: Revision(fresh_revision()),
+            lock: LockMemo::default(),
+            projection: Projection::default(),
         })
     }
     fn source(&self, source: Source) -> &Domain {
@@ -169,7 +222,35 @@ impl Clocks {
         raw / u64::from(tap.divide)
     }
     fn raw_ticks(&self, now: Time, source: Source) -> u64 {
-        self.source(source).ticks(now)
+        let memo = &self.projection.0[source as usize];
+        let span = memo.get();
+        if span.revision == self.revision.0 && (span.from..span.until).contains(&now.raw()) {
+            return span.ticks;
+        }
+        let domain = self.source(source);
+        let ticks = domain.ticks(now);
+        // No exclusive cache endpoint exists beyond the terminal timestamp.
+        if now == Time::MAX {
+            return ticks;
+        }
+        // The count holds until the next source edge, after `now`.
+        let until = if domain.running {
+            let clock = &domain.clock;
+            ticks
+                .checked_sub(clock.ordinal())
+                .and_then(|n| n.checked_add(1))
+                .and_then(|n| clock.after(n).ok())
+                .map_or(now.raw() + 1, |t| t.raw())
+        } else {
+            u128::MAX
+        };
+        memo.set(Span {
+            revision: self.revision.0,
+            from: now.raw(),
+            until,
+            ticks,
+        });
+        ticks
     }
     pub fn edge(&self, tick: u64, tap: Tap) -> Result<Time, Error> {
         let target = match (tap.source, tap.divide) {
@@ -187,10 +268,6 @@ impl Clocks {
         };
         let c = &self.source(tap.source).clock;
         let delta = target.checked_sub(c.ordinal()).ok_or(TimeError::Reversed)?;
-        #[cfg(feature = "profile-work")]
-        if tap.source == Source::Cpu {
-            self.cpu_time_materializations.add(1);
-        }
         Ok(c.after(delta)?)
     }
     /// Next physical level change of a routed clock. Falling edges matter
@@ -274,7 +351,7 @@ impl Clocks {
         let changed_s = self.prescaler_s.set_running(system, s, true);
         let changed_w = self.prescaler_w.set_running(watch, w, false);
         if changed_s || changed_w {
-            self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+            self.revision = Revision(fresh_revision());
         }
         Ok(())
     }
@@ -282,7 +359,7 @@ impl Clocks {
         self.prescaler_s.reset(self.raw_ticks(now, Source::System));
         self.prescaler_w
             .reset(self.raw_ticks(now, Source::Watch) / 4);
-        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        self.revision = Revision(fresh_revision());
         Ok(())
     }
     pub fn after(&self, now: Time, edges: u64, tap: Tap) -> Result<Time, Error> {
@@ -304,9 +381,8 @@ impl Clocks {
         };
         let ordinal = self.ticks(now, Tap::system(1));
         let c = Self::divided(self.source(source), now, divide, ordinal)?;
-        let revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
         self.system = c;
-        self.revision = revision;
+        self.revision = Revision(fresh_revision());
         self.system_numerator = numerator;
         self.system_denominator = divide.checked_mul(denominator).ok_or(TimeError::Overflow)?;
         self.system_source = source;
@@ -322,7 +398,7 @@ impl Clocks {
         if self.cpu_uses_subclock {
             self.select_cpu(now, true)?;
         }
-        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        self.revision = Revision(fresh_revision());
         Ok(())
     }
     pub fn select_cpu(&mut self, now: Time, subclock: bool) -> Result<(), Error> {
@@ -337,7 +413,7 @@ impl Clocks {
             self.ticks(now, Tap::cpu()),
         )?;
         self.cpu_uses_subclock = subclock;
-        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        self.revision = Revision(fresh_revision());
         Ok(())
     }
     fn divided(source: &Domain, now: Time, divide: u64, ordinal: u64) -> Result<Domain, Error> {
@@ -377,13 +453,72 @@ impl Clocks {
     /// STS waits use this undivided source, independently of the CPU divider.
     pub fn restart_oscillator(&mut self, now: Time) -> Result<(), Error> {
         self.oscillator.start(now, self.frequencies.main_hz)?;
-        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        self.revision = Revision(fresh_revision());
         Ok(())
     }
     pub fn restart_on_chip(&mut self, now: Time) -> Result<(), Error> {
         self.on_chip.start(now, self.frequencies.on_chip_hz)?;
-        self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        self.revision = Revision(fresh_revision());
         Ok(())
+    }
+    /// Changes whenever a clock projection may have changed.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.0
+    }
+    /// When every CPU clock edge is a system clock edge and the reverse, as
+    /// while the CPU runs undivided on a running system clock: the CPU
+    /// ordinal minus the system ordinal of the same edge (wrapping). Event
+    /// times on either clock then convert to the other by addition.
+    pub(crate) fn cpu_lock(&self) -> Option<u64> {
+        if let Some((revision, lock)) = self.lock.0.get() {
+            if revision == self.revision.0 {
+                return lock;
+            }
+        }
+        let lock = self.find_cpu_lock();
+        self.lock.0.set(Some((self.revision.0, lock)));
+        lock
+    }
+    fn find_cpu_lock(&self) -> Option<u64> {
+        let (system, cpu) = (&self.system.clock, &self.cpu.clock);
+        if self.cpu_uses_subclock
+            || !self.system.running
+            || !self.cpu.running
+            || (system.whole, system.remainder, system.denominator)
+                != (cpu.whole, cpu.remainder, cpu.denominator)
+            || cpu.at < system.at
+        {
+            return None;
+        }
+        // The CPU clock is the system recurrence advanced to one of its
+        // edges; check that it holds the same phase there.
+        let edges = system.edges_before(Time::from_raw(cpu.at.raw().saturating_add(1)));
+        let mut same = *system;
+        same.advance(edges).ok()?;
+        (same.at == cpu.at && same.fraction == cpu.fraction)
+            .then(|| cpu.ordinal.wrapping_sub(same.ordinal))
+    }
+    /// The system clock ordinal of a system tap's `tick`-th edge.
+    pub(crate) fn system_edge(&self, tick: u64, tap: Tap) -> Result<u64, Error> {
+        debug_assert!(tap.source == Source::System);
+        Ok(match tap.divide {
+            2..=8192 if tap.divide.is_power_of_two() => self
+                .prescaler_s
+                .parent_edge(tick, tap.divide.trailing_zeros())?,
+            _ => tick
+                .checked_mul(u64::from(tap.divide))
+                .ok_or(TimeError::Overflow)?,
+        })
+    }
+    /// A system tap's ticks at the system clock's `ordinal`-th edge.
+    pub(crate) fn system_ticks(&self, ordinal: u64, tap: Tap) -> u64 {
+        debug_assert!(tap.source == Source::System);
+        match tap.divide {
+            2..=8192 if tap.divide.is_power_of_two() => {
+                self.prescaler_s.ticks(ordinal, tap.divide.trailing_zeros())
+            }
+            _ => ordinal / u64::from(tap.divide),
+        }
     }
     pub fn available(&self, tap: Tap) -> bool {
         self.source(tap.source).running
@@ -446,8 +581,9 @@ impl Clocks {
                 self.select_cpu(now, false)?;
             }
         }
-        if oscillator_changed || rosc_changed || crystal_changed {
-            self.revision = self.revision.checked_add(1).ok_or(TimeError::Overflow)?;
+        if watch_changed || system_changed || oscillator_changed || rosc_changed || crystal_changed
+        {
+            self.revision = Revision(fresh_revision());
         }
         Ok(())
     }
@@ -511,7 +647,7 @@ impl ClockWait {
                 } else {
                     Time::MAX
                 },
-                revision: clocks.revision,
+                revision: clocks.revision.0,
             }
         };
         Ok(Self { tap, state })
@@ -522,7 +658,7 @@ impl ClockWait {
                 target,
                 cached,
                 revision,
-            } if clocks.available(self.tap) => Ok(Some(if revision == clocks.revision {
+            } if clocks.available(self.tap) => Ok(Some(if revision == clocks.revision.0 {
                 cached
             } else {
                 clocks.edge(target, self.tap)?
@@ -546,28 +682,114 @@ impl ClockWait {
             _ => Ok(None),
         }
     }
+    /// The CPU clock ordinal of the `count`-th edge after the next, when
+    /// it is on the CPU clock or on a system clock locked to it
+    /// (`Clocks::cpu_lock`). None otherwise, and while not running.
+    pub(crate) fn cpu_edge(&self, count: u64, clocks: &Clocks) -> Option<u64> {
+        let (first, period) = self.cpu_run(clocks)?;
+        first.checked_add(count.checked_mul(period)?)
+    }
+    /// First edge and period on the CPU clock while the sources are locked.
+    /// A shared prescaler changes the first edge's phase, not its stride.
+    #[inline]
+    pub(crate) fn cpu_run(&self, clocks: &Clocks) -> Option<(u64, u64)> {
+        let WaitState::Running { target, .. } = self.state else {
+            return None;
+        };
+        if !clocks.available(self.tap) {
+            return None;
+        }
+        match self.tap.source {
+            Source::Cpu if self.tap.divide == 1 => Some((target, 1)),
+            Source::System => Some((
+                clocks
+                    .system_edge(target, self.tap)
+                    .ok()?
+                    .wrapping_add(clocks.cpu_lock()?),
+                u64::from(self.tap.divide),
+            )),
+            _ => None,
+        }
+    }
+    /// `after` from the time of the CPU clock's `ordinal`-th edge, when
+    /// that edge places the tap without a timestamp (see `cpu_edge`).
+    pub(crate) fn after_cpu(
+        ordinal: u64,
+        edges: u64,
+        tap: Tap,
+        clocks: &Clocks,
+    ) -> Option<Result<Self, Error>> {
+        if edges == 0 || tap.divide == 0 || !clocks.available(tap) {
+            return None;
+        }
+        let ticks = match tap.source {
+            Source::Cpu if tap.divide == 1 => ordinal,
+            Source::System => clocks.system_ticks(ordinal.wrapping_sub(clocks.cpu_lock()?), tap),
+            _ => return None,
+        };
+        Some((|| {
+            let target = ticks.checked_add(edges).ok_or(TimeError::Overflow)?;
+            Ok(Self {
+                tap,
+                state: WaitState::Running {
+                    target,
+                    cached: clocks.edge(target, tap)?,
+                    revision: clocks.revision.0,
+                },
+            })
+        })())
+    }
+    /// Upcoming edges of a running wait strictly before `end`.
+    pub(crate) fn edges_before(&self, end: Time, clocks: &Clocks) -> u64 {
+        match self.state {
+            WaitState::Running { target, .. } if clocks.available(self.tap) && end > Time::ZERO => {
+                let done = clocks.ticks(Time::from_raw(end.raw() - 1), self.tap);
+                (done + 1).saturating_sub(target)
+            }
+            _ => 0,
+        }
+    }
+    /// Move a running wait `edges` edges on, as if each had been followed.
+    pub(crate) fn follow_by(&mut self, edges: u64, clocks: &Clocks) -> Result<(), Error> {
+        let WaitState::Running { target, .. } = self.state else {
+            return Err(Error::Internal("skipped edges of an unscheduled wait"));
+        };
+        let target = target.checked_add(edges).ok_or(TimeError::Overflow)?;
+        self.state = WaitState::Running {
+            target,
+            cached: if clocks.available(self.tap) {
+                clocks.edge(target, self.tap)?
+            } else {
+                Time::MAX
+            },
+            revision: clocks.revision.0,
+        };
+        Ok(())
+    }
     /// Continue a completed periodic wait on the same divider. Its ordinal
     /// identifies the consumed edge without converting its timestamp back to a count.
-    pub(crate) fn following_edge(self, clocks: &Clocks) -> Result<Self, Error> {
+    pub(crate) fn follow(&mut self, clocks: &Clocks) -> Result<(), Error> {
         let target = match self.state {
             WaitState::Running { target, .. } => {
                 target.checked_add(1).ok_or(TimeError::Overflow)?
             }
-            WaitState::Ready(at) => return Self::after(at, 1, self.tap, clocks),
+            WaitState::Ready(at) => {
+                *self = Self::after(at, 1, self.tap, clocks)?;
+                return Ok(());
+            }
             WaitState::Paused { .. } => return Err(Error::Internal("unfinished periodic wait")),
         };
-        Ok(Self {
-            tap: self.tap,
-            state: WaitState::Running {
-                target,
-                cached: if clocks.available(self.tap) {
-                    clocks.edge(target, self.tap)?
-                } else {
-                    Time::MAX
-                },
-                revision: clocks.revision,
-            },
-        })
+        let cached = if clocks.available(self.tap) {
+            clocks.edge(target, self.tap)?
+        } else {
+            Time::MAX
+        };
+        self.state = WaitState::Running {
+            target,
+            cached,
+            revision: clocks.revision.0,
+        };
+        Ok(())
     }
     pub fn pause(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
         if self.deadline(clocks)?.is_some_and(|at| at < now) {
@@ -646,103 +868,8 @@ impl Clocks {
             .validate(self.raw_ticks(now, Source::System))?;
         self.prescaler_w
             .validate(self.raw_ticks(now, Source::Watch) / 4)?;
-        self.revision = 0;
+        self.revision = Revision(fresh_revision());
+        self.lock = LockMemo::default();
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn periodic_edges_retain_phase_across_clock_and_divider_changes() {
-        for tap in [Tap::cpu(), Tap::system(2), Tap::system(128), Tap::watch(16)] {
-            let mut clocks = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();
-            let mut wait = ClockWait::after(Time::from_micros(13), 1, tap, &clocks).unwrap();
-            for step in 0..32 {
-                let now = wait.deadline(&clocks).unwrap().unwrap();
-                if step == 8 {
-                    clocks.select_system(now, Source::Watch, 2).unwrap();
-                }
-                if step == 16 {
-                    clocks.reset_prescalers(now).unwrap();
-                }
-                let expected = ClockWait::after(now, 1, tap, &clocks).unwrap();
-                wait = wait.following_edge(&clocks).unwrap();
-                assert_eq!(wait, expected);
-            }
-        }
-    }
-    #[test]
-    fn shared_dividers_reset_and_hold_without_rephasing_watch_input() {
-        let mut c = Clocks::new(
-            Time::ZERO,
-            Frequencies {
-                main_hz: 1_000_000,
-                watch_hz: 1_000_000,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let t = Time::from_micros;
-        assert_eq!(c.ticks(t(6), Tap::system(4)), 1);
-        c.reset_prescalers(t(6)).unwrap();
-        c.set_prescalers(t(6), false, false).unwrap();
-        assert_eq!(c.ticks(t(11), Tap::system(4)), 1);
-        assert_eq!(c.ticks(t(11), Tap::watch(4)), 2);
-        assert_eq!(c.ticks(t(11), Tap::watch(16)), 0);
-        c.set_prescalers(t(11), true, true).unwrap();
-        assert_eq!(c.edge(2, Tap::system(4)).unwrap(), t(15));
-        // W starts with the next upstream phiW/4 edge at 12, then 16,20,24.
-        assert_eq!(c.edge(1, Tap::watch(16)).unwrap(), t(24));
-        assert!(c.high(t(12), Tap::system(4)));
-        assert!(!c.high(t(13), Tap::system(4)));
-        assert!(c.high(t(15), Tap::system(4)));
-        c.set_prescalers(t(29), false, false).unwrap();
-        assert_eq!(c.ticks(t(43), Tap::watch(16)), 1);
-        c.set_prescalers(t(43), true, true).unwrap();
-        // S restarts from zero; W resumes its retained five-input-edge phase.
-        assert_eq!(c.after(t(43), 1, Tap::system(4)).unwrap(), t(47));
-        assert_eq!(c.after(t(43), 1, Tap::watch(16)).unwrap(), t(52));
-    }
-    #[test]
-    fn cpu_subclock_selection_does_not_replace_system_phi() {
-        let mut c = Clocks::new(
-            Time::ZERO,
-            Frequencies {
-                main_hz: 1_000_000,
-                watch_hz: 100_000,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        c.select_subclock(Time::ZERO, 2).unwrap();
-        let now = Time::from_micros(37);
-        c.select_cpu(now, true).unwrap();
-        assert_eq!(c.after(now, 1, Tap::cpu()).unwrap(), Time::from_micros(40));
-        assert_eq!(
-            c.after(now, 1, Tap::system(1)).unwrap(),
-            Time::from_micros(38)
-        );
-        assert_eq!(c.system_rate(), (1_000_000, 1));
-    }
-    #[test]
-    fn divided_clocks_share_their_source_phase() {
-        let c = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();
-        let t = c.edge(17, Tap::system(4)).unwrap();
-        assert_eq!(c.ticks(t, Tap::system(1)), 68);
-        assert_eq!(c.ticks(t, Tap::system(4)), 17);
-        assert_eq!(c.ticks(Time::from_raw(t.raw() - 1), Tap::system(4)), 16);
-    }
-    #[test]
-    fn clock_change_preserves_edge_ordinal() {
-        let mut c = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();
-        let t = c.edge(100, Tap::system(1)).unwrap();
-        c.select_system(t, Source::Watch, 1).unwrap();
-        assert_eq!(c.ticks(t, Tap::system(1)), 100);
-        assert_eq!(
-            c.ticks(c.after(t, 4, Tap::system(1)).unwrap(), Tap::system(4)),
-            26
-        );
     }
 }

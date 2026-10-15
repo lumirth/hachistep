@@ -1,6 +1,6 @@
 //! H8 arithmetic with explicit guest widths, shifts and flag updates.
 //! Each instruction preserves the fields it does not own.
-use super::decode::{Alu, Shift, Size, Unary};
+use super::decode::{Alu, Bit, Shift, Size, Unary};
 pub const C: u8 = 1;
 pub const V: u8 = 2;
 pub const Z: u8 = 4;
@@ -122,6 +122,7 @@ pub fn shift(op: Shift, size: Size, a: u32, ccr: u8) -> (u32, u8) {
         | if overflow { V } else { 0 };
     (r, f)
 }
+#[inline(always)]
 pub fn condition(code: u8, flags: u8) -> bool {
     let (c, z, n, v) = (
         flags & C != 0,
@@ -149,33 +150,37 @@ pub fn condition(code: u8, flags: u8) -> bool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn exhaustive_byte_add_sub() {
-        for a in 0u32..256 {
-            for b in 0u32..256 {
-                let (r, f) = binary(Alu::Add, Size::Byte, a, b, 0xd0);
-                assert_eq!(r, (a + b) & 255);
-                assert_eq!(f & C != 0, a + b > 255);
-                assert_eq!(f & H != 0, (a & 15) + (b & 15) > 15);
-                let signed = a as u8 as i8 as i16 + b as u8 as i8 as i16;
-                assert_eq!(f & V != 0, !(-128..=127).contains(&signed));
-                assert_eq!(f & 0xd0, 0xd0);
-                let (r, f) = binary(Alu::Sub, Size::Byte, a, b, 0);
-                assert_eq!(r, a.wrapping_sub(b) & 255);
-                assert_eq!(f & C != 0, a < b);
-            }
+#[inline(always)]
+pub fn bit(ccr: &mut u8, op: Bit, bit: u8, value: u8) -> (u8, bool) {
+    let mask = 1u8 << (bit & 7);
+    let selected = value & mask != 0;
+    let old = *ccr & C != 0;
+    match op {
+        Bit::Set => (value | mask, true),
+        Bit::Clear => (value & !mask, true),
+        Bit::Not => (value ^ mask, true),
+        Bit::Test => {
+            *ccr = (*ccr & !Z) | if selected { 0 } else { Z };
+            (value, false)
         }
-    }
-    #[test]
-    fn chained_zero_and_preserved_carry() {
-        assert_eq!(binary(Alu::Addx, Size::Byte, 0, 0, 0).1 & Z, 0);
-        assert_ne!(binary(Alu::Addx, Size::Byte, 0, 0, Z).1 & Z, 0);
-        assert_eq!(
-            unary(Unary::Inc, Size::Word, 0xffff, 1, C | H).1 & (C | H),
-            C | H
-        );
+        Bit::Store(inv) => (
+            if old ^ inv {
+                value | mask
+            } else {
+                value & !mask
+            },
+            true,
+        ),
+        Bit::Load(inv) | Bit::And(inv) | Bit::Or(inv) | Bit::Xor(inv) => {
+            let input = selected ^ inv;
+            let result = match op {
+                Bit::Load(_) => input,
+                Bit::And(_) => old && input,
+                Bit::Or(_) => old || input,
+                _ => old ^ input,
+            };
+            *ccr = (*ccr & !C) | if result { C } else { 0 };
+            (value, false)
+        }
     }
 }

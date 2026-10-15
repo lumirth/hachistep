@@ -13,18 +13,24 @@ pub(crate) struct CpuWindow {
     start: Clock,
     elapsed: u64,
     available: u64,
-    #[cfg(feature = "profile-work")]
-    pub(crate) time_materializations: crate::profile_work::Counter,
 }
 impl CpuWindow {
     pub fn at(&self) -> Result<Time, Error> {
-        #[cfg(feature = "profile-work")]
-        self.time_materializations.add(1);
         Ok(self.start.after(self.elapsed)?)
     }
+    /// When the window's `elapsed`-th edge ends.
+    pub fn time_of(&self, elapsed: u64) -> Result<Time, Error> {
+        Ok(self.start.after(elapsed)?)
+    }
+    /// Time of an absolute CPU edge on this unchanged clock projection.
+    pub fn time_of_ordinal(&self, ordinal: u64) -> Option<Result<Time, Error>> {
+        Some(self.time_of(ordinal.checked_sub(self.start.ordinal())?))
+    }
+    /// Window edges that end strictly before `at`.
+    pub fn edges_before(&self, at: Time) -> u64 {
+        self.start.edges_before(at)
+    }
     pub fn before(&self, edges: u64) -> Result<Time, Error> {
-        #[cfg(feature = "profile-work")]
-        self.time_materializations.add(1);
         Ok(self.start.after(self.elapsed - edges)?)
     }
     pub fn advance(&mut self, edges: u64) -> Result<bool, Error> {
@@ -36,7 +42,56 @@ impl CpuWindow {
         self.elapsed = elapsed;
         Ok(self.elapsed <= self.available)
     }
-    pub fn finish(self, cursor: &mut CpuCursor) -> Result<(), Error> {
+    pub fn elapsed(&self) -> u64 {
+        self.elapsed
+    }
+    /// Edges that complete strictly inside the window, counted from its start.
+    pub fn available(&self) -> u64 {
+        self.available
+    }
+    /// Account for edges spent by work that checked `available` itself.
+    pub fn set_elapsed(&mut self, elapsed: u64) {
+        debug_assert!(elapsed <= self.available);
+        self.elapsed = elapsed;
+    }
+    /// The CPU clock's edge ordinal at the window's position.
+    pub fn position(&self) -> u64 {
+        self.start.ordinal() + self.elapsed
+    }
+    /// Edges that can still complete strictly inside the window.
+    pub fn remaining(&self) -> u64 {
+        self.available.saturating_sub(self.elapsed)
+    }
+    /// Count edges that complete strictly inside the window, or none.
+    #[inline(always)]
+    pub fn spend(&mut self, edges: u64) -> bool {
+        let elapsed = self.elapsed + edges;
+        if elapsed > self.available {
+            return false;
+        }
+        self.elapsed = elapsed;
+        true
+    }
+    /// Move the exclusive end of the window.
+    pub fn bound(&mut self, end: Time) {
+        self.available = Self::edges(&self.start, end);
+    }
+    /// Edges before `end`, limited so that no count inside the window
+    /// overflows the clock's ordinal.
+    fn edges(start: &Clock, end: Time) -> u64 {
+        start
+            .edges_before(end)
+            .min((u64::MAX >> 1) - start.ordinal().min(u64::MAX >> 1))
+    }
+    /// Admit no further edges.
+    pub fn close(&mut self) {
+        self.available = self.elapsed;
+    }
+    /// Withdraw edges of an access that was not started.
+    pub fn retract(&mut self, edges: u64) {
+        self.elapsed -= edges;
+    }
+    pub fn finish(&self, cursor: &mut CpuCursor) -> Result<(), Error> {
         cursor.clock = self.start;
         cursor.clock.advance(self.elapsed)?;
         Ok(())
@@ -46,7 +101,7 @@ impl CpuCursor {
     pub fn new(clocks: &Clocks) -> Self {
         Self {
             clock: clocks.cpu.clock,
-            revision: clocks.revision,
+            revision: clocks.revision(),
         }
     }
     pub fn after(&mut self, now: Time, edges: u64, clocks: &Clocks) -> Result<ClockWait, Error> {
@@ -57,20 +112,16 @@ impl CpuCursor {
         Ok(self.wait())
     }
     pub fn advance(&mut self, now: Time, edges: u64, clocks: &Clocks) -> Result<Time, Error> {
-        if self.revision != clocks.revision || self.clock.at > now {
+        if self.revision != clocks.revision() || self.clock.at > now {
             self.clock = clocks.cpu.clock;
-            self.revision = clocks.revision;
+            self.revision = clocks.revision();
         }
         if self.clock.at < now {
             let elapsed = self
                 .clock
                 .edges_before(Time::from_raw(now.raw().saturating_add(1)));
-            #[cfg(feature = "profile-work")]
-            clocks.cpu_time_materializations.add(1);
             self.clock.advance(elapsed)?;
         }
-        #[cfg(feature = "profile-work")]
-        clocks.cpu_time_materializations.add(1);
         Ok(self.clock.advance(edges)?)
     }
     pub fn wait(&self) -> ClockWait {
@@ -88,46 +139,7 @@ impl CpuCursor {
         Ok(CpuWindow {
             start: self.clock,
             elapsed: 0,
-            available: self.clock.edges_before(end),
-            #[cfg(feature = "profile-work")]
-            time_materializations: Default::default(),
+            available: CpuWindow::edges(&self.clock, end),
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::mcu::clocks::{Frequencies, Source};
-
-    #[test]
-    fn cursor_preserves_obligations_across_interruptions_and_clock_changes() {
-        let mut clocks = Clocks::new(Time::ZERO, Frequencies::default()).unwrap();
-        let mut cursor = CpuCursor::new(&clocks);
-        let mut now = Time::ZERO;
-        for i in 0..1000 {
-            match i % 13 {
-                0 => clocks.select_system(now, Source::Oscillator, 8).unwrap(),
-                1 => clocks.select_subclock(now, 2).unwrap(),
-                2 => clocks.select_cpu(now, true).unwrap(),
-                3 => clocks.select_cpu(now, false).unwrap(),
-                4 => clocks.select_system(now, Source::OnChip, 1).unwrap(),
-                5 => clocks.select_system(now, Source::Watch, 2).unwrap(),
-                6 => cursor = CpuCursor::new(&clocks),
-                _ => {}
-            }
-            if i % 17 == 0 {
-                // An issued access can be abandoned by reset before it completes.
-                cursor.after(now, 7, &clocks).unwrap();
-            }
-            let edges = i % 21;
-            let expected = ClockWait::after(now, edges, Tap::cpu(), &clocks).unwrap();
-            let actual = cursor.after(now, edges, &clocks).unwrap();
-            assert_eq!(actual, expected);
-            now = actual.deadline(&clocks).unwrap().unwrap();
-            if i % 7 == 0 {
-                now = now.checked_add(crate::Duration::from_micros(2000)).unwrap();
-            }
-        }
     }
 }

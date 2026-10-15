@@ -77,10 +77,10 @@ impl Control {
         }
         self.nmi_level = high;
     }
-    pub(crate) fn clock_register(a: u16) -> bool {
+    pub(crate) const fn clock_register(a: u16) -> bool {
         matches!(a, 0xfff0 | 0xfff1 | 0xfff5 | 0xfffa | 0xfffb)
     }
-    pub fn handles(a: u16) -> bool {
+    pub const fn handles(a: u16) -> bool {
         matches!(a, 0xfff0..=0xfff7 | 0xfffa | 0xfffb)
     }
     pub fn read(&self, a: u16) -> u8 {
@@ -141,6 +141,9 @@ impl Control {
             }
         }
         self.irq_levels = levels;
+    }
+    pub(crate) fn boundary_pending(&self) -> bool {
+        self.irq_clear_delay != [0; 3]
     }
     pub(crate) fn instruction_boundary(&mut self) {
         for delay in &mut self.irq_clear_delay {

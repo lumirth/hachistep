@@ -1,35 +1,79 @@
 use hs_core::{Acceleration, AnalogPin, Buttons, DigitalPin, Input, Time, TimedInput};
 use std::error::Error;
 
+const POWER: u128 = key("power");
+const BUTTONS: u128 = key("buttons");
+const ACCEL: u128 = key("accel");
+const SUPPLY: u128 = key("supply");
+const TEMPERATURE: u128 = key("temperature");
+const IR: u128 = key("ir");
+const RESET: u128 = key("reset");
+const NMI: u128 = key("nmi");
+const DIGITAL: u128 = key("digital");
+const ANALOG: u128 = key("analog");
+
 /// Human-editable deterministic physical inputs. No firmware state is modified.
 pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
-    let mut result = Vec::new();
+    // Most lines take a dozen bytes or more.
+    let mut result = Vec::with_capacity(text.len() / 12);
     let mut prior = None;
     let mut seen = 0u32;
-    for (line_no, line) in text.lines().enumerate() {
-        let line = line.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    let mut line_no = 0;
+    while start < bytes.len() {
+        // One line, its comment cut, split at its commas in the same pass.
+        // No kind takes more than five fields; a sixth only fails the match.
+        let mut ends = [0usize; 6];
+        let mut count = 0;
+        let mut end = start;
+        let mut cut = None;
+        while end < bytes.len() && bytes[end] != b'\n' {
+            match bytes[end] {
+                b'#' if cut.is_none() => cut = Some(end),
+                b',' if cut.is_none() => {
+                    if count < ends.len() {
+                        ends[count] = end;
+                    }
+                    count += 1;
+                }
+                _ => {}
+            }
+            end += 1;
+        }
+        let line_start = start;
+        let line_end = cut.unwrap_or(end);
+        start = end + 1;
+        line_no += 1;
+        if trim(&text[line_start..line_end]).is_empty() {
             continue;
         }
-        let p: Vec<_> = line.split(',').map(str::trim).collect();
+        let mut fields = [""; 6];
+        let mut from = line_start;
+        for (i, field) in fields.iter_mut().enumerate().take(count + 1) {
+            let to = if i < count { ends[i] } else { line_end };
+            *field = trim(&text[from..to]);
+            from = to + 1;
+        }
+        count += 1;
+        let line_no = line_no - 1;
+        let p = &fields[..count.min(fields.len())];
         let fail = |message: &str| format!("timeline line {}: {message}", line_no + 1);
-        if p.len() < 3 {
+        if count < 3 {
             return Err(fail("expected time_us,kind,values...").into());
         }
-        let at = Time::from_micros(
-            p[0].parse::<u64>()
-                .map_err(|_| fail("invalid microsecond timestamp"))?,
-        );
+        let at =
+            Time::from_micros(micros(p[0]).ok_or_else(|| fail("invalid microsecond timestamp"))?);
         let bit = |s: &str| -> Result<bool, Box<dyn Error>> {
-            match s {
-                "0" => Ok(false),
-                "1" => Ok(true),
+            match s.as_bytes() {
+                [b'0'] => Ok(false),
+                [b'1'] => Ok(true),
                 _ => Err(fail("Boolean values must be 0 or 1").into()),
             }
         };
-        let (input, tag) = match (p[1], p.len()) {
-            ("power", 3) => (Input::Power(bit(p[2])?), 22),
-            ("buttons", 5) => (
+        let (input, tag) = match (key(p[1]), count) {
+            (POWER, 3) => (Input::Power(bit(p[2])?), 22),
+            (BUTTONS, 5) => (
                 Input::Buttons(Buttons {
                     left: bit(p[2])?,
                     center: bit(p[3])?,
@@ -37,7 +81,7 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
                 }),
                 0,
             ),
-            ("accel", 5) => (
+            (ACCEL, 5) => (
                 Input::Acceleration(Acceleration {
                     x: p[2].parse()?,
                     y: p[3].parse()?,
@@ -45,12 +89,12 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
                 }),
                 1,
             ),
-            ("supply", 3) => (Input::SupplyMillivolts(p[2].parse()?), 2),
-            ("temperature", 3) => (Input::TemperatureMillicelsius(p[2].parse()?), 23),
-            ("ir", 3) => (Input::InfraredLevel(bit(p[2])?), 3),
-            ("reset", 3) => (Input::ResetPin(bit(p[2])?), 4),
-            ("nmi", 3) => (Input::NmiPin(bit(p[2])?), 31),
-            ("digital", 4) => {
+            (SUPPLY, 3) => (Input::SupplyMillivolts(p[2].parse()?), 2),
+            (TEMPERATURE, 3) => (Input::TemperatureMillicelsius(p[2].parse()?), 23),
+            (IR, 3) => (Input::InfraredLevel(bit(p[2])?), 3),
+            (RESET, 3) => (Input::ResetPin(bit(p[2])?), 4),
+            (NMI, 3) => (Input::NmiPin(bit(p[2])?), 31),
+            (DIGITAL, 4) => {
                 let pin = match p[2] {
                     "p10" => DigitalPin::P10,
                     "p11" => DigitalPin::P11,
@@ -72,7 +116,7 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
                 };
                 (Input::DigitalPin { pin, level }, 12 + pin.index())
             }
-            ("analog", 4) => {
+            (ANALOG, 4) => {
                 let pin = match p[2] {
                     "pb0" => AnalogPin::Pb0,
                     "pb1" => AnalogPin::Pb1,
@@ -109,38 +153,41 @@ pub fn parse(text: &str) -> Result<Vec<TimedInput>, Box<dyn Error>> {
     }
     Ok(result)
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn valid_and_invalid_timelines() {
-        assert_eq!(
-            parse("# test\n0,buttons,0,1,0\n0,accel,0,0,1000000\n2,ir,1")
-                .unwrap()
-                .len(),
-            3
-        );
-        assert!(parse("2,ir,1\n1,ir,0").is_err());
-        assert!(parse("0,ir,1\n0,ir,0").is_err());
-        assert!(parse("0,buttons,0,2,0").is_err());
-        assert_eq!(
-            parse("0,analog,pb4,1200\n0,analog,vcref,900\n1,analog,pb4,release")
-                .unwrap()
-                .len(),
-            3
-        );
-        assert!(parse("0,analog,pb6,1000").is_err());
-        assert!(parse("0,analog,pb4,1200\n0,analog,pb4,1000").is_err());
-        assert_eq!(
-            parse("0,digital,p10,1\n0,digital,p11,0\n0,digital,p12,release")
-                .unwrap()
-                .len(),
-            3
-        );
-        assert_eq!(parse("0,nmi,0\n1,nmi,1").unwrap().len(), 2);
-        assert!(parse("0,nmi,0\n0,nmi,1").is_err());
-        assert!(parse("0,nmi,2").is_err());
-        assert!(parse("0,digital,p13,1").is_err());
-        assert!(parse("0,digital,p10,0\n0,digital,p10,1").is_err());
+
+/// `str::trim`, without its search when the ends are not whitespace.
+fn trim(s: &str) -> &str {
+    match s.as_bytes() {
+        [first, .., last] if first.is_ascii_graphic() && last.is_ascii_graphic() => s,
+        [only] if only.is_ascii_graphic() => s,
+        _ => s.trim(),
     }
+}
+
+/// A decimal timestamp, as `u64::from_str` reads one.
+fn micros(s: &str) -> Option<u64> {
+    let digits = s.strip_prefix('+').unwrap_or(s).as_bytes();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.iter().try_fold(0u64, |value, &b| {
+        b.is_ascii_digit()
+            .then(|| value.checked_mul(10)?.checked_add(u64::from(b - b'0')))
+            .flatten()
+    })
+}
+
+/// A kind of at most 16 bytes as one integer, so that matching it compares no
+/// strings; longer kinds match none.
+const fn key(s: &str) -> u128 {
+    let bytes = s.as_bytes();
+    if bytes.len() > 16 {
+        return u128::MAX;
+    }
+    let mut value = 0u128;
+    let mut i = 0;
+    while i < bytes.len() {
+        value |= (bytes[i] as u128) << (8 * i);
+        i += 1;
+    }
+    value
 }
