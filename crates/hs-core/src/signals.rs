@@ -102,12 +102,27 @@ pub enum Event {
 /// wrapped EEPROM write encloses the whole page. A flash pulse can
 /// report progress before it ends. The callback must not re-enter the machine.
 ///
+/// Events arrive in timestamp order, unless the sink accepts late output
+/// (`exact_stops`): then each source's events are still in order, but a serial
+/// device's events (LCD, EEPROM) and the infrared transmitter's can follow
+/// other events with later timestamps. Every event carries its exact time.
+///
 /// Return `Break(())` to end `Machine::run_until` after all effects at the
-/// current timestamp finish. Further events at that timestamp are still delivered.
-/// The returned exclusive horizon is one time quantum after those effects.
+/// current timestamp finish. Further events at that timestamp are still
+/// delivered. The returned exclusive horizon is one time quantum after those
+/// effects, or the CPU's later position for a sink that accepts late output.
 /// Immediate power operations finish completely regardless of this return value.
 pub trait Output {
     fn event(&mut self, event: Event) -> ControlFlow<()>;
+    /// Whether a `Break` must end the run one quantum after the event that
+    /// returned it. A sink that never stops, or stops only to abandon the run,
+    /// returns false; the core may then perform plain serial work and infrared
+    /// transmission late, when it is next observed, delivering its events after other sources' later
+    /// events and ending a stopped run at the CPU's position. Hardware behavior
+    /// and every source's event order are the same either way.
+    fn exact_stops(&self) -> bool {
+        true
+    }
 }
 impl<F: FnMut(Event) -> ControlFlow<()>> Output for F {
     fn event(&mut self, event: Event) -> ControlFlow<()> {
@@ -118,11 +133,17 @@ impl Output for () {
     fn event(&mut self, _: Event) -> ControlFlow<()> {
         ControlFlow::Continue(())
     }
+    fn exact_stops(&self) -> bool {
+        false
+    }
 }
 impl Output for Vec<Event> {
     fn event(&mut self, event: Event) -> ControlFlow<()> {
         self.push(event);
         ControlFlow::Continue(())
+    }
+    fn exact_stops(&self) -> bool {
+        false
     }
 }
 

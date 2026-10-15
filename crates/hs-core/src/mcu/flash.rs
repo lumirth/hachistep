@@ -1,5 +1,5 @@
 //! H8/38606F flash: software-controlled pulses, persistent cell exposure and
-//! a four-byte verify sense latch. See docs/accuracy/flash.md.
+//! a four-byte verify sense latch. See docs/HARDWARE.md#nonvolatile-programming.
 use super::{control::Mode, FLASH_SIZE};
 use crate::{
     cpu::Width,
@@ -98,7 +98,7 @@ enum Supply {
 /// Ordinary-read permission for an exclusive MCU interval. Its holder must
 /// return before flash control, protection, supply or clock conditions change.
 #[derive(Clone, Copy)]
-pub(super) struct NormalRead(());
+pub(crate) struct NormalRead(());
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Flash {
@@ -125,7 +125,31 @@ pub struct Flash {
     verify_ready: Time,
     verify_pending: Option<(u16, Time)>,
     sensed: [u8; 4],
+    #[borsh(skip)]
+    generation: Generation,
 }
+/// Identifies the cell contents for decoded-instruction caches: every array
+/// and every change of its cells takes a value no other contents had. Not
+/// state; copies keep it because their contents are the same.
+#[derive(Clone, Debug)]
+struct Generation(u64);
+impl Generation {
+    fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+impl Default for Generation {
+    fn default() -> Self {
+        Self::next()
+    }
+}
+impl PartialEq for Generation {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Eq for Generation {}
 fn after(now: Time, micros: u64) -> Result<Time, Error> {
     now.checked_add(Duration::from_micros(micros))
         .ok_or(TimeError::Overflow.into())
@@ -178,7 +202,12 @@ impl Flash {
             verify_ready: Time::ZERO,
             verify_pending: None,
             sensed: [0xff; 4],
+            generation: Generation::next(),
         })
+    }
+    /// Changes whenever the cells change (see `Generation`).
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation.0
     }
     pub fn handles(a: u16) -> bool {
         matches!(a, 0xf020..=0xf023 | 0xf02b)
@@ -316,6 +345,7 @@ impl Flash {
                         }
                         if self.bytes[address + byte] != sensed {
                             self.bytes[address + byte] = sensed;
+                            self.generation = Generation::next();
                             let _ = out.event(Event::NvByte {
                                 at: now,
                                 domain: NvDomain::InternalFlash,
@@ -393,11 +423,16 @@ impl Flash {
             && self.supply != Supply::Stopped
             && now >= self.ready.max(self.recovery)
     }
-    pub(super) fn normal_read(&self, now: Time) -> Option<NormalRead> {
+    pub(crate) fn normal_read(&self, now: Time) -> Option<NormalRead> {
         self.normal(now).then_some(NormalRead(()))
     }
-    #[inline]
-    pub(super) fn read_normal(&self, _: NormalRead, address: u16, width: Width) -> u16 {
+    /// The array as normal reads return it.
+    #[inline(always)]
+    pub(crate) fn normal_bytes(&self, _: NormalRead) -> &[u8; FLASH_SIZE] {
+        &self.bytes
+    }
+    #[inline(always)]
+    pub(crate) fn read_normal(&self, _: NormalRead, address: u16, width: Width) -> u16 {
         let i = usize::from(address);
         if width == Width::Word {
             u16::from_be_bytes([self.bytes[i], self.bytes[i + 1]])

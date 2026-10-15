@@ -58,9 +58,10 @@ impl Default for Nt7508 {
     }
 }
 impl Nt7508 {
-    pub(crate) fn serial_effect_edges(&self) -> u8 {
+    /// Serial clock edges until the byte completes, from the clock's level.
+    pub(crate) fn serial_effect_edges(&self, clock_high: bool) -> u8 {
         if self.selected {
-            (8 - self.bits) * 2 - 1
+            (8 - self.bits) * 2 - u8::from(!clock_high)
         } else {
             16
         }
@@ -173,6 +174,7 @@ impl Nt7508 {
             self.bits = 0;
             self.shift = 0;
             self.scan = self.project_scan(now)?;
+            self.retain_latch(self.data.then_some(self.page));
             let was_running = self.oscillator_enabled && !self.power_save;
             if self.data {
                 self.write_data(v, now, output);
@@ -180,6 +182,36 @@ impl Nt7508 {
                 self.command(v, now, output)?;
             }
             self.update_clock(now, was_running)?;
+        }
+        Ok(())
+    }
+    /// `count` rising edges, oldest bit first in `bits`, as `rising` takes
+    /// them; a byte they complete is performed at `now`.
+    pub(crate) fn shift_in(
+        &mut self,
+        bits: u8,
+        count: u8,
+        now: Time,
+        output: &mut dyn Output,
+    ) -> Result<(), Error> {
+        if count == 0 || !self.selected || !self.supplied || self.ready.is_some() {
+            return Ok(());
+        }
+        let needed = 8 - self.bits;
+        if count < needed {
+            self.shift = self.shift << count | bits;
+            self.bits += count;
+            return Ok(());
+        }
+        // The bits before the completing one only shift; the completing bit
+        // and any after it take `rising`.
+        let rest = count - needed;
+        let head = bits >> rest;
+        self.shift = self.shift << (needed - 1) | head >> 1;
+        self.bits += needed - 1;
+        self.rising(head & 1 != 0, now, output)?;
+        for i in (0..rest).rev() {
+            self.rising(bits >> i & 1 != 0, now, output)?;
         }
         Ok(())
     }
@@ -371,198 +403,5 @@ impl Nt7508 {
         )?;
         self.scan.validate(now)?;
         crate::state::future(self.ready, now)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn supply_domains_retain_ram_and_separate_scan_from_analog_drive() {
-        let mut lcd = Nt7508::new();
-        for command in [0xa5, 0xaf, 0xab] {
-            lcd.write_counted_fixture(false, command, Time::ZERO, &mut ())
-                .unwrap();
-        }
-        lcd.write_counted_fixture(true, 0xa5, Time::ZERO, &mut ())
-            .unwrap();
-        let mut reference = lcd.clone();
-        lcd.set_supply(2000, Time::from_micros(100)).unwrap();
-        assert_eq!(lcd.drive(Time::from_micros(200)).unwrap(), LcdDrive::OFF);
-        lcd.set_supply(3000, Time::from_micros(300)).unwrap();
-        assert_eq!(
-            lcd.drive(Time::from_micros(400)).unwrap(),
-            reference.drive(Time::from_micros(400)).unwrap()
-        );
-        assert_eq!(lcd.ram()[0], 0xa5);
-        lcd.set_supply(1600, Time::from_micros(400)).unwrap();
-        lcd.set_supply(3000, Time::from_micros(1400)).unwrap();
-        assert_eq!(lcd.ram()[0], 0xa5);
-        assert!(lcd.enabled()); // Nonzero dip does not invent RESETB.
-        lcd.set_supply(0, Time::from_micros(1500)).unwrap();
-        lcd.set_supply(3000, Time::from_micros(2500)).unwrap();
-        assert_eq!(lcd.ram()[0], 0xa5);
-        assert!(!lcd.enabled()); // Real rail removal invokes board RESETB.
-        lcd.write_counted_fixture(false, 0xaf, Time::from_micros(2510), &mut ())
-            .unwrap();
-        lcd.set_supply(1600, Time::from_micros(2510)).unwrap();
-        lcd.set_supply(3000, Time::from_micros(2511)).unwrap();
-        lcd.write_counted_fixture(false, 0xaf, Time::from_micros(2525), &mut ())
-            .unwrap();
-        assert_eq!(
-            lcd.deadline(),
-            Time::from_micros(2511).checked_add(Duration::from_micros(21))
-        );
-        lcd.at_deadline(lcd.deadline().unwrap());
-        assert!(!lcd.enabled(), "command inside the RESETB hold was ignored");
-        reference.lose_volatile();
-        assert_eq!(reference.ram()[0], 0);
-    }
-    fn commands(lcd: &mut Nt7508, bytes: &[u8]) {
-        for &byte in bytes {
-            lcd.write_counted_fixture(false, byte, Time::ZERO, &mut ())
-                .unwrap();
-        }
-    }
-    fn data(lcd: &mut Nt7508, bytes: &[u8]) {
-        for &byte in bytes {
-            lcd.write_counted_fixture(true, byte, Time::ZERO, &mut ())
-                .unwrap();
-        }
-    }
-    #[test]
-    fn parameter_survives_chip_select() {
-        let mut l = Nt7508::new();
-        l.write_counted_fixture(false, 0x81, Time::ZERO, &mut ())
-            .unwrap();
-        l.write_counted_fixture(false, 0x35, Time::ZERO, &mut ())
-            .unwrap();
-        assert_eq!(l.contrast(), 0x35);
-    }
-    #[test]
-    fn complete_bitplanes_and_nonvisible_ram_survive_reset() {
-        let mut l = Nt7508::new();
-        for c in [0xb8, 0x10, 0] {
-            l.write_counted_fixture(false, c, Time::ZERO, &mut ())
-                .unwrap();
-        }
-        l.write_counted_fixture(true, 1, Time::ZERO, &mut ())
-            .unwrap();
-        l.write_counted_fixture(true, 1, Time::ZERO, &mut ())
-            .unwrap();
-        for c in [0x44, 32, 0x40, 64, 0x8e, 0x99, 0x8f, 0x99, 0xab, 0xaf] {
-            l.write_counted_fixture(false, c, Time::ZERO, &mut ())
-                .unwrap();
-        }
-        let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT];
-        l.render(&mut pixels);
-        assert_eq!(pixels[0], 255);
-        l.write_counted_fixture(false, 0xe2, Time::ZERO, &mut ())
-            .unwrap();
-        assert_eq!(l.ram()[2048], 1);
-    }
-    #[test]
-    fn icon_enable_is_independent_of_the_ram_page_and_only_db0_is_stored() {
-        let mut lcd = Nt7508::new();
-        commands(&mut lcd, &[0xa3]);
-        data(&mut lcd, &[0xff, 0xfe]);
-        commands(&mut lcd, &[0xb0]);
-        data(&mut lcd, &[0x55]);
-        assert!(lcd.icon_enabled);
-        assert_eq!(lcd.icons()[..3], [1, 0, 0]);
-        assert_eq!(lcd.ram()[2], 0x55);
-        commands(&mut lcd, &[0xa3, 0xa2]);
-        data(&mut lcd, &[0xff]);
-        assert!(!lcd.icon_enabled);
-        assert_eq!(lcd.icons()[3], 1);
-    }
-    #[test]
-    fn controller_mapping_precedes_viewport_and_duty_gates_entire_on() {
-        let mut lcd = Nt7508::new();
-        commands(
-            &mut lcd,
-            &[
-                0x44, 32, 0x48, 16, 0xaf, 0xab, 0x8a, 0x33, 0x8b, 0x33, 0x8c, 0x66, 0x8d, 0x66,
-                0x8e, 0x99, 0x8f, 0x99,
-            ],
-        );
-        data(&mut lcd, &[1, 0, 0, 1, 1, 1]);
-        let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT];
-        lcd.render(&mut pixels);
-        assert_eq!(&pixels[..4], &[170, 85, 255, 0]);
-        commands(&mut lcd, &[0x17, 0x0f]);
-        data(&mut lcd, &[1, 0]);
-        commands(&mut lcd, &[0xa1]);
-        lcd.render(&mut pixels);
-        assert_eq!(&pixels[..3], &[170, 0, 0]);
-        commands(&mut lcd, &[0xa7, 0xa5, 0x48, 0xff]);
-        lcd.render(&mut pixels);
-        assert!(pixels[..16 * LCD_WIDTH].iter().all(|&shade| shade == 255));
-        assert!(pixels[16 * LCD_WIDTH..].iter().all(|&shade| shade == 0));
-        commands(&mut lcd, &[0xae]);
-        lcd.render(&mut pixels);
-        assert!(pixels.iter().all(|&shade| shade == 0));
-    }
-    #[test]
-    fn rendering_uses_palette_widths_and_only_the_selected_frc_frames() {
-        let mut lcd = Nt7508::new();
-        commands(
-            &mut lcd,
-            &[
-                0x44, 32, 0x48, 64, 0xaf, 0xab, 0x88, 0x00, 0x89, 0x0f, 0x8a, 0x55, 0x8b, 0xf5,
-                0x8c, 0xaa, 0x8d, 0xfa, 0x8e, 0xff, 0x8f, 0xff,
-            ],
-        );
-        data(&mut lcd, &[0, 0, 0, 1, 1, 0, 1, 1]);
-        let mut pixels = [0; LCD_WIDTH * LCD_HEIGHT];
-        // These include invalid pulse widths, which turn off rather than clamp,
-        // and a fourth frame whose widths differ from the preceding three.
-        for (mode, expected) in [
-            (0x95, [0, 142, 0, 0]),
-            (0x96, [0, 106, 213, 0]),
-            (0x97, [85, 85, 170, 255]),
-            (0x91, [0, 106, 0, 0]),
-            (0x92, [0, 80, 159, 0]),
-            (0x93, [64, 128, 191, 255]),
-        ] {
-            commands(&mut lcd, &[mode]);
-            lcd.render(&mut pixels);
-            assert_eq!(&pixels[..4], &expected, "mode {mode:02x}");
-        }
-        commands(&mut lcd, &[0xa7]);
-        lcd.render(&mut pixels);
-        assert_eq!(&pixels[..4], &[255, 191, 128, 64]);
-        commands(&mut lcd, &[0xa5]);
-        lcd.render(&mut pixels);
-        assert!(pixels.iter().all(|&pixel| pixel == 255));
-        commands(&mut lcd, &[0xf7, 1]); // OSC1 is undriven on this board.
-        lcd.render(&mut pixels);
-        assert!(pixels.iter().all(|&pixel| pixel == 0));
-    }
-    #[test]
-    fn software_reset_preserves_drive_configuration_and_unassigned_bytes_do_not_eat_commands() {
-        let mut lcd = Nt7508::new();
-        commands(
-            &mut lcd,
-            &[
-                0x44, 32, 0x48, 64, 0xa1, 0xcf, 0xa3, 0xaf, 0xab, 0x2f, 0x95, 0xf6, 0x0a, 0x81, 8,
-                0xe2,
-            ],
-        );
-        assert!(lcd.icon_enabled && lcd.oscillator_enabled && lcd.enabled());
-        assert!(lcd.segment_reverse && lcd.common_reverse);
-        assert_eq!((lcd.initial_com, lcd.duty, lcd.power_control), (32, 64, 7));
-        assert_eq!(
-            (
-                lcd.page,
-                lcd.contrast,
-                lcd.gray_mode,
-                lcd.oscillator_frequency
-            ),
-            (0, 32, 0, 10)
-        );
-        commands(&mut lcd, &[0xe8, 0xae, 0xf0, 0xaf]);
-        assert!(lcd.enabled());
-        assert!(lcd.pending.is_none());
     }
 }

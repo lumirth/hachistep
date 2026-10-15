@@ -92,8 +92,18 @@ impl Default for Ssu {
 impl Ssu {
     /// SSCRH includes live MOSI. RDR consumption can start reception. Other
     /// reads expose retained registers or flags changed at effect appointments.
-    pub(crate) fn reads_shift(address: u16) -> bool {
+    pub(crate) const fn reads_shift(address: u16) -> bool {
         matches!(address, 0xf0e0 | 0xf0e9)
+    }
+    /// Only receive-only RDR consumption can schedule a frame. Duplex reads
+    /// consume RDRF but leave the shifter's clock obligations unchanged.
+    pub(crate) fn read_rearms(&self, address: u16) -> bool {
+        address == 0xf0e9 && self.enable & 0xc0 == 0x40
+    }
+    /// Retained registers, and status flags that change only at the effect
+    /// deadline; repeating a status read qualifies the same flags again.
+    pub(crate) const fn settled_read(address: u16) -> bool {
+        matches!(address, 0xf0e1..=0xf0e4 | 0xf0eb)
     }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
         self.next
@@ -116,6 +126,32 @@ impl Ssu {
         self.next.as_ref().map_or(Ok(None), |wait| {
             wait.later_edge(u64::from(count - 1), clocks)
         })
+    }
+    /// Upcoming shift clock edges strictly before `end`.
+    pub(crate) fn edges_before(&self, end: Time, clocks: &Clocks) -> u64 {
+        self.next
+            .as_ref()
+            .map_or(0, |wait| wait.edges_before(end, clocks))
+    }
+    pub(crate) fn later_edge(&self, count: u64, clocks: &Clocks) -> Result<Option<Time>, Error> {
+        self.next
+            .as_ref()
+            .map_or(Ok(None), |wait| wait.later_edge(count, clocks))
+    }
+    /// Whether `input_pins` would leave the observed select level unchanged.
+    pub(crate) fn sees_select(&self, high: bool) -> bool {
+        self.select_high == high
+    }
+    /// One of `quiet_edges`, whose clock obligation `follow_quiet` settles.
+    pub(crate) fn quiet_edge(&mut self) -> Edge {
+        self.clock_high = !self.clock_high;
+        self.shift_edge()
+    }
+    pub(crate) fn follow_quiet(&mut self, edges: u64, clocks: &Clocks) -> Result<(), Error> {
+        self.next
+            .as_mut()
+            .ok_or(Error::Internal("SSU edge without clock obligation"))?
+            .follow_by(edges, clocks)
     }
     pub(crate) fn master(&self) -> bool {
         self.high & 0x80 != 0
@@ -146,15 +182,6 @@ impl Ssu {
         if !self.gate {
             return pins;
         }
-        let drive = |high: bool, open_drain: bool| {
-            if !high {
-                Drive::Low
-            } else if open_drain {
-                Drive::Floating
-            } else {
-                Drive::High
-            }
-        };
         if self.four_line() && self.high & 3 != 0 {
             pins.drives[0] = Some(
                 if self.master() && self.high & 2 != 0 && self.select_active {
@@ -164,15 +191,45 @@ impl Ssu {
                 },
             );
         }
+        if self.enable & 0x40 != 0 {
+            pins.drives[self.input_pin()] = Some(Drive::Floating);
+        }
+        self.shift_pins(pins)
+    }
+    /// `pins` with the drivers that follow the shift clock and data output
+    /// replaced by their current levels: the only ones an edge changes.
+    #[inline]
+    pub(crate) fn shift_pins(&self, pins: Pins) -> Pins {
+        self.shift_pins_at(pins, self.clock_high, self.mosi)
+    }
+    /// The shift clock and data output levels: bit 0 and bit 1.
+    pub(crate) fn shift_levels(&self) -> usize {
+        usize::from(self.clock_high) | usize::from(self.mosi) << 1
+    }
+    /// Whether the due appointment is a shift clock edge of a master frame.
+    pub(crate) fn shifting(&self) -> bool {
+        self.phase == Phase::Edge && self.active && self.master() && self.next.is_some()
+    }
+    /// `shift_pins` with the shift clock and data output at the given levels.
+    pub(crate) fn shift_pins_at(&self, mut pins: Pins, clock_high: bool, mosi: bool) -> Pins {
+        if !self.gate {
+            return pins;
+        }
+        let drive = |high: bool, open_drain: bool| {
+            if !high {
+                Drive::Low
+            } else if open_drain {
+                Drive::Floating
+            } else {
+                Drive::High
+            }
+        };
         if self.high & 4 != 0 {
             pins.drives[1] = Some(if self.master() {
-                drive(self.clock_high, self.low & 0x10 != 0)
+                drive(clock_high, self.low & 0x10 != 0)
             } else {
                 Drive::Floating
             });
-        }
-        if self.enable & 0x40 != 0 {
-            pins.drives[self.input_pin()] = Some(Drive::Floating);
         }
         if self.enable & 0x80 != 0 {
             let output = if self.four_line() && !self.master() && !self.bidirectional() {
@@ -186,12 +243,183 @@ impl Ssu {
                 self.selected()
             };
             pins.drives[output] = Some(if enabled {
-                drive(self.mosi, self.high & 0x20 != 0)
+                drive(mosi, self.high & 0x20 != 0)
             } else {
                 Drive::Floating
             });
         }
         pins
+    }
+    /// Everything `pins` depends on. Equal states have equal pins.
+    pub(crate) fn pin_state(&self) -> [u8; 5] {
+        [
+            self.high,
+            self.low,
+            self.enable,
+            u8::from(self.gate)
+                | u8::from(self.select_active) << 1
+                | u8::from(self.select_high) << 2
+                | u8::from(self.clock_high) << 3
+                | u8::from(self.mosi) << 4,
+            0,
+        ]
+    }
+    /// `pin_state` without what a shift net indexes or ignores: the shift
+    /// outputs, and the master's select drive without an SCS function.
+    pub(crate) fn pin_key(&self) -> [u8; 5] {
+        let mut key = self.pin_state();
+        key[3] &= !0x18;
+        if !self.select_pin() {
+            key[3] &= !0x02;
+        }
+        key
+    }
+    /// Whether frame loads and completions never move a pin: no select
+    /// output, the clock already at its idle level, and no data output
+    /// change while an idle-high clock is high.
+    pub(crate) fn plain_frames(&self) -> bool {
+        !self.select_pin() && !(self.first_edge_samples() && self.idle_high())
+    }
+    /// Whether SCS is the SSU's: the select input and output of four-line
+    /// mode. Otherwise neither the select level nor `select_active` reaches
+    /// the shifter or the pins.
+    fn select_pin(&self) -> bool {
+        self.four_line() && self.high & 3 != 0
+    }
+    /// Whether the due load moves no pin but the data output, with the
+    /// shift clock low if it does (`plain_frames`).
+    pub(crate) fn loads_plainly(&self) -> bool {
+        self.phase == Phase::Load && self.plain_frames() && self.clock_high == self.idle_high()
+    }
+    /// Whether any status flag can request an interrupt.
+    pub(crate) fn interrupts_enabled(&self) -> bool {
+        self.enable & 0x0f != 0
+    }
+    /// No status flag changes before this time but by register accesses:
+    /// flags change at loads, at the sample completing reception and at frame
+    /// completion, where a completion that sets none can still schedule a
+    /// load one CPU state later.
+    pub(crate) fn flag_deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
+        let Some(next) = &self.next else {
+            return Ok(None);
+        };
+        if self.phase == Phase::Load {
+            return next.deadline(clocks);
+        }
+        let last = u64::from(15 - self.edges.min(15));
+        let finish = next
+            .later_edge(last, clocks)?
+            .ok_or(Error::Internal("SSU edge without clock obligation"))?;
+        let completes = if self.transmitting && self.enable & 0x80 != 0 && self.status & 4 != 0 {
+            finish
+        } else {
+            clocks.after(finish, 1, Tap::cpu())?
+        };
+        if self.enable & 0x40 != 0 && self.sampled < 8 {
+            let sample = if self.first_edge_samples() { 15u8 } else { 16 };
+            if let Some(index) = sample.checked_sub(self.edges + 1) {
+                if let Some(at) = next.later_edge(u64::from(index), clocks)? {
+                    return Ok(Some(at.min(completes)));
+                }
+            }
+        }
+        Ok(Some(completes))
+    }
+    /// `deadline` and `flag_deadline` as CPU clock ordinals of the edges
+    /// they fall on, when both are expressible so (`ClockWait::cpu_edge`).
+    pub(crate) fn due_ordinals(&self, clocks: &Clocks) -> Option<(Option<u64>, Option<u64>)> {
+        let Some(next) = &self.next else {
+            return Some((None, None));
+        };
+        let (deadline, period) = next.cpu_run(clocks)?;
+        let edge = |count: u8| deadline.checked_add(u64::from(count).checked_mul(period)?);
+        if self.phase == Phase::Load {
+            return Some((Some(deadline), Some(deadline)));
+        }
+        let finish = edge(15 - self.edges.min(15))?;
+        // The next CPU edge after one on the CPU clock is the one after it.
+        let completes = if self.transmitting && self.enable & 0x80 != 0 && self.status & 4 != 0 {
+            finish
+        } else {
+            finish.checked_add(1)?
+        };
+        if self.enable & 0x40 != 0 && self.sampled < 8 {
+            let sample = if self.first_edge_samples() { 15u8 } else { 16 };
+            if let Some(index) = sample.checked_sub(self.edges + 1) {
+                let at = edge(index)?;
+                return Some((Some(deadline), Some(at.min(completes))));
+            }
+        }
+        Some((Some(deadline), Some(completes)))
+    }
+    /// The CPU clock ordinal of the `count`-th upcoming edge, when
+    /// expressible so (`ClockWait::cpu_edge`).
+    pub(crate) fn cpu_edge(&self, count: u64, clocks: &Clocks) -> Option<u64> {
+        self.next.as_ref()?.cpu_edge(count, clocks)
+    }
+    pub(crate) fn cpu_run(&self, clocks: &Clocks) -> Option<(u64, u64)> {
+        self.next.as_ref()?.cpu_run(clocks)
+    }
+    /// Edges left in the running frame.
+    pub(crate) fn frame_edges(&self) -> u64 {
+        u64::from(16 - self.edges)
+    }
+    /// MSB-first falling/rising pairs, starting between samples. A partial
+    /// leading or trailing edge remains with the ordinary edge shifter.
+    pub(crate) fn output_bits(&self, count: u8) -> Option<u8> {
+        if !self.shifting() || !self.clock_high || self.first_edge_samples() || !self.msb_first {
+            return None;
+        }
+        let mask = 0xff >> (8 - count);
+        Some(if self.transmitting {
+            (self.tx >> (8 - self.shifted - count)) & mask
+        } else if self.mosi {
+            mask
+        } else {
+            0
+        })
+    }
+    pub(crate) fn shifted_bits(&mut self, input: u8, count: u8) {
+        self.edges += 2 * count;
+        if self.transmitting {
+            self.shifted += count;
+            self.mosi = self.output_bit(self.shifted - 1);
+        }
+        self.rx = ((u16::from(self.rx) << count) | u16::from(input)) as u8;
+        self.sampled += count;
+        if self.sampled == 8 {
+            self.finish_sample();
+        }
+    }
+    /// Settle the clock obligation after `edges` of `quiet_edge`: the frame
+    /// ends at its sixteenth edge.
+    pub(crate) fn shifted(&mut self, edges: u64, clocks: &Clocks) -> Result<(), Error> {
+        if self.edges == 16 {
+            self.next = None;
+            Ok(())
+        } else {
+            self.follow_quiet(edges, clocks)
+        }
+    }
+    /// Whether a TDR write now leaves the load schedule alone: a frame is
+    /// shifting, or a load is already due, so the new byte waits for it
+    /// (`schedule_load`).
+    pub(crate) fn loads_later_on_transmit(&self) -> bool {
+        if self.active {
+            // A receive-enabled slave still waiting for its first edge
+            // abandons that frame for the transmit byte.
+            self.master() || self.edges != 0 || self.transmitting
+        } else {
+            self.next.is_some()
+        }
+    }
+    /// Whether `other` keeps this owner's frame and its clock obligation.
+    pub(crate) fn same_schedule(&self, other: &Self) -> bool {
+        self.next == other.next && self.phase == other.phase && self.active == other.active
+    }
+    /// Whether `finish_edge` completes the frame now.
+    pub(crate) fn finishing(&self) -> bool {
+        self.active && self.edges == 16 && self.next.is_none()
     }
     pub fn uses_subclock(&self) -> bool {
         self.mode & 7 == 7
@@ -219,6 +447,16 @@ impl Ssu {
         self.tx & (1u8 << shift) != 0
     }
     fn schedule_load(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
+        self.schedule_load_at(Instant::time(now), clocks)
+    }
+    fn schedule_load_at(&mut self, now: Instant, clocks: &Clocks) -> Result<(), Error> {
+        self.schedule_load_with(|| Ok(now), clocks)
+    }
+    fn schedule_load_with(
+        &mut self,
+        now: impl FnOnce() -> Result<Instant, Error>,
+        clocks: &Clocks,
+    ) -> Result<(), Error> {
         let overrun = self.status & 0x40 != 0;
         let transmit =
             self.enable & 0x80 != 0 && self.status & 4 == 0 && (!self.master() || !overrun);
@@ -238,7 +476,7 @@ impl Ssu {
             && self.gate
         {
             self.phase = Phase::Load;
-            self.next = Some(ClockWait::after(now, 1, Tap::cpu(), clocks)?);
+            self.next = Some(now()?.wait(1, Tap::cpu(), clocks)?);
         }
         Ok(())
     }
@@ -278,6 +516,11 @@ impl Ssu {
             _ => 0,
         }
     }
+    /// Reading SSSR qualifies the flags currently visible for later clearing.
+    pub(crate) fn read_status(&mut self) -> u8 {
+        self.seen = self.status;
+        self.status
+    }
     pub fn read(&mut self, address: u16, now: Time, clocks: &Clocks) -> Result<u8, Error> {
         self.read_at(address, || Ok(now), clocks)
     }
@@ -289,15 +532,16 @@ impl Ssu {
         now: impl FnOnce() -> Result<Time, Error>,
         clocks: &Clocks,
     ) -> Result<u8, Error> {
-        let receive_at = if address == 0xf0e9 && self.enable & 0xc0 == 0x40 {
+        let receive_at = if self.read_rearms(address) {
             Some(now()?)
         } else {
             None
         };
-        let v = self.peek(address);
-        if address == 0xf0e4 {
-            self.seen = v;
-        }
+        let v = if address == 0xf0e4 {
+            self.read_status()
+        } else {
+            self.peek(address)
+        };
         if address == 0xf0e9 {
             self.status &= !2;
             self.seen &= !2;
@@ -316,6 +560,18 @@ impl Ssu {
         now: Time,
         clocks: &Clocks,
     ) -> Result<(), Error> {
+        self.write_at(address, value, mov, || Ok(Instant::time(now)), clocks)
+    }
+    /// Data and flag writes usually leave the current frame scheduled. Obtain
+    /// a timestamp only when the owner actually changes a clock obligation.
+    pub(crate) fn write_at(
+        &mut self,
+        address: u16,
+        value: u8,
+        mov: bool,
+        mut now: impl FnMut() -> Result<Instant, Error>,
+        clocks: &Clocks,
+    ) -> Result<(), Error> {
         match address {
             0xf0e0 => {
                 let was_master = self.master();
@@ -327,13 +583,13 @@ impl Ssu {
                 self.high = (value & 0xe7) | 8;
                 if self.active && was_master != self.master() {
                     self.next = if self.master() {
-                        Some(ClockWait::after(now, 1, self.half_period(), clocks)?)
+                        Some(now()?.wait(1, self.half_period(), clocks)?)
                     } else {
                         None
                     };
                     if !self.gate {
                         if let Some(wait) = &mut self.next {
-                            wait.pause(now, clocks)?;
+                            wait.pause(now()?.time, clocks)?;
                         }
                     }
                 }
@@ -358,7 +614,7 @@ impl Ssu {
                 if let (Phase::Edge, Some(next)) = (self.phase, self.next.as_mut()) {
                     // CKS selects a live prescaler output. Retain the shifter
                     // and remaining half-edge obligation when it changes.
-                    next.select(now, tap, clocks)?;
+                    next.select(now()?.time, tap, clocks)?;
                     if changed & 0x40 != 0 {
                         self.clock_high = !self.clock_high;
                     }
@@ -402,12 +658,20 @@ impl Ssu {
                 })
             }
         }
-        self.schedule_load(now, clocks)
+        self.schedule_load_with(now, clocks)
     }
     /// Produce one clock edge, or perform the distinct holding-to-shift load.
     /// If sampling is requested, the caller resolves attached-device drivers
     /// and calls `sample` at this same timestamp.
     pub fn advance(&mut self, now: Time, clocks: &Clocks) -> Result<Option<Edge>, Error> {
+        self.advance_at(Instant::time(now), clocks)
+    }
+    pub(crate) fn advance_at(
+        &mut self,
+        at: Instant,
+        clocks: &Clocks,
+    ) -> Result<Option<Edge>, Error> {
+        let now = at.time;
         if self.deadline(clocks)? != Some(now) {
             return Err(Error::Internal("SSU event at wrong timestamp"));
         }
@@ -442,22 +706,21 @@ impl Ssu {
                 }
                 self.phase = Phase::Edge;
                 if self.master() {
-                    self.next = Some(ClockWait::after(now, 1, self.half_period(), clocks)?);
+                    self.next = Some(at.wait(1, self.half_period(), clocks)?);
                 }
                 Ok(None)
             }
             Phase::Edge => {
                 self.clock_high = !self.clock_high;
                 let edge = self.shift_edge();
-                self.next = if self.edges < 16 {
-                    Some(
-                        self.next
-                            .ok_or(Error::Internal("SSU edge without clock obligation"))?
-                            .following_edge(clocks)?,
-                    )
+                if self.edges < 16 {
+                    self.next
+                        .as_mut()
+                        .ok_or(Error::Internal("SSU edge without clock obligation"))?
+                        .follow(clocks)?;
                 } else {
-                    None
-                };
+                    self.next = None;
+                }
                 Ok(Some(edge))
             }
         }
@@ -516,7 +779,12 @@ impl Ssu {
             self.rx |= u8::from(high) << self.sampled;
         }
         self.sampled += 1;
-        if self.sampled == 8 && self.enable & 0x40 != 0 && self.status & 0x40 == 0 {
+        if self.sampled == 8 {
+            self.finish_sample();
+        }
+    }
+    fn finish_sample(&mut self) {
+        if self.enable & 0x40 != 0 && self.status & 0x40 == 0 {
             if self.status & 2 != 0 {
                 self.status |= 0x40;
             } else {
@@ -527,7 +795,10 @@ impl Ssu {
         }
     }
     pub fn finish_edge(&mut self, now: Time, clocks: &Clocks) -> Result<(), Error> {
-        if self.active && self.edges == 16 && self.next.is_none() {
+        self.finish_edge_at(Instant::time(now), clocks)
+    }
+    pub(crate) fn finish_edge_at(&mut self, now: Instant, clocks: &Clocks) -> Result<(), Error> {
+        if self.finishing() {
             self.active = false;
             if self.transmitting && self.enable & 0x80 != 0 {
                 self.transmitted = self.transmitted.wrapping_add(1);
@@ -538,7 +809,7 @@ impl Ssu {
             if self.enable & 0x20 != 0 {
                 self.receive_started = false;
             }
-            self.schedule_load(now, clocks)?;
+            self.schedule_load_at(now, clocks)?;
             if self.next.is_none() {
                 self.select_active = false;
             }
@@ -570,84 +841,24 @@ impl Ssu {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn receive_start_uses_the_consuming_read_time_and_preserves_failed_observations() {
-        let c = Clocks::new(
-            Time::ZERO,
-            super::super::clocks::Frequencies {
-                main_hz: 1_000_000,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let mut s = Ssu::default();
-        s.set_gate(true, Time::ZERO, &c).unwrap();
-        s.write(0xf0e0, 0x8c, true, Time::ZERO, &c).unwrap();
-        s.write(0xf0e3, 0x40, true, Time::ZERO, &c).unwrap();
-        assert_eq!(s.deadline(&c).unwrap(), None);
-        let before = s.clone();
-        assert!(s
-            .read_at(
-                0xf0e9,
-                || Err(Error::Internal("unavailable access time")),
-                &c
-            )
-            .is_err());
-        assert_eq!(s, before);
-        assert_eq!(
-            s.read_at(0xf0e9, || Ok(Time::from_micros(123)), &c)
-                .unwrap(),
-            0
-        );
-        assert_eq!(s.deadline(&c).unwrap(), Some(Time::from_micros(124)));
+/// An event time, with the CPU clock ordinal of the edge it falls on when
+/// known, which places clock waits without converting the time back.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Instant {
+    pub time: Time,
+    pub cpu: Option<u64>,
+}
+impl Instant {
+    pub fn time(time: Time) -> Self {
+        Self { time, cpu: None }
     }
-    #[test]
-    fn completed_external_frame_cannot_load_as_an_active_shifter() {
-        let mut s = Ssu {
-            active: true,
-            phase: Phase::Edge,
-            edges: 16,
-            next: None,
-            ..Ssu::default()
-        };
-        assert!(s.validate(false).is_err());
-        // A fault may stop board resolution before the final edge is retired.
-        s.validate(true).unwrap();
-        s.active = false;
-        s.validate(false).unwrap();
-    }
-    #[test]
-    fn holding_shift_and_receive_are_distinct() {
-        let c = Clocks::new(Time::ZERO, Default::default()).unwrap();
-        let mut s = Ssu::default();
-        s.set_gate(true, Time::ZERO, &c).unwrap();
-        for (a, v) in [
-            (0xf0e0, 0x8c),
-            (0xf0e1, 0x40),
-            (0xf0e2, 0x86),
-            (0xf0e3, 0xc0),
-            (0xf0eb, 0x35),
-        ] {
-            s.write(a, v, true, Time::ZERO, &c).unwrap();
+    fn wait(self, edges: u64, tap: Tap, clocks: &Clocks) -> Result<ClockWait, Error> {
+        if let Some(wait) = self
+            .cpu
+            .and_then(|cpu| ClockWait::after_cpu(cpu, edges, tap, clocks))
+        {
+            return wait;
         }
-        assert_eq!(s.status & 12, 0);
-        let t = s.deadline(&c).unwrap().unwrap();
-        let mut completed = t;
-        assert!(s.advance(t, &c).unwrap().is_none());
-        assert_eq!(s.status & 12, 4);
-        while let Some(t) = s.deadline(&c).unwrap() {
-            completed = t;
-            if let Some(edge) = s.advance(t, &c).unwrap() {
-                if edge.sample {
-                    s.sample(edge.mosi);
-                }
-                s.finish_edge(t, &c).unwrap();
-            }
-        }
-        assert_eq!(s.read(0xf0e9, completed, &c).unwrap(), 0x35);
-        assert_eq!(s.status & 14, 12);
+        ClockWait::after(self.time, edges, tap, clocks)
     }
 }

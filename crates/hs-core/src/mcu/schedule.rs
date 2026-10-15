@@ -81,7 +81,9 @@ impl Mcu {
             TIMER_W => self.timer_w.deadline(&self.clocks),
             WATCHDOG => self.watchdog.deadline(&self.clocks),
             SSU => self.ssu.deadline(&self.clocks),
-            SCI => self.sci.deadline(&self.clocks),
+            SCI => self
+                .sci
+                .deadline_with(&self.clocks, self.admission_enables[9]),
             IIC => self.iic.deadline(&self.clocks),
             ADC => self.adc.deadline(&self.clocks),
             COMPARATORS => Ok(self.comparators.deadline()),
@@ -103,45 +105,14 @@ impl Mcu {
         now: impl FnOnce() -> Result<Time, Error>,
         out: &mut dyn Output,
     ) -> Result<bool, Error> {
-        #[cfg(feature = "profile-work")]
-        self.work.calls.add(1);
         // SSU and IIC advance at their interaction appointments through the
         // physical network. An owner identity alone is not a clock dependency.
         if !self.startup.supplied() || mask & !(SSU | IIC) == 0 {
             return Ok(false);
         }
         let now = now()?;
-        #[cfg(feature = "profile-work")]
-        self.work.owners.add(u64::from(
-            (mask & (RTC | TIMER_B1 | TIMER_W | WATCHDOG | SCI | ADC | COMPARATORS | AEC))
-                .count_ones(),
-        ));
-        if mask & SCI != 0 {
-            self.sci.sync(now, &self.clocks)?;
-        }
-        if mask & ADC != 0 {
-            self.adc.sync(now, &self.clocks)?;
-        }
-        if mask & COMPARATORS != 0 {
-            self.comparators.sync(now)?;
-        }
-        if mask & AEC != 0 {
-            self.aec.sync(now, &self.clocks)?;
-            self.collect_aec_requests();
-        }
-        if mask & RTC != 0 {
-            self.rtc.sync(now, &self.clocks)?;
-        }
-        if mask & TIMER_B1 != 0 && self.timer_b1.sync(now, &self.clocks) {
-            self.control.irr2 |= 4;
-        }
-        if mask & TIMER_W != 0 {
-            self.timer_w.sync(now, &self.clocks)?;
-        }
-        let reset = mask & WATCHDOG != 0 && self.watchdog.sync(now, &self.clocks);
+        let reset = self.memory_parts().2.sync(mask, now)?;
         if mask & STARTUP != 0 && self.startup.deadline() == Some(now) {
-            #[cfg(feature = "profile-work")]
-            self.work.owners.add(1);
             self.apply_gates(now, out)?;
         }
         Ok(reset)

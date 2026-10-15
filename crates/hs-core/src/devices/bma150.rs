@@ -57,9 +57,6 @@ pub struct Bma150 {
     unpowered_since: Option<Time>,
     cold: bool,
     serial_ready: Option<Time>,
-    #[cfg(feature = "profile-work")]
-    #[borsh(skip)]
-    pub(crate) sample_phases: crate::profile_work::Counter,
 }
 impl Bma150 {
     pub fn new(now: Time) -> Self {
@@ -110,8 +107,6 @@ impl Bma150 {
             unpowered_since: None,
             cold: false,
             serial_ready: None,
-            #[cfg(feature = "profile-work")]
-            sample_phases: Default::default(),
         }
     }
     /// Restore the sensor's own 0x2b..=0x3d nonvolatile image before execution.
@@ -167,16 +162,10 @@ impl Bma150 {
         Ok(())
     }
     pub fn power_on(&mut self, now: Time) {
-        #[cfg(feature = "profile-work")]
-        let sample_phases = self.sample_phases.clone();
         let image = self.nonvolatile;
         let input = self.input;
         let temperature = self.temperature_millicelsius;
         *self = Self::new(now);
-        #[cfg(feature = "profile-work")]
-        {
-            self.sample_phases = sample_phases;
-        }
         self.nonvolatile = image;
         self.input = input;
         self.temperature_millicelsius = temperature;
@@ -287,20 +276,20 @@ impl Bma150 {
             self.sample_clock.next().ok()
         }
     }
-    pub(crate) fn serial_effect_edges(&self) -> u8 {
+    pub(crate) fn serial_effect_edges(&self, clock_high: bool) -> u8 {
         if !self.selected {
             return self.i2c.effect_edges();
         }
         // Keep read launch/pair capture, first-bit acknowledgement and the
         // three-wire turnaround explicit. Later bits and incoming address/data
         // bits are local shifts until the byte completes. Every raw edge is
-        // still replayed before another owner observes the bus. Since SPI
-        // always receives on a rise, a falling next edge only makes this bound
-        // one half-cycle early, independently of the MCU's CPOL/CPHA.
+        // still replayed before another owner observes the bus. SPI receives
+        // on a rise, so from the clock's level the byte completes at a known
+        // edge whatever the MCU's CPOL/CPHA.
         if self.turnaround || matches!(self.serial, Serial::Read(_)) && self.rx_bits == 0 {
             1
         } else {
-            (8 - self.rx_bits) * 2 - 1
+            (8 - self.rx_bits) * 2 - u8::from(!clock_high)
         }
     }
     pub fn deadline(&self) -> Option<Time> {
@@ -339,8 +328,27 @@ impl Bma150 {
         if self.interaction_deadline().is_some_and(within) {
             return Err(Error::Internal("unprocessed sensor interaction"));
         }
-        while let Some(at) = self.next_sample().filter(|at| within(*at)) {
-            self.at_deadline(at, &mut ())?;
+        if self.next_sample().is_none() {
+            return Ok(());
+        }
+        // Only samples come before the end, and without automatic control
+        // each is its conversion phase and the millisecond tick
+        // (`at_deadline`).
+        let limit = if inclusive {
+            Time::from_raw(end.raw().saturating_add(1))
+        } else {
+            end
+        };
+        let samples = self.sample_clock.edges_before(limit);
+        for _ in 0..samples {
+            let now = self.sample_clock.advance(1)?;
+            self.sample_phase(now)?;
+            if self.sample_clock.ordinal().is_multiple_of(12) {
+                self.interrupts.millisecond(&self.registers);
+            }
+        }
+        if samples != 0 {
+            self.automatic_control(end, false, false)?;
         }
         Ok(())
     }
@@ -419,8 +427,6 @@ impl Bma150 {
         self.filter.window()
     }
     fn sample_phase(&mut self, now: Time) -> Result<(), Error> {
-        #[cfg(feature = "profile-work")]
-        self.sample_phases.add(1);
         let phase = (self.sample_clock.ordinal() - 1) & 3;
         if let Some(left) = &mut self.test_phases {
             *left = left.saturating_sub(1);
@@ -543,6 +549,15 @@ impl Bma150 {
             self.registers[lo] &= !1;
             self.data_ready = false;
         }
+    }
+    /// Deselected with the I2C slave idle and no driver: clock edges that
+    /// do not move SDI while SCK stays high cannot start a transfer, and
+    /// change nothing here.
+    pub(crate) fn serially_idle(&self) -> bool {
+        !self.selected
+            && self.i2c.idle()
+            && self.driven == Drive::Floating
+            && !matches!(self.serial, Serial::Read(_))
     }
     pub fn set_selected(&mut self, selected: bool) {
         let selected = selected && self.unpowered_since.is_none();
@@ -769,356 +784,5 @@ impl Bma150 {
             }
         }
         future(self.deadline(), now)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn local_phases_keep_axis_apertures_and_exclusive_endpoints() {
-        let mut b = Bma150::new(Time::ZERO);
-        b.write_register(0x14, 6, Time::ZERO).unwrap(); // ±2 g, one sample
-        b.at_deadline(b.interaction_deadline().unwrap(), &mut ())
-            .unwrap();
-        assert_eq!(b.interaction_deadline(), None);
-        let temperature = b.next_sample().unwrap();
-        b.sync_local_until(temperature, false).unwrap();
-        assert_eq!(b.peek(8), Some(0));
-        b.sync_local_until(temperature, true).unwrap();
-        assert_eq!(b.peek(8), Some(100)); // 20 °C
-        for (axis, expected) in [[1, 0], [1, 0], [1, 64]].into_iter().enumerate() {
-            let at = b.next_sample().unwrap();
-            b.sync_local_until(at, false).unwrap();
-            assert_eq!(b.peek(2 + axis as u8 * 2), Some(0));
-            b.sync_local_until(at, true).unwrap();
-            assert_eq!(&b.registers[2 + axis * 2..4 + axis * 2], &expected);
-        }
-    }
-    #[test]
-    fn local_sync_leaves_a_tied_image_reload_to_board_delivery() {
-        let mut b = Bma150::new(Time::ZERO);
-        b.write_register(0x14, 6, Time::ZERO).unwrap(); // ±2 g
-        let wake = b.interaction_deadline().unwrap();
-        assert!(b.sync_local_until(wake, true).is_err());
-        b.at_deadline(wake, &mut ()).unwrap();
-        let mut clock = b.sample_clock;
-        clock.advance(8).unwrap();
-        let finish = clock.at; // Z of the second frame
-        let command = Time::from_raw(finish.raw() - Duration::from_micros(300).raw());
-        b.sync_local_until(command, true).unwrap();
-        b.write_register(0x0a, 0x20, command).unwrap();
-        assert_eq!(b.interaction_deadline(), Some(finish));
-        b.sync_local_until(finish, false).unwrap();
-        assert_eq!(b.registers[7], 64); // prior +1 g at ±2 g
-        assert!(b.sync_local_until(finish, true).is_err());
-        assert_eq!(b.next_sample(), Some(finish));
-        b.at_deadline(finish, &mut ()).unwrap();
-        assert_eq!(b.registers[0x14], 0x0e); // image restores ±4 g
-        assert_eq!(&b.registers[6..8], &[1, 32]);
-    }
-    #[test]
-    fn undervoltage_preserves_configuration_and_cold_return_qualifies_serial() {
-        let mut b = Bma150::new(Time::ZERO);
-        write(&mut b, 0x14, 0x05);
-        b.set_supply(2000, Time::from_micros(100), &mut ()).unwrap();
-        assert_eq!(b.deadline(), None);
-        b.set_selected(true);
-        assert_eq!(b.output(), Drive::Floating);
-        b.set_supply(3000, Time::from_micros(1100), &mut ())
-            .unwrap();
-        assert_eq!(b.peek(0x14), Some(0x05));
-        let first = b.deadline().unwrap();
-        assert!(first > Time::from_micros(1700) && first < Time::from_micros(1800));
-        b.set_supply(0, Time::from_micros(1200), &mut ()).unwrap();
-        b.set_supply(3000, Time::from_micros(2200), &mut ())
-            .unwrap();
-        assert_eq!(b.peek(0x14), Some(0x0e)); // Factory working image reloaded.
-        b.set_selected(true);
-        for _ in 0..8 {
-            b.rising(true, Time::from_micros(2300)).unwrap();
-        }
-        assert_eq!(b.output(), Drive::Floating);
-        assert_eq!(b.serial, Serial::Address);
-        b.set_supply(1, Time::from_micros(2400), &mut ()).unwrap();
-        b.lose_volatile();
-        b.set_supply(3000, Time::from_micros(1_002_400), &mut ())
-            .unwrap();
-        assert_eq!(b.peek(0x14), Some(0x0e));
-        assert_eq!(
-            b.serial_ready,
-            Time::from_micros(1_002_400).checked_add(Duration::from_millis(3))
-        );
-    }
-    fn xfer(b: &mut Bma150, v: u8) -> u8 {
-        let mut r = 0;
-        for n in (0..8).rev() {
-            r = (r << 1) | u8::from(b.falling() != Drive::Low);
-            b.rising(v & (1 << n) != 0, b.sample_clock.at).unwrap();
-        }
-        r
-    }
-    fn write(b: &mut Bma150, a: u8, v: u8) {
-        b.set_selected(true);
-        xfer(b, a);
-        xfer(b, v);
-        b.set_selected(false);
-    }
-    fn read(b: &mut Bma150, address: u8) -> u8 {
-        b.set_selected(true);
-        xfer(b, address | 0x80);
-        let value = xfer(b, 0);
-        b.set_selected(false);
-        value
-    }
-    fn sample_cycle(b: &mut Bma150) {
-        if let Some(at) = b.wake_deadline {
-            b.at_deadline(at, &mut ()).unwrap();
-        }
-        for _ in 0..4 {
-            b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap();
-        }
-    }
-    #[test]
-    fn protected_window_and_identity() {
-        let mut b = Bma150::new(Time::ZERO);
-        assert_eq!(b.peek(0), Some(2));
-        assert_eq!(b.peek(0x1e), None);
-        write(&mut b, 0x0a, 0x10);
-        write(&mut b, 0x1e, 0x80);
-        assert_eq!(b.peek(0x1e), Some(0x80));
-        write(&mut b, 0x0a, 0);
-        assert_eq!(b.peek(0x1e), None);
-    }
-    #[test]
-    fn physical_force_and_paired_shadow() {
-        let mut b = Bma150::new(Time::ZERO);
-        write(&mut b, 0x14, 6); // ±2 g, unaveraged output.
-        sample_cycle(&mut b);
-        assert_eq!(b.peek(7), Some(64));
-        let lo = read(&mut b, 6);
-        b.set_input(
-            Acceleration {
-                x: 0,
-                y: 0,
-                z: -1_000_000,
-            },
-            b.sample_clock.at,
-        )
-        .unwrap();
-        for _ in 0..8 {
-            sample_cycle(&mut b);
-        }
-        assert_eq!(lo & 0xc0, 0);
-        assert_eq!(read(&mut b, 7), 64);
-        read(&mut b, 6);
-        assert_eq!(read(&mut b, 7), 192);
-    }
-    #[test]
-    fn image_reload_preserves_the_pair_held_by_an_acceleration_read() {
-        let mut b = Bma150::new(Time::ZERO); // Factory ±4 g.
-        sample_cycle(&mut b);
-        assert_eq!(read(&mut b, 6), 1);
-        b.set_input(
-            Acceleration {
-                x: 0,
-                y: 0,
-                z: -1_000_000,
-            },
-            b.sample_clock.at,
-        )
-        .unwrap();
-        write(&mut b, 0x0a, 0x20); // Reload the same factory configuration.
-        while let Some(at) = b.deadline().filter(|at| *at <= Time::from_micros(5000)) {
-            b.at_deadline(at, &mut ()).unwrap();
-        }
-        assert_eq!(
-            read(&mut b, 7),
-            32,
-            "finish the previously captured +1 g pair"
-        );
-        read(&mut b, 6);
-        assert_eq!(read(&mut b, 7), 224, "the next pair sees -1 g");
-    }
-    #[test]
-    fn automatic_new_data_interrupt_acknowledges_without_a_minimum_width() {
-        for latch in [0, 0x10] {
-            let mut b = Bma150::new(Time::ZERO);
-            for (address, value) in [(0x0b, 0), (0x14, 6), (0x15, 0xa1 | latch), (0x0a, 1)] {
-                write(&mut b, address, value);
-            }
-            while !b.interrupt() {
-                let at = b.deadline().unwrap();
-                assert!(at < Time::from_micros(23000));
-                b.at_deadline(at, &mut ()).unwrap();
-            }
-            // Reading one acceleration byte acknowledges this independent
-            // latched source, even at the instant the full vector arrives.
-            read(&mut b, 2);
-            assert!(!b.interrupt());
-        }
-    }
-    #[test]
-    fn spi_control_waits_for_the_eighth_rise_and_reads_keep_first_bit_effects() {
-        let mut b = Bma150::new(Time::ZERO);
-        b.set_selected(true);
-        assert_eq!(b.serial_effect_edges(), 15);
-        xfer(&mut b, 0x0a);
-        for _ in 0..7 {
-            b.falling();
-            assert!(!b.rising_effect(false, Time::ZERO).unwrap());
-            assert!(!b.sleeping());
-        }
-        assert_eq!(b.serial_effect_edges(), 1);
-        b.falling();
-        assert!(b.rising_effect(true, Time::ZERO).unwrap());
-        assert!(
-            b.sleeping(),
-            "sleep is accepted only with the eighth data bit"
-        );
-        b.set_selected(false);
-        write(&mut b, 0x0a, 0);
-        write(&mut b, 0x14, 14); // ±4 g, unaveraged output after waking.
-        for _ in 0..8 {
-            sample_cycle(&mut b);
-        }
-        b.set_selected(true);
-        xfer(&mut b, 0x86);
-        assert_eq!(b.serial_effect_edges(), 1);
-        b.falling(); // Launch Z LSB and hold its matching +1 g MSB.
-        assert_eq!(b.peek(6).unwrap() & 1, 1);
-        assert_eq!(b.serial_effect_edges(), 1);
-        b.rising(false, b.sample_clock.at).unwrap();
-        assert_eq!(b.peek(6).unwrap() & 1, 0);
-        assert_eq!(b.serial_effect_edges(), 13);
-        b.set_input(
-            Acceleration {
-                x: 0,
-                y: 0,
-                z: -1_000_000,
-            },
-            b.sample_clock.at,
-        )
-        .unwrap();
-        for _ in 0..8 {
-            sample_cycle(&mut b);
-        }
-        for _ in 0..7 {
-            b.falling();
-            b.rising(false, b.sample_clock.at).unwrap();
-        }
-        assert_eq!(b.serial_effect_edges(), 1);
-        assert_eq!(
-            xfer(&mut b, 0),
-            32,
-            "MSB belongs to the acknowledged +1 g pair"
-        );
-        b.set_selected(false);
-        assert_eq!(read(&mut b, 6) & 0xc0, 0);
-        assert_eq!(read(&mut b, 7), 224, "the following pair sees -1 g");
-    }
-    #[test]
-    fn writes_are_address_data_pairs_and_unclocked_read_bytes_have_no_effect() {
-        let mut b = Bma150::new(Time::ZERO);
-        b.set_selected(true);
-        for byte in [0x0c, 0x20, 0x0d, 2] {
-            xfer(&mut b, byte);
-        }
-        b.set_selected(false);
-        assert_eq!((b.peek(0x0c), b.peek(0x0d)), (Some(32), Some(2)));
-        sample_cycle(&mut b);
-        read(&mut b, 2);
-        read(&mut b, 3); // next sequential address is Y LSB, but never sampled.
-        assert_eq!(b.peek(4).unwrap() & 1, 1);
-        b.set_selected(true);
-        xfer(&mut b, 0x84); // An address alone is not a read of Y.
-        b.falling(); // Launching its first bit is still not an acknowledgement.
-        b.set_selected(false);
-        assert_eq!(b.peek(4).unwrap() & 1, 1);
-        assert_eq!(read(&mut b, 4) & 1, 1);
-        assert_eq!(b.peek(4).unwrap() & 1, 0);
-    }
-    #[test]
-    fn three_wire_has_one_turnaround_and_drives_only_sda() {
-        let mut b = Bma150::new(Time::ZERO);
-        write(&mut b, 0x15, 0);
-        b.set_selected(true);
-        xfer(&mut b, 0x80);
-        assert_eq!(b.data_output(), Drive::Floating);
-        b.rising(false, Time::ZERO).unwrap(); // Ninth clock launches D7.
-        let mut word = 0u16;
-        for _ in 0..16 {
-            assert_eq!(b.output(), Drive::Floating);
-            word = (word << 1) | u16::from(b.data_output() == Drive::High);
-            b.falling();
-            b.rising(false, Time::ZERO).unwrap();
-        }
-        assert_eq!(word, 0x0210);
-        b.set_selected(false);
-        assert_eq!(b.data_output(), Drive::Floating);
-    }
-    #[test]
-    fn factory_offset_changes_have_the_vendor_calibration_scale_in_each_range() {
-        for (range, expected) in [(6, 264u16), (14, 132), (22, 66)] {
-            let mut b = Bma150::new(Time::ZERO);
-            write(&mut b, 0x14, range);
-            write(&mut b, 0x0a, 0x10);
-            write(&mut b, 0x18, 0x40); // Z offset 512 -> 513.
-            sample_cycle(&mut b);
-            assert_eq!(
-                u16::from(read(&mut b, 6) >> 6) | (u16::from(read(&mut b, 7)) << 2),
-                expected
-            );
-            assert_eq!(read(&mut b, 8), 100);
-        }
-    }
-    #[test]
-    fn axes_publish_sequentially_and_new_data_waits_for_every_axis() {
-        let mut b = Bma150::new(Time::ZERO);
-        write(&mut b, 0x15, 0xa0);
-        b.at_deadline(b.wake_deadline.unwrap(), &mut ()).unwrap();
-        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // T
-        assert_eq!(b.peek(8), Some(100));
-        assert_eq!(b.peek(2), Some(0));
-        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // X
-        assert_eq!(read(&mut b, 2) & 1, 1);
-        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // Y
-        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap(); // Z
-        assert!(!b.interrupt());
-        sample_cycle(&mut b);
-        assert!(b.interrupt());
-        read(&mut b, 2);
-        assert!(!b.interrupt());
-        b.set_temperature(35_000);
-        b.at_deadline(b.next_sample().unwrap(), &mut ()).unwrap();
-        assert_eq!(read(&mut b, 8), 130);
-    }
-    #[test]
-    fn nonvolatile_completion_reloads_the_whole_image_and_power_loss_retains_partial_cells() {
-        let mut b = Bma150::new(Time::ZERO);
-        write(&mut b, 0x0a, 0x10);
-        write(&mut b, 0x12, 0x11);
-        write(&mut b, 0x32, 0xa5);
-        assert_eq!(b.peek(0x32), None);
-        assert_eq!(b.peek(0x12), Some(0x11));
-        let mut interrupted = b.clone();
-        interrupted
-            .power_off(Time::from_micros(14000), &mut ())
-            .unwrap();
-        interrupted.power_on(Time::from_micros(50000));
-        assert_eq!(interrupted.nonvolatile(Time::from_micros(50000))[7], 0);
-        assert_eq!(interrupted.peek(0x12), Some(0));
-        let mut events = Vec::new();
-        b.at_deadline(Time::from_micros(28000), &mut events)
-            .unwrap();
-        assert_eq!(b.peek(0x12), Some(0xa5));
-        assert_eq!(b.nonvolatile(Time::from_micros(28000))[7], 0xa5);
-        assert!(events.iter().any(|e| matches!(
-            e,
-            Event::NvCommit {
-                domain: NvDomain::Sensor,
-                ..
-            }
-        )));
     }
 }

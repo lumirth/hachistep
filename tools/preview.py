@@ -21,7 +21,7 @@ def read_pgm(path: Path) -> tuple[int, int, bytes]:
 def render(frames: list[Path], out: Path) -> None:
     pieces = ['<!doctype html><meta charset="utf-8"><title>HachiStep captured frames</title>',
               '<style>body{font:18px system-ui;max-width:900px;margin:3rem auto;padding:1rem}canvas{image-rendering:pixelated;max-width:100%;border:1px solid}figure{margin:2rem 0}</style>',
-              '<h1>Captured firmware output</h1><p>These are emulator LCD captures, not hardware photographs or an interactive frontend.</p>']
+              '<h1>Captured frames</h1>']
     for i, frame in enumerate(frames):
         w, h, pixels = read_pgm(frame)
         title = f'{frame.parent.name}/{frame.name}'

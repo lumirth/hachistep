@@ -1,6 +1,7 @@
 //! Cell progression during an accepted EEPROM write. The model divides time
 //! equally between erase and program, with fixed thresholds for each cell.
-//! See docs/accuracy/eeprom.md for the basis of these inferred choices.
+//! Datasheets leave partial-cell outcomes unspecified; thresholds provide a
+//! deterministic nominal result for interrupted programming.
 use crate::time::{Duration, Time, TimeError};
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]

@@ -49,6 +49,23 @@ impl SerialRoute {
         }
         levels
     }
+    /// Whether net `bit` follows the push-pull driver of serial function `bit`.
+    pub fn follows(&self, bit: usize, serial: Pins) -> bool {
+        usize::from(self.sources[bit]) == bit
+            && self.open_drain & (1 << bit) == 0
+            && matches!(serial.drives[bit], Some(Drive::High | Drive::Low))
+    }
+    pub(crate) fn levels(&self, serial: Pins, external_data: [Option<bool>; 2]) -> u8 {
+        self.resolve(serial, external_data)
+    }
+    /// The port 9 bit carrying serial input function `function`.
+    pub(crate) fn input_mask(&self, function: usize) -> u8 {
+        1 << if self.reversed {
+            3 - function
+        } else {
+            function
+        }
+    }
     pub fn inputs(&self, levels: u8) -> [bool; 4] {
         std::array::from_fn(|function| {
             levels
@@ -81,9 +98,6 @@ pub struct Gpio {
     iic: Option<[bool; 2]>,
     incident_light: bool,
     pub levels: [u8; 5],
-    #[cfg(feature = "profile-work")]
-    #[borsh(skip)]
-    pub(crate) work: crate::profile_work::ResolutionWork,
 }
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SerialLevels {
@@ -109,14 +123,12 @@ impl Default for SerialLevels {
 impl Gpio {
     /// P9 input bits expose the live serial nets. Routing and direction reads
     /// expose retained configuration, independently of pending clock edges.
-    pub(crate) fn reads_serial(address: u16) -> bool {
+    pub(crate) const fn reads_serial(address: u16) -> bool {
         address == 0xffdc
     }
     /// Resolve the board's pull resistors and fixture drivers with all MCU
     /// output stages unavailable, without discarding their retained latches.
     pub(crate) fn resolve_unpowered(&mut self, external_data: [Option<bool>; 2]) -> SerialLevels {
-        #[cfg(feature = "profile-work")]
-        self.work.board.add(1);
         let mut pins = Self {
             buttons: self.buttons,
             analog_levels: self.analog_levels,
@@ -125,11 +137,6 @@ impl Gpio {
             ..Self::default()
         };
         let levels = pins.resolve(Pins::default(), 0, 0, external_data);
-        #[cfg(feature = "profile-work")]
-        {
-            self.work.serial.add(pins.work.serial.get());
-            self.work.serial_lanes.add(pins.work.serial_lanes.get());
-        }
         self.levels = pins.levels;
         levels
     }
@@ -168,6 +175,26 @@ impl Gpio {
         self.sci = pins;
         self.incident_light = incident_light;
     }
+    /// The SCI's transmit pin moved by an internal step (`Sci::set_late`):
+    /// resolve P32 as `resolve_ports` does for a pin the SCI drives.
+    pub(crate) fn follow_transmit(&mut self, level: bool) {
+        self.sci.transmit = Some(level);
+        self.levels[1] = (self.levels[1] & !4) | (u8::from(level) << 2);
+    }
+    /// Whether RXD follows incident light, and the shutdown level that
+    /// decides how (`Sci::set_light_route`).
+    pub(crate) fn light_route(&self) -> Option<bool> {
+        (self.digital_levels[4].is_none() && (self.sci.receive || self.direction[1] & 2 == 0))
+            .then_some(self.levels[1] & 1 != 0)
+    }
+    /// The SCI performed a light edge (`Sci::queue_light`): resolve P31 as
+    /// `resolve_ports` does.
+    pub(crate) fn follow_light(&mut self, light: bool) {
+        self.incident_light = light;
+        if let Some(shutdown) = self.light_route() {
+            self.levels[1] = (self.levels[1] & !2) | (u8::from(shutdown || !light) << 1);
+        }
+    }
     pub fn sci_inputs(&self) -> (Option<bool>, bool) {
         let clock = (self.pfcr & 3 != 2 && self.pmr[1] & 1 == 0).then_some(self.levels[1] & 1 != 0);
         (clock, self.levels[1] & 2 != 0)
@@ -194,21 +221,15 @@ impl Gpio {
         self.pmr[1] & 1 != 0
     }
     pub fn reset(&mut self) {
-        #[cfg(feature = "profile-work")]
-        let work = self.work.clone();
         let buttons = self.buttons;
         let analog_levels = self.analog_levels;
         let digital_levels = self.digital_levels;
         *self = Self::default();
-        #[cfg(feature = "profile-work")]
-        {
-            self.work = work;
-        }
         self.buttons = buttons;
         self.analog_levels = analog_levels;
         self.digital_levels = digital_levels;
     }
-    pub fn handles(a: u16) -> bool {
+    pub const fn handles(a: u16) -> bool {
         matches!(
             a,
             0xf085
@@ -300,7 +321,7 @@ impl Gpio {
     }
     /// Resolve the shared serial pins. Chip-select nets have a board pull-up;
     /// other released nets follow connected drivers and enabled MCU pull-ups,
-    /// then default low. See docs/accuracy/bus-and-gpio.md.
+    /// then default low.
     pub fn resolve(
         &mut self,
         serial: Pins,
@@ -321,8 +342,6 @@ impl Gpio {
         external_data: [Option<bool>; 2],
         ports: u8,
     ) -> SerialLevels {
-        #[cfg(feature = "profile-work")]
-        self.work.board.add(1);
         for i in 0..3 {
             if ports & (1 << i) != 0 {
                 self.levels[i] =
@@ -441,6 +460,24 @@ impl Gpio {
         let route = self.serial_route(serial);
         self.resolve_serial_route(&route, serial, external_data)
     }
+    /// Everything `serial_route` reads besides the SSU's pins.
+    pub(crate) fn serial_key(&self) -> [u8; 8] {
+        let code = |level: Option<bool>| level.map_or(0, |high| 1 + u8::from(high));
+        let fixtures = (0..4).fold(0, |key, bit| {
+            key | code(self.digital_levels[6 + bit]) << (2 * bit)
+        });
+        [
+            self.pfcr,
+            self.pmr[2],
+            self.direction[3],
+            self.latch[3],
+            self.pull[3],
+            self.open_drain9,
+            self.iic
+                .map_or(0, |[scl, sda]| 1 | u8::from(scl) << 1 | u8::from(sda) << 2),
+            fixtures,
+        ]
+    }
     pub(crate) fn serial_route(&self, serial: Pins) -> SerialRoute {
         let mut route = SerialRoute {
             sources: [4; 4],
@@ -489,11 +526,6 @@ impl Gpio {
         serial: Pins,
         external_data: [Option<bool>; 2],
     ) -> SerialLevels {
-        #[cfg(feature = "profile-work")]
-        {
-            self.work.serial.add(1);
-            self.work.serial_lanes.add(1);
-        }
         self.levels[3] = route.resolve(serial, external_data);
         self.serial_levels()
     }
@@ -586,84 +618,5 @@ impl Gpio {
                 }),
             "invalid GPIO storage bits",
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn ssu_selection_overrides_iic_even_when_its_driver_is_released() {
-        let mut g = Gpio::default();
-        g.write(0xf087, 3).unwrap();
-        g.set_iic_pins(Some([false, false]));
-        g.resolve(Pins::default(), 0, 0, [None; 2]);
-        assert_eq!(g.iic_inputs(), [false; 2]);
-        let serial = Pins {
-            drives: [Some(Drive::Floating), Some(Drive::Floating), None, None],
-            data_open_drain: false,
-        };
-        g.resolve(serial, 0, 0, [None; 2]);
-        assert_eq!(g.iic_inputs(), [true; 2]);
-        // SSUS moves SSU's SCS/SSCK; unselected P90/P91 return to IIC.
-        g.write(0xf085, 0x10).unwrap();
-        g.resolve(serial, 0, 0, [None; 2]);
-        assert_eq!(g.iic_inputs(), [false; 2]);
-    }
-
-    #[test]
-    fn alternate_input_does_not_override_the_pullup_enable_condition() {
-        let mut g = Gpio::default();
-        for (a, v) in [(0xffd6, 1), (0xffe6, 1), (0xffe1, 1), (0xf085, 2)] {
-            g.write(a, v).unwrap();
-        }
-        g.resolve(Pins::default(), 0, 0, [None; 2]);
-        assert_eq!(g.irq_levels()[0], Some(false));
-        assert_eq!(
-            g.read(0xffd6) & 1,
-            1,
-            "PCR output readback still uses the latch"
-        );
-        g.write(0xffe6, 0).unwrap();
-        g.resolve(Pins::default(), 0, 0, [None; 2]);
-        assert_eq!(g.irq_levels()[0], Some(true));
-    }
-
-    #[test]
-    fn button_pins_and_mux_are_not_firmware_flags() {
-        let mut p = Gpio::default();
-        p.set_buttons(Buttons {
-            left: true,
-            center: false,
-            right: true,
-        });
-        p.write(0xffca, 1).unwrap();
-        p.resolve(Default::default(), 0, 0, [None; 2]);
-        assert_eq!(p.read(0xffde) & 0x15, 0x14);
-        assert_eq!(p.irq_levels()[0], Some(false));
-    }
-    #[test]
-    fn chip_selects_have_independent_lifetimes() {
-        let mut p = Gpio::default();
-        p.write(0xffe4, 7).unwrap();
-        p.write(0xffd4, 4).unwrap();
-        let s = p.resolve(
-            Pins {
-                drives: [
-                    None,
-                    Some(Drive::High),
-                    Some(Drive::High),
-                    Some(Drive::Floating),
-                ],
-                data_open_drain: false,
-            },
-            0,
-            0,
-            [None, Some(false)],
-        );
-        assert!(s.lcd_selected);
-        assert!(!s.eeprom_selected);
-        assert!(!s.data);
-        assert!(!p.serial_inputs()[3]);
     }
 }

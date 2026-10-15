@@ -1,253 +1,70 @@
-# Testing and evidence
+# Behavioral validation
 
-[ACCURACY](ACCURACY.md) describes supported hardware behavior and remaining limitations.
-[SOURCES](SOURCES.md) identifies the reference material. This document explains the
-checks and what their results establish.
+Use independent guest programs to check hardware behavior and complete firmware sessions
+to check practical execution. Choose checks for the affected behavior and reuse completed
+results until another change or unresolved failure warrants a run.
 
-## Different claims have different tests
+## Hardware diagnostics
 
-Use [focused checks](#focused-checks) while changing one behavior. The
-[execution selection](#execution-iteration-checks) covers a wider CPU, bus or scheduling
-change. The default command is a full check for substantive milestones.
-
-The standard suite needs no private images. It runs ordinary Rust tests, documentation
-tests, an all-features/trace build, Clippy, host-tool checks, and the independently
-encoded guest fixtures in hachiware. Run:
+Clone [Hachiware](https://github.com/lumirth/hachiware) alongside this checkout, then run:
 
 ```sh
-uv run tools/check.py --out out/check
-uv run tools/mutation_check.py --out out/mutations
-uv run tools/verify_retail.py --out out/retail --menu-trace
+uv run tools/check.py --out out/check-1
+uv run tools/check.py --case 'ssu-*' --out out/ssu-1
 ```
 
-All destinations must be new. Reports record the source revision, commands, toolchain
-and results under ignored `out/`. Keep a reviewed expectation or supporting hardware
-capture with the test that uses it. Individual run reports stay local.
+The command checks formatting and Clippy, builds the release CLI, and executes the
+selected Hachiware guests. Pass `--runner PATH` for an existing binary and
+`--hachiware PATH` for another suite location. Results and failed observations are under
+the output directory. Each destination must be new.
 
-Check, retail, benchmark and mutation summaries fingerprint the checkout before and after
-execution. `tree_sha256` covers tracked and nonignored untracked file contents, names,
-executable bits and symlink targets; ignored outputs and private inputs are excluded.
-A changed fingerprint fails the run after saving its summary. An unavailable fingerprint
-leaves `source_unchanged` null. Keep outputs in an ignored directory so they do not change
-the fingerprint themselves.
+Hachiware owns expected hardware observations, with sources and assumptions beside each
+case. When adding a case or workload, run its control audit as described in the
+[benchmark guide](https://github.com/lumirth/hachiware/blob/main/docs/benchmark.md).
 
-These fingerprints identify content but do not preserve it or detect edits reverted
-between the two observations. A supplied executable's hash identifies that file; it does
-not establish which source built it. Preserve the corresponding source and build record
-when retaining a comparison.
+## Firmware sessions
 
-Choose additional checks for the affected contract. Native/Wasm comparisons belong with
-changes that could behave differently by target, such as arithmetic representation,
-encoded layouts, target support or host integration, and with release validation. Reuse
-completed checks until a change, failure or unresolved concern warrants another run.
-
-The private replay test compares the complete typed machine state and complete
-product-event vectors across randomized run partitions, then a further interval after
-snapshot restoration. The peripheral integration tests add clock/gate, analog-input,
-capture, AEC and NMI partition/snapshot cases. These establish representation/replay
-consistency, not agreement with silicon.
-
-## Focused checks
-
-While changing one behavior, select its tests directly:
+Supply your firmware and EEPROM images:
 
 ```sh
-uv run tools/check.py \
-  --test serial_appointments::stopping_on_a_completed_lcd_byte_preserves_serial_progress_and_restoration \
-  --out out/lcd-stop-1
-uv run tools/check.py --test sensor_spi --out out/sensor-spi-1
-uv run tools/check.py \
-  --test lib::cpu::decode::tests::known_forms_and_extension_boundaries \
-  --out out/cpu-decode-1
-uv run tools/check.py --case 'ssu-replace-queued-byte' --out out/ssu-queue-1
+uv run tools/verify_retail.py --firmware firmware.bin --eeprom eeprom.bin \
+  --quick --out out/retail-1
 ```
 
-`--test TARGET` runs one core library or integration target. `--test TARGET::NAME`
-runs that exact test, with module paths included for library tests. Repeat `--test`
-or `--case` to combine selections. A misspelled target or a Rust selection that runs
-zero tests fails. Ignored tests alone cannot pass. To list names within an integration
-target, use `cargo test -p hs-core --profile iteration --test TARGET -- --list`.
-For library tests, replace `--test TARGET` with `--lib`.
+`--list` describes the sessions without loading images. `--quick` runs home, menu, and
+settings; repeat `--case NAME` to choose others. The longer sessions exercise motion,
+idle operation, interrupted saves, connection timeout, and a day rollover. Capture
+points compare the complete event history, exports, and resumed state against a
+continuous session. `--chunk-us 1000` additionally compares repeated short host calls.
 
-Focused checks run only the requested Rust targets and guest diagnostics. They skip
-formatting, Clippy, Python suites and every unselected test. Rust-only checks do not
-require hachiware or build the CLI. Guest selections build the native CLI through the
-cached `iteration` profile; `--runner PATH` uses a preserved candidate instead.
-`--features trace,profile-work` applies to selected Rust tests. It does not change
-the guest CLI build. Focused selectors cannot accompany `--execution`.
+The optional `--play` and `--link` sessions use the matching retail firmware and an
+EEPROM containing a walking Pokemon. They complete Dowsing and a capture, or a peer
+exchange between two machines. Rewards and encounter records must reach EEPROM.
+They use in-memory copies of the supplied save. Their firmware layouts follow
+[`pw` at 6dc7bc0](https://github.com/lumirth/pw/tree/6dc7bc09950078fa3fe0dffa4dae34e9549a99da).
 
-The same source fingerprints and failure summaries apply to focused checks. They
-establish only the named coverage. Use the execution selection for a wider scheduling
-change and the default full check at a substantive milestone.
+The [replay example](../crates/hs-core/examples/replay.rs) demonstrates frame delivery,
+streaming audio, and snapshot restoration through the embedding API.
 
-## Execution iteration checks
+## Compare and measure
 
-For changes to execution, bus access or scheduling, run:
+For Hachiware's per-workload speed and correctness comparison, including PocketWalker,
+use its [benchmark guide](https://github.com/lumirth/hachiware/blob/main/docs/benchmark.md).
 
-```sh
-uv run tools/check.py --execution --out out/execution-1
-```
-
-This runs all core library tests and the `cpu_regressions`, `kernel`,
-`register_access`, `clock_obligations`, `interrupt_admission`, `interrupt_reads`,
-`serial_appointments`, `serial_observers`, `reset_release`, `watchdog`, `sensor_spi`,
-`sensor_i2c`, `output_control`, `save_state`, `flash_execution` and `allocation`
-integration tests. They exercise
-ordered accesses, peripheral clock obligations, cleared interrupt requests,
-coincident serial appointments, host
-suspension, capture restoration and allocation guarantees.
-
-The `iteration` Cargo profile optimizes at level 2, retains development assertions and
-overflow checks, and uses incremental compilation without LTO. It shares the usual
-Cargo target directory across runs. Its CLI runs selected independent hachiware guests
-for register lanes, RAM execution, aliased operands, prefetch ordering, arithmetic,
-exceptions, interrupt cancellation, serial transfers and flash protection. The summary
-records the exact selections, executable hash, commands and each step's wall time.
-If a step fails, the summary retains its failure and the completed steps with both
-source fingerprints. Later checks do not run.
-Formatting, production library/binary Clippy checks, host-tool tests and hachiware's
-Python tests also run.
-
-Execution checks omit the full debug/release/trace matrices, other integration tests,
-Clippy on tests and trace features, and the remaining guest fixtures. They are native
-checks; Wasm, private firmware, hardware captures and performance measurements need
-their own verification. Run the default full check at a substantive milestone and
-add affected device tests when a change reaches beyond execution.
-
-To check a preserved native candidate without rebuilding its CLI:
+For two builds running the same private firmware:
 
 ```sh
-uv run tools/check.py --execution --runner out/candidate/hachistep \
-  --out out/candidate-execution
-```
-
-Rust tests and Clippy still check this checkout. Guest diagnostics use the supplied
-candidate, whose source may differ. Preserve its source and build record with it.
-Build and test time depend on cache state; a new profile first compiles its dependencies.
-Reuse the target directory and inspect step timings before reducing useful coverage.
-
-## Independent target expectations
-
-[hachiware](https://github.com/lumirth/hachiware) owns hardware diagnostics,
-signal fixtures, and their expected observations. HachiStep's
-`tools/hachiware_adapter.py` runs them through production execution and exports
-observations. Expected results come from hardware documentation, measurements, firmware
-evidence, or justified inference; the emulator must not generate its own hardware
-oracle.
-
-List or rerun selected diagnostics using the fixtures produced by `check.py`:
-
-```sh
-uv run ../hachiware/run.py --fixtures out/check/fixtures --list --case 'adc-*'
-uv run ../hachiware/run.py --fixtures out/check/fixtures --case 'adc-*' \
-  --adapter tools/hachiware_adapter.py --runner target/release/hachistep \
-  --out out/adc-check
-```
-
-The adapter advertises available observations, inputs and configured conditions.
-Hachiware requests only the observations each case checks. The adapter verifies the
-requested endpoint using HachiStep's clock representation. A failed experiment retains
-its observations and logs; `--keep-passed` also retains successful exports.
-
-Local tests protect embedding contracts, timing and access regressions, partition/save
-state behavior, resource guarantees, and host-tool behavior. Prefer observations that
-survive a different internal implementation. Opcode classification without panics,
-private-state equality, or a passing retail run answers a narrower question than
-hardware conformance.
-
-## Mutation checks
-
-The mutation tool copies only sources and expectation data into an automatically cleaned
-temporary directory. It runs the unmodified control, changes exactly one identified
-site, and requires a compiled test to fail with the expected assertion. A compiler
-error, missing test, zero tests, or unapplied mutation is not success. The tool leaves
-repository sources intact and removes its temporary copy.
-
-The shipped mutations reintroduce a wrong RTC access duration, capture an aliased
-predecrement source too early, suppress EEPMOV.W NMI acceptance, retain an SCI
-interrupt after its data has been read, and omit serial-driver propagation at a
-coincident peripheral appointment. Another mutation protects an active flash pulse
-at a stale timestamp when RAM code executes a trap. These tests demonstrate sensitivity
-to those bugs.
-
-## Private firmware: regression versus smoke
-
-`verify_retail.py` checks the exact firmware/EEPROM identity and scenario, semantic
-report fields and all exported images, including frame bytes, against
-`workloads/retail.json`. The reviewed observations form a software regression baseline. A
-model-correcting change may legitimately require a separately reviewed expectation
-change; never auto-rebaseline from a candidate.
-
-Use `--smoke-only` with different private inputs to test execution only. Its output
-explicitly says that no behavioral regression comparison was made. It is a host
-verification choice, not an emulator accuracy mode; the execution engine is the same.
-`--quick` selects home, menu and settings. Use `--list` to inspect the corpus or repeat
-`--case NAME` for a focused run. The manifest owns scenario selection and durations.
-
-Settings changes and interrupted saves exercise firmware persistence and mirror repair.
-The infrared timeout exercises an attempt without a peer. Their capture points also
-check restoration during ongoing operations: complete traces before and after loading
-must concatenate to the continuous history, and final native state and exports must
-match. Captured traces are stored as `events.txt` in each scenario's output directory.
-
-The peer exchange test runs independent machines through the public optical interface
-and checks the encounter records committed by both firmwares. Its input preparation and
-simulated channel are described in [INPUTS](INPUTS.md#physical-csv). It runs alongside
-the partition test for every retail verification, including `--quick` and `--case`.
-
-The gameplay test continues the walking trajectory into Dowsing, spends earned Watts,
-collects an item and checks its persistent record. A separate Poké Radar session uses a
-host RAM edit to fund entry, then completes the search, battle and capture through
-button inputs. The guest writes the captured Pokémon from its course data. Both sessions
-check sound, display, complete event replay and exact restoration during play. Firmware
-layouts and expected rewards come from the matching `pw` source; this test exercises the
-public embedding API and does not add firmware knowledge to the core.
-
-The day-rollover workload runs for an emulated day, including idle sleep, hourly saves,
-diary rotation and midnight maintenance. Its capture falls inside the RTC busy interval
-before midnight, so restoration must preserve the pending calendar update and all later
-firmware writes. The reviewed results follow `pw`'s RTC and diary routines: elapsed
-hours and days advance, save mirrors retain valid checksums, and midnight clears the ten
-peer-history device IDs while preserving the received staging record and other fields.
-Run it alone with `--case day-rollover`.
-
-A step count produced from a synthetic trajectory records the emulator's pedometer
-response to that input.
-
-## Compare histories before measuring speed
-
-```sh
-uv run tools/compare_runs.py out/left out/right \
-  --left-trace out/left-events.txt --right-trace out/right-events.txt
 uv run tools/bench.py --left /path/to/baseline --right /path/to/candidate \
-  --input workloads/menu.csv --milliseconds 6500 \
-  --repeats 4 --out out/paired
+  --firmware firmware.bin --eeprom eeprom.bin --input workloads/menu.csv \
+  --milliseconds 6500 --repeats 4 --out out/paired
 ```
 
-The comparator checks semantic report fields, canonical native state, exported bytes
-and, when requested, every product-event record. It identifies the first difference and
-rejects truncated, missing, mixed bus/product, or report-length-mismatched histories. It
-does not equate endpoint equality with history equality. The retail baselines record
-observations from software execution. Equivalence runs also compare native captures of
-causal internal state.
+The tool first compares complete product histories, saved state, and exports, then times
+untraced runs in alternating order. It accepts native executables and WASI modules.
+Record the host, call horizon, samples, and spread with speed results.
 
-A paired benchmark first performs two untimed complete-product-history runs. Measured
-runs exclude that tracing and hashing. They use ABBA/BAAB ordering and preserve raw
-samples. An accuracy correction that changes behavior requires a new justified baseline
-before performance comparison. A run with one binary measures its performance alone.
-
-CLI simulation-loop time and externally measured process/load/export time are reported
-separately. Use `--chunk-us` to measure frequent calls over the same firmware workload;
-the default is 1000 microseconds. Record the call horizon, host and sample spread with
-each result. The report retains the horizon, tool versions and binary hashes.
-Both executable arguments also accept the `wasm32-wasip1` CLI module described in
-[BUILD](BUILD.md#webassembly-checks). This permits the same event and state comparison
-across native and Wasm execution.
-
-## Host-tool tests
-
-Tests cover output safety, PGM pixel preservation, aperture audio,
-truncated histories, fixture input hashes, actual IRQ assertions, adapter completion,
-software regression frame/identity/duration checks and missing expectations. These tests
-also deliberately change observed records while keeping final state unchanged, so an
-endpoint-only comparison cannot accidentally claim history coverage.
+Reports preserve commands and source, input, and executable identities. Keep generated
+outputs under ignored `out/`. A changed source or executable invalidates that run.
+Hardware agreement requires an independent expectation; agreement between two emulator
+runs establishes reproducibility. Report remaining hardware or frontend gaps with the
+results in the PR or issue.

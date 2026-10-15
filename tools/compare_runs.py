@@ -182,7 +182,7 @@ def compare(
         "differences": errors,
         "exports_sha256": hashes,
         "history": history,
-        "scope": "Native causal state, exported observations and requested product history; not hardware conformance.",
+        "scope": "Saved state, exported observations, and product history.",
     }
 
 

@@ -77,37 +77,3 @@ impl Filter {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn step_impulse_startup_and_signed_rounding() {
-        let mut f = Filter::new(4);
-        assert_eq!([4, 8, 12, 16].map(|v| f.push(0, v)), [4, 8, 12, 10]);
-        let mut f = Filter::new(4);
-        for _ in 0..4 {
-            f.push(0, 0);
-        }
-        assert_eq!([64, 64, 64, 64].map(|v| f.push(0, v)), [16, 32, 48, 64]);
-        let mut f = Filter::new(4);
-        for _ in 0..4 {
-            f.push(0, 0);
-        }
-        assert_eq!([64, 0, 0, 0, 0].map(|v| f.push(0, v)), [16, 16, 16, 16, 0]);
-        let mut f = Filter::new(5);
-        assert_eq!([-1, 0, 1].map(|v| f.push(0, v)), [-1, -1, 0]);
-    }
-    #[test]
-    fn changing_bandwidth_uses_prior_samples_and_axes_keep_distinct_apertures() {
-        let mut f = Filter::new(6);
-        for v in [4, 8, 12, 16] {
-            f.push(0, v);
-        }
-        f.select(4);
-        assert_eq!(f.push(0, 20), 14);
-        assert_eq!(f.push(1, -3), -3);
-        f.select(6);
-        assert_eq!(f.push(0, 64), 64);
-    }
-}

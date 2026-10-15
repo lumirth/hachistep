@@ -1,4 +1,4 @@
-//! Minimal host integration. No source input or host save file is modified.
+//! Frame delivery, streaming audio, and save-state restoration with real firmware.
 use hs_core::{Audio, Buttons, Error, Event, Images, Input, Machine, Output, Time, TimedInput};
 use std::ops::ControlFlow;
 

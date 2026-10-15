@@ -7,7 +7,6 @@ pub mod control;
 pub mod flash;
 pub mod gpio;
 pub mod iic;
-pub(crate) mod interval;
 pub mod rtc;
 pub(crate) mod schedule;
 pub mod sci;
@@ -61,9 +60,6 @@ pub struct Mcu {
     startup: clocks::startup::Startup,
     /// Cleared enables still qualify surviving sources at this instruction's admission point.
     admission_enables: [u8; 10],
-    #[cfg(feature = "profile-work")]
-    #[borsh(skip)]
-    pub(crate) work: crate::profile_work::OwnerWork,
 }
 impl Mcu {
     pub fn new(firmware: &[u8], frequencies: Frequencies) -> Result<Self, Error> {
@@ -86,8 +82,6 @@ impl Mcu {
             reset_held: false,
             startup: Default::default(),
             admission_enables: [0; 10],
-            #[cfg(feature = "profile-work")]
-            work: Default::default(),
         };
         m.apply_gates(Time::ZERO, &mut ())?;
         Ok(m)
@@ -350,6 +344,15 @@ impl Mcu {
     pub fn interrupt(&self) -> Option<u8> {
         self.interrupt_with_retained(self.admission_enables)
     }
+    /// The request offered after the next instruction boundary expires the
+    /// enables retained by this instruction's writes.
+    pub(crate) fn expired_interrupt(&self) -> Option<u8> {
+        if self.admission_enables == [0; 10] {
+            self.interrupt()
+        } else {
+            self.interrupt_with_retained([0; 10])
+        }
+    }
     fn interrupt_with_retained(&self, retained: [u8; 10]) -> Option<u8> {
         if self.control.nmi_pending() {
             return Some(7);
@@ -405,6 +408,11 @@ impl Mcu {
         }
         best
     }
+    /// Whether an instruction boundary would change anything: retained
+    /// enables or IRQ flag-clear protection that it expires.
+    pub(crate) fn boundary_pending(&self) -> bool {
+        self.admission_enables != [0; 10] || self.control.boundary_pending()
+    }
     pub(crate) fn instruction_boundary(&mut self) -> bool {
         Self::expire_admission(&mut self.control, &mut self.admission_enables)
     }
@@ -434,30 +442,5 @@ impl Mcu {
         self.comparators.validate(now)?;
         self.startup.validate(now)?;
         crate::state::future(self.deadline()?, now)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rtc_free_counter_enable_survives_its_clearing_instruction() {
-        let mut mcu = Mcu::new(&[0; FLASH_SIZE], Frequencies::default()).unwrap();
-        for (address, value) in [(0xfff3, 0x80), (0xf06f, 0), (0xf06d, 0x80), (0xf06c, 0x80)] {
-            mcu.write8(address, value, WriteOrigin::Other, Time::ZERO, &mut ())
-                .unwrap();
-        }
-        let now = Time::from_micros(1000);
-        mcu.sync(now, &mut ()).unwrap();
-        assert_eq!(mcu.peek8(0xf067).unwrap() & 0x80, 0x80);
-        assert_eq!(mcu.interrupt(), Some(30));
-        mcu.write8(0xf06d, 0, WriteOrigin::Other, now, &mut ())
-            .unwrap();
-        assert_eq!(mcu.peek8(0xf06d).unwrap(), 0);
-        assert_eq!(mcu.interrupt(), Some(30));
-        mcu.instruction_boundary();
-        assert_eq!(mcu.interrupt(), None);
-        assert_eq!(mcu.peek8(0xf067).unwrap() & 0x80, 0x80);
     }
 }

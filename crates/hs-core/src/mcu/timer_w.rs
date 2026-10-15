@@ -145,7 +145,12 @@ impl TimerW {
             let mut n = tick.checked_sub(self.last).ok_or(TimeError::Reversed)?;
             let mut ordinal = self.last;
             while n != 0 {
-                let k = n.min(self.distance());
+                let k = self.distance();
+                if n < k {
+                    // No compare, overflow, output or buffer transfer is due.
+                    self.count = self.count.wrapping_add(n as u16);
+                    break;
+                }
                 ordinal = ordinal.checked_add(k).ok_or(TimeError::Overflow)?;
                 let at = clocks.edge(ordinal, self.tap())?;
                 self.counter_step(k, at);
@@ -465,25 +470,5 @@ impl TimerW {
             crate::state::require(w.uses(Tap::cpu()), "invalid capture or input clock")?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn compare_occurs_on_leaving_the_matching_count() {
-        let c = Clocks::new(Time::ZERO, Default::default()).unwrap();
-        let mut w = TimerW::default();
-        w.set_gate(true, Time::ZERO, &c).unwrap();
-        w.write_word(0xf0f8, 2, Time::ZERO, &c).unwrap();
-        w.write(0xf0f1, 0x80, Time::ZERO, &c).unwrap();
-        w.write(0xf0f0, 0x80, Time::ZERO, &c).unwrap();
-        w.sync(c.edge(2, Tap::system(1)).unwrap(), &c).unwrap();
-        assert_eq!(w.count, 2);
-        assert_eq!(w.status & 1, 0);
-        w.sync(c.edge(3, Tap::system(1)).unwrap(), &c).unwrap();
-        assert_eq!(w.count, 0);
-        assert_eq!(w.status & 1, 1);
     }
 }

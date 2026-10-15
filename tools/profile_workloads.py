@@ -3,7 +3,7 @@
 
 This is untimed profiling. Fresh-machine construction is included in the sample;
 no replay wall time is presented as a performance measurement. Use an ordinary
-uninstrumented adapter for host-cost sampling and compare_workloads.py for timing.
+adapter for host-cost sampling and compare_workloads.py for timing.
 """
 
 from __future__ import annotations
@@ -37,8 +37,6 @@ def sample_case(adapter: Path, case: dict, seconds: int, sampler: str, directory
             readiness = json.loads(ready)
             if readiness.get("profile_ready") is not True:
                 raise ValueError("adapter lacks explicit untimed profiling replay support")
-            if readiness.get("instrumented") is not False:
-                raise ValueError("sampling requires an uninstrumented profiling adapter")
             sampled = run(
                 [sampler, str(process.pid), str(seconds), "1", "-file", str(directory / "sample.txt")],
                 directory, "sample", timeout=seconds + 30,
@@ -48,8 +46,8 @@ def sample_case(adapter: Path, case: dict, seconds: int, sampler: str, directory
             if process.returncode:
                 raise RuntimeError(f"profiling adapter failed: {directory}")
             result = json.loads(remaining)
-            if result.get("mode") != "profiling" or "ns" in result or "work" in result:
-                raise ValueError("sampling reply must be explicitly untimed and uninstrumented")
+            if result.get("mode") != "profiling" or "ns" in result:
+                raise ValueError("sampling reply must be explicitly untimed")
             return {"case": {**case, "rom": str(case["rom"])}, "command": command, "sample": sampled, "reply": result}
         finally:
             if process.poll() is None:

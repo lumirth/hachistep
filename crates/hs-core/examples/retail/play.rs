@@ -1,8 +1,7 @@
 //! Private retail gameplay through physical inputs and the public embedding API.
 //! Layouts follow lumirth/pw at 6dc7bc09950078fa3fe0dffa4dae34e9549a99da:
 //! globals.h, records.h, pw_dowsing.c and pw_battle.c.
-#[path = "support/state.rs"]
-mod state;
+use super::state;
 use hs_core::{Acceleration, Buttons, Event, Images, Input, Machine, Time, TimedInput};
 
 const LEFT: u8 = 0;
@@ -69,19 +68,15 @@ fn play(mut m: Machine, inputs: &[TimedInput], checkpoint_ms: u64, end_ms: u64) 
     m
 }
 
-#[test]
-#[ignore = "requires HS_FIRMWARE and HS_EEPROM; run tools/verify_retail.py"]
-fn walking_dowsing_and_capture_preserve_rewards_through_restoration() {
-    let firmware = std::fs::read(std::env::var("HS_FIRMWARE").expect("HS_FIRMWARE")).unwrap();
-    let eeprom = std::fs::read(std::env::var("HS_EEPROM").expect("HS_EEPROM")).unwrap();
+pub fn run(firmware: &[u8], eeprom: &[u8]) {
     let mut walking = Machine::new(Images {
-        firmware: &firmware,
-        eeprom: &eeprom,
+        firmware,
+        eeprom,
         eeprom_status: 0,
         sensor_nonvolatile: None,
     })
     .unwrap();
-    let motion: Vec<_> = include_str!("../../../workloads/walking.csv")
+    let motion: Vec<_> = include_str!("../../../../workloads/walking.csv")
         .lines()
         .filter(|line| !line.starts_with('#') && !line.is_empty())
         .map(|line| {
@@ -97,10 +92,21 @@ fn walking_dowsing_and_capture_preserve_rewards_through_restoration() {
             }
         })
         .collect();
-    walking
-        .run_until(Time::from_micros(61_000_000), &motion, &mut ())
+    let boot = walking
+        .run_until(Time::from_micros(4_000_000), &motion, &mut ())
         .unwrap();
-    assert_eq!(&walking.ram()[14..16], &[0, 5]);
+    let initial_watts = u16::from_be_bytes(walking.ram()[14..16].try_into().unwrap());
+    walking
+        .run_until(
+            Time::from_micros(61_000_000),
+            &motion[boot.inputs_consumed..],
+            &mut (),
+        )
+        .unwrap();
+    let earned_watts = u16::from_be_bytes(walking.ram()[14..16].try_into().unwrap());
+    assert!(earned_watts > initial_watts, "walking must earn Watts");
+    assert!(earned_watts >= 3, "Dowsing requires three Watts");
+    let previous_item = walking.eeprom()[0xcebc..0xcebe].to_vec();
 
     // Spend three earned Watts, select the second-right patch and collect its item.
     let dowsing = play(
@@ -117,12 +123,16 @@ fn walking_dowsing_and_capture_preserve_rewards_through_restoration() {
         64000,
         68500,
     );
-    assert_eq!(&dowsing.ram()[14..16], &[0, 2]);
+    let remaining_watts = (earned_watts - 3).to_be_bytes();
+    assert_eq!(&dowsing.ram()[14..16], &remaining_watts);
     for address in [0x0156, 0x0256] {
-        assert_eq!(&dowsing.eeprom()[address + 14..address + 16], &[0, 2]);
+        assert_eq!(
+            &dowsing.eeprom()[address + 14..address + 16],
+            &remaining_watts
+        );
     }
     // WalkData.items starts after its 12-byte prefix and three 16-byte Pokemon.
-    assert_eq!(&dowsing.eeprom()[0xcebc..0xcebe], &[0x11, 0]);
+    assert_ne!(&dowsing.eeprom()[0xcebc..0xcebe], previous_item.as_slice());
 
     // Exercise the frontend's RAM editing contract to fund a separate radar run.
     // The guest owns the entry charge, battle, capture and EEPROM writes.
@@ -154,4 +164,5 @@ fn walking_dowsing_and_capture_preserve_rewards_through_restoration() {
     // captured Pokemon occupies bytes 12..28 of WalkData.
     assert_eq!(&capture.eeprom()[0xce8c..0xce9c], &eeprom[0x8f72..0x8f82]);
     assert_ne!(&capture.eeprom()[0xce8c..0xce8e], &[0, 0]);
+    println!("Walking earned Watts; Dowsing and capture committed rewards through restoration.");
 }

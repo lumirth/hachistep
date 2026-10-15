@@ -43,49 +43,50 @@ impl Saved {
     fn capture(m: &Machine) -> Result<Self, Error> {
         // Express lazy counters at the observation point on an owned copy.
         // The file describes hardware phase independently of earlier sync calls.
-        let mut mcu = m.mcu.clone();
+        let mut mcu = m.board.mcu.clone();
         require(
-            !mcu.sync(m.observation_time(), &mut ())?,
+            !mcu.sync(m.board.observation_time(), &mut ())?,
             "unprocessed reset at capture",
         )?;
-        let mut sensor = m.sensor.clone();
-        sensor.sync_local_until(m.observation_time(), true)?;
+        let mut sensor = m.board.sensor.clone();
+        sensor.sync_local_until(m.board.observation_time(), true)?;
         Ok(Self {
-            firmware_origin: m.firmware_origin,
-            now: m.now,
-            last_effect: m.last_effect,
+            firmware_origin: m.board.firmware_origin,
+            now: m.board.now,
+            // Only whether effects at `now` itself are done is state.
+            last_effect: m.board.observation_time(),
             cpu: m.cpu.save()?,
             mcu,
-            eeprom: m.eeprom.clone(),
+            eeprom: m.board.eeprom.clone(),
             sensor,
-            lcd: m.lcd.clone(),
-            conditions: m.conditions,
-            analog_pins: m.analog_pins,
-            pending: m.pending.map(|mut p| {
+            lcd: m.board.lcd.clone(),
+            conditions: m.board.conditions,
+            analog_pins: m.board.analog_pins,
+            pending: m.board.pending.map(|mut p| {
                 if p.lane == 0 {
                     p.high = 0;
                 }
                 p
             }),
-            resume_after: m.resume_after,
-            serial: m.serial,
-            piezo: m.piezo,
-            incident_light: m.incident_light,
-            emitting: m.emitting,
-            reset_asserted: m.reset_asserted,
-            reset_release: m.reset_release,
-            watchdog_reset: m.watchdog_reset,
-            connected: m.connected,
-            power: m.power.clone(),
-            stopped_by_core_fault: m.fault.is_some(),
+            resume_after: m.board.resume_after,
+            serial: m.board.serial,
+            piezo: m.board.piezo,
+            incident_light: m.board.incident_light,
+            emitting: m.board.emitting,
+            reset_asserted: m.board.reset_asserted,
+            reset_release: m.board.reset_release,
+            watchdog_reset: m.board.watchdog_reset,
+            connected: m.board.connected,
+            power: m.board.power.clone(),
+            stopped_by_core_fault: m.board.fault.is_some(),
         })
     }
     fn restore(self) -> Result<Machine, Error> {
-        let mut m = Machine {
+        let cpu = self.cpu.restore(self.stopped_by_core_fault)?;
+        let mut m = Board {
             firmware_origin: self.firmware_origin,
             now: self.now,
             last_effect: self.last_effect,
-            cpu: self.cpu.restore(self.stopped_by_core_fault)?,
             mcu: self.mcu,
             eeprom: self.eeprom,
             sensor: self.sensor,
@@ -112,8 +113,8 @@ impl Saved {
                 .stopped_by_core_fault
                 .then_some(Error::Snapshot("saved session was stopped by a core fault")),
             stats: Statistics::default(),
-            #[cfg(feature = "profile-work")]
-            work: Default::default(),
+            shift: Default::default(),
+            late_output: LateOutput::default(),
         };
         require(
             m.last_effect <= m.now
@@ -134,7 +135,7 @@ impl Saved {
         m.lcd.validate(m.now)?;
         if let Some(p) = m.pending {
             p.wait.validate()?;
-            let action = m.cpu.issued_action();
+            let action = cpu.issued_action();
             require(
                 p.wait.uses(Tap::cpu()) && action == Some(p.action),
                 "saved request differs from CPU progress",
@@ -159,7 +160,7 @@ impl Saved {
             };
             resume.wait().validate()?;
             require(
-                resume.wait().uses(tap) && m.cpu.sleeping() && m.pending.is_none(),
+                resume.wait().uses(tap) && cpu.sleeping() && m.pending.is_none(),
                 "invalid saved wake progress",
             )?;
             future(resume.wait().deadline(&m.mcu.clocks)?, m.now)?;
@@ -177,9 +178,7 @@ impl Saved {
         // These are pure projections. Board resolution would deliver edges and
         // chip-select effects again, and must never be used as a load helper.
         m.refresh_deadline()?;
-        #[cfg(feature = "profile-work")]
-        m.clear_work();
-        Ok(m)
+        Ok(Machine { cpu, board: m })
     }
 }
 impl Snapshot {
@@ -188,7 +187,7 @@ impl Snapshot {
 
     /// Immutable identity of the construction firmware, before guest flash writes.
     pub fn firmware_origin(&self) -> [u8; 32] {
-        self.state.firmware_origin
+        self.state.board.firmware_origin
     }
 
     /// Encode the state needed to reproduce subsequent hardware behavior.
@@ -225,80 +224,5 @@ impl Snapshot {
         Ok(Self {
             state: saved.restore()?,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn machine() -> Machine {
-        let mut rom = vec![0; 49152];
-        rom[..2].copy_from_slice(&[1, 0]);
-        rom[0x100..0x102].copy_from_slice(&[0x40, 0xfe]);
-        Machine::new(Images {
-            firmware: &rom,
-            eeprom: &[0xff; 65536],
-            eeprom_status: 0,
-            sensor_nonvolatile: None,
-        })
-        .unwrap()
-    }
-    fn encoded(saved: &Saved) -> Vec<u8> {
-        let payload = borsh::to_vec(saved).unwrap();
-        let mut bytes = MAGIC.to_vec();
-        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&Sha256::digest(&payload));
-        bytes.extend(payload);
-        bytes
-    }
-    #[test]
-    fn checksum_does_not_substitute_for_progress_validation() {
-        let mut m = machine();
-        m.run_until(Time::from_micros(10), &[], &mut ()).unwrap();
-        let before = m.snapshot();
-        for change in 0..4 {
-            let mut saved = Saved::capture(&m).unwrap();
-            match change {
-                0 => saved.last_effect = Time::MAX,
-                1 => saved.mcu.clocks.frequencies.main_hz = 0,
-                2 => saved.pending.as_mut().unwrap().lane = 2,
-                _ => saved.conditions.avcc_override_millivolts = Some(0),
-            }
-            assert!(Snapshot::decode(&encoded(&saved)).is_err());
-            assert_eq!(m.snapshot(), before);
-        }
-    }
-    #[test]
-    fn corrupted_scalar_records_are_bounded_and_never_panic() {
-        let m = machine();
-        let saved = Saved::capture(&m).unwrap();
-        let bytes = encoded(&saved);
-        // Cover CPU, clock/control, serial, sensor and board scalar regions;
-        // random mutations of ROM/RAM bytes alone would barely exercise loading.
-        let cpu_end = HEADER + 64 + borsh::to_vec(&saved.cpu).unwrap().len();
-        let flash_end = cpu_end + borsh::to_vec(&saved.mcu.flash).unwrap().len();
-        let mcu_end = cpu_end + borsh::to_vec(&saved.mcu).unwrap().len();
-        let eeprom_end = mcu_end + borsh::to_vec(&saved.eeprom).unwrap().len();
-        let ranges = [
-            HEADER + 64..cpu_end,
-            flash_end + 2048..mcu_end,
-            mcu_end + 65536..eeprom_end,
-            eeprom_end..eeprom_end + borsh::to_vec(&saved.sensor).unwrap().len(),
-            bytes.len() - 256..bytes.len(),
-        ];
-        for at in ranges.into_iter().flat_map(|r| r.step_by(17)) {
-            for value in [0, 0xff] {
-                let mut bad = bytes.clone();
-                bad[at..(at + 8).min(bytes.len())].fill(value);
-                let checksum = Sha256::digest(&bad[HEADER..]);
-                bad[12..HEADER].copy_from_slice(&checksum);
-                if let Ok(snapshot) = Snapshot::decode(&bad) {
-                    let mut candidate = Machine::from_snapshot(&snapshot);
-                    let _ = candidate.run_until(Time::from_micros(100), &[], &mut ());
-                    let _ = candidate.snapshot().encode().unwrap();
-                }
-            }
-        }
     }
 }

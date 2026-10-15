@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Compare supplied native workload adapters with behavioral preflight and work counts.
+"""Compare supplied native workload adapters with behavioral preflight.
 
 The default adapter accepts MODE ROM QUANTUM_US LIMIT_US 1 and prints one JSON
 object containing ns, retired and the endpoint fields below. Timing must exclude
-construction and final hashing; adapters define their output consumer. A separate
-profile-work executable can emit the same endpoint plus a nested `work` object.
+construction and final hashing; adapters define their output consumer.
 
 Mark our workload_probe adapters with --artifacts NAME. Their preflight receives
 --artifact-dir and exports a native state plus complete product-event history.
@@ -55,45 +54,6 @@ def assignments(items: list[str]) -> dict[str, str]:
     return result
 
 
-def counts(value: dict, prefix: str = "") -> dict[str, int]:
-    result = {}
-    for key, count in value.items():
-        name = f"{prefix}{key}"
-        if isinstance(count, dict):
-            result.update(counts(count, name + "."))
-        elif type(count) is int and count >= 0:
-            result[name] = count
-        else:
-            raise ValueError(f"work counter {name} must be a nonnegative integer")
-    if not result:
-        raise ValueError("work accounting contains no counters")
-    return result
-
-
-def normalize(totals: dict[str, int], report: dict, byte_keys: dict) -> dict:
-    denominators = {"retired": report["retired"]}
-    denominators.update({name: field(report, key) for name, key in byte_keys.items()})
-    if any(type(n) is not int or n < 0 for n in denominators.values()):
-        raise ValueError("retirement/byte counts must be nonnegative integers")
-    counts_are_cumulative = report.get("cumulative_counts") is True or report.get("resets", 0) == 0
-    return {
-        "totals": totals,
-        "denominators": denominators,
-        "per": {
-            name: {
-                key: count / n if n and counts_are_cumulative else None
-                for key, count in totals.items()
-            }
-            for name, n in denominators.items()
-        },
-        "count_scope": (
-            "adapter declares cumulative counts" if report.get("cumulative_counts") is True
-            else "reset-free fixed-condition board run" if counts_are_cumulative
-            else "counts may restart at reset; ratios unavailable"
-        ),
-    }
-
-
 def schedule(names: list[str], repeats: int, seed: int) -> list[tuple[int, str]]:
     # Each paired block has reversed halves; shuffle the next block to vary order
     # while giving every variant equal observations at each end of a block.
@@ -126,7 +86,7 @@ def history(report: dict, directory: Path) -> dict:
 
 def observe(variant: dict, case: dict, phase: str, directory: Path, timeout: float) -> dict:
     directory.mkdir()
-    adapter = variant["work_adapter"] if phase == "work" else variant["adapter"]
+    adapter = variant["adapter"]
     command = [adapter, case["mode"], case["rom"], str(case["quantum_us"]), str(case["limit_us"]), "1"]
     if phase == "preflight" and variant.get("artifacts"):
         command += ["--artifact-dir", str(directory)]
@@ -151,8 +111,6 @@ def observe(variant: dict, case: dict, phase: str, directory: Path, timeout: flo
     report = json.loads(process.stdout)
     if not isinstance(report, dict):
         raise ValueError("adapter reply must be a JSON object")
-    if phase != "work" and "work" in report:
-        raise ValueError("instrumented reply used as an uninstrumented observation")
     return {"report": report, **receipt}
 
 
@@ -226,13 +184,6 @@ def compare_case(case: dict, variants: dict, directory: Path, repeats: int, seed
                 write_json(directory / "preflight.json", {"observations": preflights, "histories": histories, "equivalent": False})
                 raise ValueError(f"native state/history preflight differs within group {group}")
             history_groups.setdefault(group, name)
-    work = {}
-    for name, variant in variants.items():
-        if variant.get("work_adapter"):
-            result = observe(variant, case, "work", directory / f"work-{name}", timeout)
-            if endpoint(result["report"], keys) != expected[name]:
-                raise ValueError(f"instrumented endpoint differs: {name}")
-            work[name] = {**result, "accounting": normalize(counts(result["report"]["work"]), result["report"], byte_keys)}
     references = list(groups.values())
     differences = {
         name: {key: {"reference": expected[references[0]][key], "value": value} for key, value in expected[name].items() if value != expected[references[0]][key]}
@@ -270,15 +221,14 @@ def compare_case(case: dict, variants: dict, directory: Path, repeats: int, seed
         raise RuntimeError("ROM changed during comparison")
     return {
         "case": case, "rom_sha256": rom_hash, "preflight": preflight,
-        "work": work, "raw_samples": rows, "paired_blocks": blocks,
+        "raw_samples": rows, "paired_blocks": blocks,
         "summary": summaries, "baseline": reference,
     }
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--variant", action="append", default=[], help="NAME=uninstrumented native adapter")
-    parser.add_argument("--work-variant", action="append", default=[], help="NAME=separate profile-work adapter")
+    parser.add_argument("--variant", action="append", default=[], help="NAME=native adapter")
     parser.add_argument("--group", action="append", default=[], help="NAME=equivalence group; default all")
     parser.add_argument("--artifacts", action="append", default=[], help="NAME supports workload_probe native state/history preflight")
     parser.add_argument("--build-receipt", action="append", default=[], help="NAME=source/compiler/profile build receipt file")
@@ -298,7 +248,7 @@ def main(argv: list[str] | None = None) -> None:
     variants = {}
     for name, path in assignments(args.variant).items():
         variants.setdefault(name, {})["adapter"] = str(Path(path).resolve())
-    for option, key in ((args.work_variant, "work_adapter"), (args.group, "group"), (args.build_receipt, "build_receipt")):
+    for option, key in ((args.group, "group"), (args.build_receipt, "build_receipt")):
         for name, value in assignments(option).items():
             if name not in variants:
                 parser.error(f"unknown variant: {name}")
@@ -312,7 +262,7 @@ def main(argv: list[str] | None = None) -> None:
         if not name.replace("-", "").replace("_", "").isalnum():
             raise ValueError("variant names must contain letters, numbers, hyphens or underscores")
         identities[name] = {"group": variant.get("group", "all")}
-        for key in ("adapter", "work_adapter", "build_receipt"):
+        for key in ("adapter", "build_receipt"):
             if variant.get(key):
                 path = Path(variant[key]).resolve()
                 variant[key] = str(path)
@@ -360,7 +310,6 @@ def main(argv: list[str] | None = None) -> None:
         "results": [],
         "limitations": [
             "Executable hashes identify supplied bytes; build receipts are separately supplied evidence, not verified source provenance.",
-            "Work accounting uses separate instrumented runs; their wall time is excluded from timing summaries.",
             "Cross-group endpoint differences remain visible; this comparison does not establish hardware fidelity.",
             "Legacy normalization assumes the board adapter's fixed conditions and no external inputs; a reset counter alone does not prove power continuity.",
             "Mirrored paired blocks reduce ordering bias; host contention and drift can still invalidate a speed claim. Inspect raw samples and paired ratio spread.",
@@ -383,7 +332,7 @@ def main(argv: list[str] | None = None) -> None:
         report["adapter_bytes_unchanged"] = all(
             digest(Path(identity[key]["path"])) == identity[key]["sha256"]
             for identity in identities.values()
-            for key in ("adapter", "work_adapter") if key in identity
+            for key in ("adapter",) if key in identity
         )
         write_json(out / "summary.json", report)
     if not report["adapter_bytes_unchanged"]:

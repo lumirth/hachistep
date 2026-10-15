@@ -115,11 +115,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut failure = None;
     let mut cursor = changes.partition_point(|input| input.at < m.now());
     while m.now() < end {
-        let to = m
-            .now()
-            .checked_add(Duration::from_micros(chunk))
-            .ok_or("time overflow")?
-            .min(end);
+        let to = match chunk {
+            Some(chunk) => m
+                .now()
+                .checked_add(Duration::from_micros(chunk))
+                .ok_or("time overflow")?
+                .min(end),
+            None => end,
+        };
         let mut stop = cursor;
         while stop < changes.len() && changes[stop].at < to {
             stop += 1;
@@ -184,7 +187,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 fn main() -> ExitCode {
-    match run() {
+    let r = run();
+    match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

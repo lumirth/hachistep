@@ -423,6 +423,10 @@ impl Iic {
         }
         Ok(())
     }
+    /// Whether pin changes reach the module beyond its raw level record.
+    pub(crate) fn observes_pins(&self) -> bool {
+        self.gate && self.enabled()
+    }
     pub fn input_pins(
         &mut self,
         scl: bool,
@@ -435,7 +439,8 @@ impl Iic {
         }
         self.raw = [scl, sda];
         self.schedule_filter(now, clocks)?;
-        Ok(true)
+        // A disabled or ungated module keeps raw levels but has no appointment.
+        Ok(self.gate && self.enabled())
     }
     pub fn deadline(&self, clocks: &Clocks) -> Result<Option<Time>, Error> {
         if !self.gate || !self.enabled() {
