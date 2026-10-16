@@ -569,7 +569,11 @@ impl PlayerView {
             Intent::LoadSlot(slot) => self.slot(slot, true, cx),
             Intent::SelectSlot(slot) => self.select_slot(slot, cx),
             Intent::UndoLoadState => self.player.send(Command::UndoLoadState),
-            Intent::ToggleTurbo => self.player.send(Command::ToggleTurbo),
+            Intent::ToggleTurbo => {
+                if !self.presentation.is_connection_active() {
+                    self.player.send(Command::ToggleTurbo);
+                }
+            }
             Intent::Screenshot => self.choose(FileCommand::Screenshot, window, cx),
             Intent::Close => self.request_close(window, cx),
             Intent::Pause => self.player.send(Command::Pause),
@@ -578,7 +582,11 @@ impl PlayerView {
                 .player
                 .send(Command::Walking(!self.presentation.walking)),
             Intent::Mute => self.player.send(Command::Mute(!self.presentation.muted)),
-            Intent::Speed(percent) => self.player.send(Command::Speed(percent)),
+            Intent::Speed(percent) => {
+                if percent == 100 || !self.presentation.is_connection_active() {
+                    self.player.send(Command::Speed(percent));
+                }
+            }
             Intent::Scale(scale) => {
                 self.scale = scale;
                 self.fit(window);
@@ -805,7 +813,9 @@ impl PlayerView {
         if key == keys[2] {
             self.buttons.right = pressed;
         }
-        if key == cx.global::<Desktop>().preferences.turbo_key {
+        if key == cx.global::<Desktop>().preferences.turbo_key
+            && !self.presentation.is_connection_active()
+        {
             self.player.send(Command::Turbo(pressed));
         }
         self.player.send(Command::Buttons(self.buttons));

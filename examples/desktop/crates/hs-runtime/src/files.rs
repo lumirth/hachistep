@@ -223,7 +223,7 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                             if let Some(parent) = path.parent() {
                                 std::fs::create_dir_all(parent)?;
                             }
-                            storage::atomic(&path, &storage::pack(b"HSTEPst1", &capture)?)?;
+                            storage::atomic(&path, &storage::pack(b"HSTEPst2", &capture)?)?;
                             let slots = bindings
                                 .get(&id)
                                 .and_then(|(binding, _)| binding.as_ref())

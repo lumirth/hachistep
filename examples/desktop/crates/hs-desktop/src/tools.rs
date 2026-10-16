@@ -625,7 +625,7 @@ impl Tool {
                         Button::new(("connect", id))
                             .small()
                             .label("Connect")
-                            .disabled(busy || !available)
+                            .disabled(busy || !available || other.paused || frame.paused)
                             .on_click(cx.listener(move |view, _, _, _| {
                                 view.player.send(Command::Link(id))
                             })),

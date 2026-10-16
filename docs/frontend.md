@@ -9,10 +9,11 @@ installed, including the Windows SDK on Windows:
 cargo run --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --locked
 ```
 
-Firmware must be a raw
-49,152-byte image; EEPROM images must contain 65,536 bytes. EEPROM changes stay in memory until Save EEPROM or Save EEPROM As. A new EEPROM
-starts untitled; closing a modified session offers Save, Discard, or Cancel. Hardware calibration,
-status, and programmed flash live in its adjacent `.hachistep` companion.
+Firmware must be a raw 49,152-byte image; EEPROM images must contain 65,536 bytes.
+EEPROM changes stay in memory until Save EEPROM or Save EEPROM As. A new EEPROM
+starts untitled; closing a modified session offers Save, Don't Save, or Cancel.
+Hardware calibration, status, and programmed flash live in its adjacent `.hachistep`
+companion.
 Keep that companion with the EEPROM. `.hachistep.backup` retains the previous
 committed hardware image, and `.hachistep.pending` allows recovery after an
 interrupted commit.
@@ -22,6 +23,11 @@ EEPROM. State loads open paused and can be undone. Locally linked captures inclu
 both machines and their optical queues. Connect the same two EEPROMs in the same
 order before loading a linked state. Untitled EEPROMs can use state files; numbered
 slots become available after the EEPROM is saved.
+
+Infrared connections require 100% speed. Pausing, resetting, or closing a player
+disconnects it. Local links preserve each machine's clock state and forward optical
+transitions at the next 64.64 time unit after emission. Snapshot lookahead finds the
+next transition before either recipient runs past it.
 
 Launch firmware and an EEPROM directly:
 

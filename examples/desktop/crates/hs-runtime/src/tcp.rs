@@ -28,6 +28,12 @@ pub enum Connection {
     Error(String),
 }
 
+impl Connection {
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Listening | Self::Connecting | Self::Connected)
+    }
+}
+
 impl std::fmt::Display for Connection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -95,6 +101,10 @@ impl Tcp {
             incoming: VecDeque::new(),
             receive_end: Time::ZERO,
         }
+    }
+
+    pub fn active(&self) -> bool {
+        self.state.lock().unwrap().is_active()
     }
 
     pub fn connected(&self) -> bool {

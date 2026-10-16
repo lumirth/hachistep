@@ -1,5 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use hs_core::Acceleration;
+use hs_core::{Acceleration, Duration, Input, Time, TimedInput};
 
 #[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub(crate) struct Motion {
@@ -23,7 +23,19 @@ impl Motion {
         (30..=240).contains(&self.cadence) && self.phase < 120_000
     }
 
-    pub fn sample(&mut self) -> Acceleration {
+    pub fn inputs(&mut self, next: &mut Time, now: Time, end: Time) -> Vec<TimedInput> {
+        let mut inputs = Vec::new();
+        while *next < end {
+            inputs.push(TimedInput {
+                at: (*next).max(now),
+                input: Input::Acceleration(self.sample()),
+            });
+            *next = Time::from_raw(next.raw() + Duration::from_micros(1000).raw());
+        }
+        inputs
+    }
+
+    fn sample(&mut self) -> Acceleration {
         let mut acceleration = Acceleration::STILL;
         if self.walking {
             self.phase = (self.phase + u64::from(self.cadence)) % 120_000;

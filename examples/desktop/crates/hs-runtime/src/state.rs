@@ -28,6 +28,7 @@ pub(crate) struct SavedSession {
     pub motion: Motion,
     pub next_motion: hs_core::Time,
     pub reset_release: Option<hs_core::Time>,
+    pub emitting: bool,
 }
 
 pub(crate) struct PendingSession {
@@ -36,6 +37,7 @@ pub(crate) struct PendingSession {
     pub motion: Motion,
     pub next_motion: hs_core::Time,
     pub reset_release: Option<hs_core::Time>,
+    pub emitting: bool,
 }
 
 impl PendingSession {
@@ -46,13 +48,14 @@ impl PendingSession {
             motion: self.motion,
             next_motion: self.next_motion,
             reset_release: self.reset_release,
+            emitting: self.emitting,
         })
     }
 }
 
 impl Capture {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let capture: Self = storage::unpack(b"HSTEPst1", bytes)?;
+        let capture: Self = storage::unpack(b"HSTEPst2", bytes)?;
         ensure!(
             capture.revision == crate::CORE_REVISION,
             "Save state uses a different core revision"
@@ -65,6 +68,9 @@ impl Capture {
             capture.link.is_some() == (capture.sessions.len() == 2),
             "Invalid linked state"
         );
+        if let Some(link) = &capture.link {
+            ensure!(link.sender < 2, "Invalid optical sender");
+        }
         for session in &capture.sessions {
             Snapshot::decode(&session.machine)?;
             ensure!(session.motion.valid(), "Invalid walking cadence");
@@ -81,6 +87,7 @@ impl SavedSession {
             motion: self.motion,
             next_motion: self.next_motion,
             reset_release: self.reset_release,
+            emitting: self.emitting,
         })
     }
 }
@@ -202,7 +209,8 @@ impl Worker {
                 .restore(saved, self.sound.rate, linked)?;
             self.sessions.get_mut(&member).unwrap().paused = point.paused;
         }
-        if let Some(link) = point.link {
+        if let Some(mut link) = point.link {
+            link.prediction = [None, None];
             self.links.push(link);
         }
         Ok(())

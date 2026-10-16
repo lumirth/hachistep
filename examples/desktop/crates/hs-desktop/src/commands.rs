@@ -119,6 +119,7 @@ pub(crate) fn menus(
 ) -> Vec<Menu> {
     let ready = frame.ready;
     let paused = frame.paused;
+    let connected = frame.is_connection_active();
     let active = |name: &str, intent: Intent| item(name, intent).disabled(!ready);
     let mut files = vec![
         item("New Window", Intent::NewWindow),
@@ -161,16 +162,12 @@ pub(crate) fn menus(
                 Menu::new("Speed").items([50, 75, 100, 150, 200, 400, 800].map(|percent| {
                     item(&format!("{percent}%"), Intent::Speed(percent))
                         .checked(percent == frame.speed_percent)
-                        .disabled(
-                            !ready
-                                || (percent != 100
-                                    && frame.connection == hs_runtime::Connection::Connected),
-                        )
+                        .disabled(!ready || (percent != 100 && connected))
                 })),
             ),
             active("Fast-forward", Intent::ToggleTurbo)
                 .checked(frame.turbo)
-                .disabled(!ready || frame.connection == hs_runtime::Connection::Connected),
+                .disabled(!ready || connected),
             MenuItem::separator(),
             MenuItem::submenu(
                 Menu::new("Load State").items(

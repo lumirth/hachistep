@@ -219,6 +219,10 @@ impl Default for Presentation {
 }
 
 impl Presentation {
+    pub fn is_connection_active(&self) -> bool {
+        self.peer.is_some() || self.connection.is_active()
+    }
+
     pub fn connection_name(&self) -> String {
         if self.peer.is_some() {
             "Local link".into()
@@ -364,48 +368,43 @@ impl Session {
             right: a.right || b.right,
         })
     }
-    fn advance(&mut self, end: Time, mut inputs: Vec<TimedInput>) -> Result<Vec<Edge>> {
+    fn planned_inputs(&self, end: Time, mut inputs: Vec<TimedInput>) -> Vec<TimedInput> {
         let now = self.machine.now();
-        let count = self.inputs.partition_point(|input| input.at < end);
-        inputs.extend(self.inputs.drain(..count));
+        inputs.extend(
+            self.inputs
+                .iter()
+                .take_while(|input| input.at < end)
+                .copied(),
+        );
         if let Some(at) = self.reset_release.filter(|&at| at < end) {
             inputs.push(TimedInput {
                 at: at.max(now),
                 input: Input::ResetPin(true),
             });
-            self.reset_release = None;
         }
-        while self.next_motion < end {
-            let sample = self.motion.sample();
-            self.motion_sample = (self.motion_sample + 1) % 4;
-            if self.motion_sample == 0 {
-                if self.motion_samples.len() == 512 {
-                    self.motion_samples.pop_front();
-                }
-                self.motion_samples.push_back(sample);
-            }
-            inputs.push(TimedInput {
-                at: self.next_motion.max(now),
-                input: Input::Acceleration(sample),
-            });
-            self.next_motion =
-                Time::from_raw(self.next_motion.raw() + hs_core::Duration::from_micros(1000).raw());
-        }
+        let mut next_motion = self.next_motion;
+        inputs.extend(self.motion.clone().inputs(&mut next_motion, now, end));
+        inputs.sort_by_key(|input| input.at);
+        inputs
+    }
+    fn advance(
+        &mut self,
+        end: Time,
+        mut inputs: Vec<TimedInput>,
+        stop_on_ir: bool,
+    ) -> Result<Vec<Edge>> {
+        let now = self.machine.now();
         if let Some(tcp) = &mut self.tcp {
             inputs.extend(tcp.inputs(now, end)?);
         }
-        inputs.sort_by_key(|input| input.at);
-        for input in &inputs {
-            if matches!(input.input, Input::InfraredLevel(true)) {
-                self.record_activity(input.at, false);
-            }
-        }
+        let inputs = self.planned_inputs(end, inputs);
         let mut sink = Sink {
             sound: &mut self.sound,
             samples: Vec::new(),
             edges: Vec::new(),
             dirty: false,
             error: None,
+            stop_on_ir,
         };
         self.machine.run_until(end, &inputs, &mut sink)?;
         if let Some(error) = sink.error {
@@ -413,6 +412,28 @@ impl Session {
         }
         self.dirty |= sink.dirty;
         let Sink { edges, samples, .. } = sink;
+        let end = self.machine.now();
+        let count = self.inputs.partition_point(|input| input.at < end);
+        self.inputs.drain(..count);
+        if self.reset_release.is_some_and(|at| at < end) {
+            self.reset_release = None;
+        }
+        for input in self.motion.inputs(&mut self.next_motion, now, end) {
+            if let Input::Acceleration(sample) = input.input {
+                self.motion_sample = (self.motion_sample + 1) % 4;
+                if self.motion_sample == 0 {
+                    if self.motion_samples.len() == 512 {
+                        self.motion_samples.pop_front();
+                    }
+                    self.motion_samples.push_back(sample);
+                }
+            }
+        }
+        for input in inputs.iter().take_while(|input| input.at < end) {
+            if matches!(input.input, Input::InfraredLevel(true)) {
+                self.record_activity(input.at, false);
+            }
+        }
         for edge in &edges {
             if edge.emitting {
                 self.record_activity(edge.at, true);
@@ -426,7 +447,7 @@ impl Session {
                 for edge in &edges {
                     tcp.emit(edge)?;
                 }
-                tcp.finish(self.machine.now())?;
+                tcp.finish(end)?;
             }
         }
         self.enqueue_audio(samples);
@@ -466,6 +487,7 @@ impl Session {
             motion: self.motion.clone(),
             next_motion: self.next_motion,
             reset_release: self.reset_release,
+            emitting: self.emitting,
         }
     }
     fn restore(&mut self, saved: PendingSession, rate: u32, linked: bool) -> Result<()> {
@@ -475,7 +497,11 @@ impl Session {
         self.activity.clear();
         self.next_motion = saved.next_motion;
         self.reset_release = saved.reset_release;
+        self.emitting = saved.emitting;
         self.paused = true;
+        if linked {
+            self.speed_percent = 100;
+        }
         self.fast = false;
         self.turbo_toggle = false;
         self.inputs.clear();
@@ -504,10 +530,11 @@ struct Sink<'a> {
     edges: Vec<Edge>,
     dirty: bool,
     error: Option<anyhow::Error>,
+    stop_on_ir: bool,
 }
 impl Output for Sink<'_> {
     fn exact_stops(&self) -> bool {
-        false
+        self.stop_on_ir
     }
     fn event(&mut self, event: Event) -> ControlFlow<()> {
         match event {
@@ -521,7 +548,12 @@ impl Output for Sink<'_> {
             Event::NvCommit { .. } | Event::NvInterrupted { .. } | Event::NvByte { .. } => {
                 self.dirty = true
             }
-            Event::Infrared { at, emitting } => self.edges.push(Edge { at, emitting }),
+            Event::Infrared { at, emitting } => {
+                self.edges.push(Edge { at, emitting });
+                if self.stop_on_ir {
+                    return ControlFlow::Break(());
+                }
+            }
             _ => (),
         }
         ControlFlow::Continue(())
@@ -605,7 +637,11 @@ impl Worker {
                 for id in ids {
                     let _ = self.disconnect(id);
                 }
-                for session in self.sessions.values_mut() {
+                let linked: Vec<_> = self.links.iter().flat_map(|link| link.ids).collect();
+                for (&id, session) in &mut self.sessions {
+                    if linked.contains(&id) {
+                        continue;
+                    }
                     session.release();
                     session.fast = false;
                     session.turbo_toggle = false;
@@ -623,6 +659,9 @@ impl Worker {
         }
     }
     fn dispatch(&mut self, id: Id, command: Command) {
+        for link in &mut self.links {
+            link.prediction = [None, None];
+        }
         if let Err(error) = self.command(id, command) {
             self.view(id, |view| view.error = Some(format!("{error:#}")));
         }
@@ -719,6 +758,7 @@ impl Worker {
                 return Ok(());
             }
             Command::PrepareClose => {
+                self.disconnect(id)?;
                 if let Some(session) = self.sessions.get_mut(&id) {
                     ensure!(
                         !session.machine.eeprom_busy() || !session.paused,
@@ -745,76 +785,76 @@ impl Worker {
                 }
                 return Ok(());
             }
-            Command::Pause
-            | Command::Turbo(_)
-            | Command::ToggleTurbo
-            | Command::Speed(_)
-            | Command::TurboRate(_) => {
-                let ids = self
-                    .links
-                    .iter()
-                    .find(|link| link.ids.contains(&id))
-                    .map(|link| link.ids.to_vec())
-                    .unwrap_or_else(|| vec![id]);
+            Command::Pause => {
                 let paused = self
                     .sessions
                     .get(&id)
                     .context("Open firmware first")?
                     .paused;
+                let ids = if paused {
+                    self.links
+                        .iter()
+                        .find(|link| link.ids.contains(&id))
+                        .map(|link| link.ids.to_vec())
+                        .unwrap_or_else(|| vec![id])
+                } else {
+                    self.disconnect(id)?;
+                    vec![id]
+                };
                 for id in ids {
-                    if let Some(session) = self.sessions.get_mut(&id) {
-                        let previous = (session.paused, session.fast, session.speed_percent);
-                        match command {
-                            Command::Pause => {
-                                session.paused = !paused;
-                                session.fast = false;
-                                session.turbo_toggle = false;
-                                session.release();
-                            }
-                            Command::Turbo(fast) => {
-                                ensure!(
-                                    !fast
-                                        || !session.tcp.as_ref().is_some_and(|tcp| tcp.connected()),
-                                    "Turbo is unavailable during TCP connections"
-                                );
-                                session.fast = fast || session.turbo_toggle;
-                            }
-                            Command::ToggleTurbo => {
-                                ensure!(
-                                    !session.tcp.as_ref().is_some_and(|tcp| tcp.connected()),
-                                    "Fast-forward is unavailable during TCP connections"
-                                );
-                                session.turbo_toggle = !session.turbo_toggle;
-                                session.fast = session.turbo_toggle;
-                            }
-                            Command::Speed(percent) => {
-                                ensure!(
-                                    (25..=800).contains(&percent),
-                                    "Choose a speed between 25% and 800%"
-                                );
-                                ensure!(
-                                    percent == 100
-                                        || !session.tcp.as_ref().is_some_and(|tcp| tcp.connected()),
-                                    "TCP connections require 100% speed"
-                                );
-                                session.speed_percent = percent;
-                                session.fast = false;
-                                session.turbo_toggle = false;
-                            }
-                            Command::TurboRate(percent) => {
-                                ensure!(
-                                    (100..=800).contains(&percent),
-                                    "Choose a turbo speed between 100% and 800%"
-                                );
-                                session.turbo_percent = percent;
-                            }
-                            _ => unreachable!(),
-                        }
-                        if previous != (session.paused, session.fast, session.speed_percent) {
-                            session.reanchor();
-                            session.clear_audio(self.sound.rate)?;
-                        }
+                    let session = self.sessions.get_mut(&id).context("Player closed")?;
+                    session.paused = !paused;
+                    session.fast = false;
+                    session.turbo_toggle = false;
+                    session.release();
+                    session.reanchor();
+                    session.clear_audio(self.sound.rate)?;
+                }
+                return Ok(());
+            }
+            Command::Turbo(_)
+            | Command::ToggleTurbo
+            | Command::Speed(_)
+            | Command::TurboRate(_) => {
+                let linked = self.links.iter().any(|link| link.ids.contains(&id));
+                let session = self.sessions.get_mut(&id).context("Open firmware first")?;
+                let connected = linked || session.tcp.as_ref().is_some_and(tcp::Tcp::active);
+                let previous = (session.fast, session.speed_percent);
+                match command {
+                    Command::Turbo(fast) => {
+                        ensure!(!fast || !connected, "Connections require 100% speed");
+                        session.fast = fast || session.turbo_toggle;
                     }
+                    Command::ToggleTurbo => {
+                        ensure!(!connected, "Connections require 100% speed");
+                        session.turbo_toggle = !session.turbo_toggle;
+                        session.fast = session.turbo_toggle;
+                    }
+                    Command::Speed(percent) => {
+                        ensure!(
+                            (25..=800).contains(&percent),
+                            "Choose a speed between 25% and 800%"
+                        );
+                        ensure!(
+                            percent == 100 || !connected,
+                            "Connections require 100% speed"
+                        );
+                        session.speed_percent = percent;
+                        session.fast = false;
+                        session.turbo_toggle = false;
+                    }
+                    Command::TurboRate(percent) => {
+                        ensure!(
+                            (100..=800).contains(&percent),
+                            "Choose a turbo speed between 100% and 800%"
+                        );
+                        session.turbo_percent = percent;
+                    }
+                    _ => unreachable!(),
+                }
+                if previous != (session.fast, session.speed_percent) {
+                    session.reanchor();
+                    session.clear_audio(self.sound.rate)?;
                 }
                 return Ok(());
             }
@@ -845,6 +885,7 @@ impl Worker {
                         at: now,
                         input: Input::ResetPin(false),
                     }],
+                    false,
                 )?;
                 session.reset_release = Some(Time::from_raw(
                     session.machine.now().raw() + hs_core::Duration::from_micros(1000).raw(),
@@ -920,18 +961,16 @@ impl Worker {
             [a.machine.now(), b.machine.now()],
             [a.emitting, b.emitting],
         );
-        let paused = a.paused || b.paused;
-        let speed = a.speed_percent;
-        let turbo = a.turbo_percent;
+        ensure!(!a.paused && !b.paused, "Resume both players before linking");
         for id in [id, peer] {
             let session = self.sessions.get_mut(&id).unwrap();
-            let changed =
-                session.paused != paused || session.fast || session.speed_percent != speed;
-            session.paused = paused;
+            let changed = session.fast || session.speed_percent != 100;
             session.fast = false;
             session.turbo_toggle = false;
-            session.speed_percent = speed;
-            session.turbo_percent = turbo;
+            session.speed_percent = 100;
+            session
+                .inputs
+                .retain(|input| !matches!(input.input, Input::InfraredLevel(_)));
             session.reanchor();
             if changed {
                 session.clear_audio(self.sound.rate)?;
@@ -1067,22 +1106,13 @@ impl Worker {
             if session.paused {
                 continue;
             }
-            if (session.fast || session.speed_percent != 100)
-                && session.tcp.as_ref().is_some_and(|tcp| tcp.connected())
-            {
-                session.fast = false;
-                session.turbo_toggle = false;
-                session.speed_percent = 100;
-                session.reanchor();
-                let _ = session.clear_audio(self.sound.rate);
-            }
             let target = session.target();
             let end = Time::from_raw(
                 session.machine.now().raw() + hs_core::Duration::from_micros(4000).raw(),
             )
             .min(target);
             if end > session.machine.now() {
-                if let Err(error) = session.advance(end, Vec::new()) {
+                if let Err(error) = session.advance(end, Vec::new(), false) {
                     session.paused = true;
                     self.view(id, |view| view.error = Some(format!("{error:#}")));
                 }
@@ -1102,29 +1132,68 @@ impl Worker {
                 .min(hs_core::Duration::from_micros(4000).raw());
             let end = Time::from_raw(self.links[ix].elapsed.raw() + budget);
             let result = (|| -> Result<()> {
-                let mut steps = 0;
                 while self.links[ix].elapsed < end {
-                    let to = Time::from_raw(
-                        self.links[ix].elapsed.raw() + hs_core::Duration::from_micros(1).raw(),
-                    )
-                    .min(end);
-                    for (side, id) in ids.iter().enumerate() {
-                        let inputs = self.links[ix].deliver(side, to);
-                        let horizon = Time::from_raw(self.links[ix].origins[side].raw() + to.raw());
-                        let edges = self
-                            .sessions
-                            .get_mut(id)
-                            .unwrap()
-                            .advance(horizon, inputs)?;
-                        self.links[ix].transmit(side, edges.into_iter())?;
+                    let first = usize::from(self.links[ix].sender);
+                    let other = 1 - first;
+                    if self.links[ix].prediction[first].is_none() {
+                        let link = &self.links[ix];
+                        let session = &self.sessions[&ids[first]];
+                        let horizon = Time::from_raw(link.origins[first].raw() + end.raw());
+                        let inputs = session.planned_inputs(horizon, link.inputs(first, end));
+                        self.links[ix].prediction[first] = Some(Box::new(optical::predict(
+                            &session.machine,
+                            horizon,
+                            &inputs,
+                        )?));
                     }
-                    self.links[ix].elapsed = to;
-                    steps += 1;
-                    if steps == 64 {
-                        if started.elapsed() >= Duration::from_millis(4) {
-                            break;
+                    let link = &self.links[ix];
+                    let prediction = link.prediction[first].as_ref().unwrap();
+                    let horizon = prediction
+                        .edges
+                        .front()
+                        .map_or(prediction.end, |edge| Time::from_raw(edge.at.raw() + 1))
+                        .min(prediction.end);
+                    let to = Time::from_raw(horizon.raw() - link.origins[first].raw()).min(end);
+                    let inputs = link.inputs(other, to);
+                    let horizon = Time::from_raw(link.origins[other].raw() + to.raw());
+                    let other_edges = self
+                        .sessions
+                        .get_mut(&ids[other])
+                        .unwrap()
+                        .advance(horizon, inputs, true)?;
+                    let to = Time::from_raw(
+                        self.sessions[&ids[other]].machine.now().raw()
+                            - self.links[ix].origins[other].raw(),
+                    );
+                    let inputs = self.links[ix].inputs(first, to);
+                    let horizon = Time::from_raw(self.links[ix].origins[first].raw() + to.raw());
+                    let first_edges = self
+                        .sessions
+                        .get_mut(&ids[first])
+                        .unwrap()
+                        .advance(horizon, inputs, false)?;
+                    let link = &mut self.links[ix];
+                    for side in [first, other] {
+                        link.consume(side, to);
+                        if let Some(prediction) = &mut link.prediction[side] {
+                            let horizon = Time::from_raw(link.origins[side].raw() + to.raw());
+                            while prediction
+                                .edges
+                                .front()
+                                .is_some_and(|edge| edge.at < horizon)
+                            {
+                                prediction.edges.pop_front();
+                            }
+                            if prediction.end <= horizon {
+                                link.prediction[side] = None;
+                            }
                         }
-                        steps = 0;
+                    }
+                    link.transmit(first, first_edges.into_iter())?;
+                    link.transmit(other, other_edges.into_iter())?;
+                    link.elapsed = to;
+                    if started.elapsed() >= Duration::from_millis(4) {
+                        break;
                     }
                 }
                 Ok(())
@@ -1166,22 +1235,11 @@ impl Worker {
             }
         }
         for id in stopping {
-            let ids = self
-                .links
-                .iter()
-                .find(|link| link.ids.contains(&id))
-                .map(|link| link.ids.to_vec())
-                .unwrap_or_else(|| vec![id]);
-            if ids.iter().any(|id| self.sessions[id].machine.eeprom_busy()) {
-                continue;
-            }
-            for id in ids {
-                let session = self.sessions.get_mut(&id).unwrap();
-                if !session.paused {
-                    session.paused = true;
-                    session.reanchor();
-                    let _ = session.clear_audio(self.sound.rate);
-                }
+            let session = self.sessions.get_mut(&id).unwrap();
+            if !session.paused {
+                session.paused = true;
+                session.reanchor();
+                let _ = session.clear_audio(self.sound.rate);
             }
         }
     }
@@ -1247,6 +1305,9 @@ impl Worker {
             return;
         };
         while let Some(event) = gamepads.next_event() {
+            for link in &mut self.links {
+                link.prediction = [None, None];
+            }
             match event.event {
                 gilrs::EventType::Disconnected => {
                     for session in self.sessions.values_mut() {
