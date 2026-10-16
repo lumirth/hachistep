@@ -70,6 +70,12 @@ impl PlayerView {
         focus.focus(window, cx);
         let activated = cx.observe_window_activation(window, |view, window, cx| {
             view.release();
+            if window.is_window_active()
+                && !window.has_active_dialog(cx)
+                && !window.has_active_sheet(cx)
+            {
+                view.focus.focus(window, cx);
+            }
             view.player.send(Command::Focus(
                 window.is_window_active() && view.focus.is_focused(window),
             ));
