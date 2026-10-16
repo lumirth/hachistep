@@ -22,7 +22,7 @@ def main():
         (contents / "MacOS").mkdir(parents=True)
         (contents / "Resources").mkdir()
         shutil.copy2(args.binary or ROOT / "target/release/hs-desktop", contents / "MacOS/hachistep")
-        shutil.copy2(assets / "macOS/Hachistep.icns", contents / "Resources/Hachistep.icns")
+        shutil.copy2(assets / "macos/icon.icns", contents / "Resources/Hachistep.icns")
         shutil.copy2(ROOT.parent / "LICENSE", contents / "Resources/LICENSE")
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump({

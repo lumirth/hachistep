@@ -1,4 +1,4 @@
-<img src="docs/images/icon.svg" alt="hachistep" width="128">
+<img src="assets/glyph.svg" alt="hachistep" width="128">
 
 # hachistep
 
