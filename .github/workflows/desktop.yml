@@ -44,6 +44,17 @@ jobs:
       - run: cargo build --release --locked -p hs-cli
       - run: cargo build --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
       - run: python desktop/package.py --out out/package
+      - name: Check Windows menus
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./desktop/check-windows.ps1 out/package/hachistep/hachistep.exe
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Windows'
+        with:
+          name: windows-ui
+          path: |
+            out/windows-menu.png
+            out/windows-startup.log
       - name: Verify Linux startup
         if: runner.os == 'Linux'
         shell: bash

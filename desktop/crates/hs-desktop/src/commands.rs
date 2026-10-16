@@ -90,7 +90,7 @@ fn item(name: &str, intent: Intent) -> MenuItem {
     MenuItem::action(name.to_owned(), intent)
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct MenuState {
     ready: bool,
     paused: bool,
@@ -161,8 +161,8 @@ impl MenuState {
         }
     }
 
-    pub fn install(self, cx: &mut App) {
-        if cx.global::<crate::Desktop>().menu.as_ref() == Some(&self) {
+    pub fn install(&self, cx: &mut App) {
+        if cx.global::<crate::Desktop>().menu.as_ref() == Some(self) {
             return;
         }
         let menus = self.menus();
@@ -190,8 +190,11 @@ impl MenuState {
             collect(&menu.items, menu.disabled, &mut disabled);
         }
         cx.global_mut::<crate::Desktop>().disabled_commands = disabled;
-        cx.global_mut::<crate::Desktop>().menu = Some(self);
+        cx.global_mut::<crate::Desktop>().menu = Some(self.clone());
         cx.set_menus(menus);
+        if let Some(menus) = cx.get_menus() {
+            gpui_kit::base::GlobalState::global_mut(cx).set_app_menus(menus);
+        }
     }
 
     fn active(&self, name: &str, intent: Intent) -> MenuItem {
