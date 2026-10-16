@@ -34,6 +34,6 @@ After a release build, package the application and its supplied platform icon:
 python3 examples/desktop/package.py --out out/desktop
 ```
 
-This creates `hachistep.app` on macOS or `hachistep.exe` on Windows.
+This creates `hachistep.app` and its ZIP on macOS, or `hachistep.exe` on Windows.
 
 The example carries AccessKit 0.26.3 with the [KVO teardown fix](https://github.com/AccessKit/accesskit/pull/822) to prevent a macOS crash when closing a window after keyboard input.

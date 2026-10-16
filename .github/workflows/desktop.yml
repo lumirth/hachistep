@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
   pull_request:
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     strategy:
@@ -25,4 +28,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: hachistep-${{ matrix.os }}
-          path: out/package
+          path: ${{ runner.os == 'macOS' && 'out/package/hachistep-macos.zip' || 'out/package' }}
