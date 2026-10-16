@@ -13,8 +13,8 @@ use gpui_kit::{
         kbd::Kbd,
         menu::{DropdownMenu, PopupMenuItem},
         radio::RadioGroup,
-        sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
         switch::Switch,
+        tab::{Tab, TabBar},
         v_flex, ActiveTheme, Sizable,
     },
     prelude::*,
@@ -34,6 +34,7 @@ fn open_section(section: Option<Section>, cx: &mut App) {
                 let _ = view.update(cx, |view, cx| {
                     if let Some(section) = section {
                         view.section = section;
+                        window.resize(size(px(520.), px(section.height(view.preview.is_some()))));
                     }
                     view.capture = None;
                     cx.notify();
@@ -46,15 +47,12 @@ fn open_section(section: Option<Section>, cx: &mut App) {
         }
     }
     let section = section.unwrap_or(
-        [
-            Section::Appearance,
-            Section::Controls,
-            Section::Audio,
-            Section::Emulation,
-        ][cx.global::<Desktop>().preferences.settings_page.min(3)],
+        [Section::Appearance, Section::Controls, Section::Emulation]
+            [cx.global::<Desktop>().preferences.settings_page.min(2)],
     );
-    let mut options = crate::options("Settings", 640., 500.);
-    options.window_min_size = Some(size(px(540.), px(400.)));
+    let mut options = crate::options("Settings", 520., section.height(preview(cx).is_some()));
+    options.is_resizable = false;
+    options.window_min_size = None;
     match gpui_kit::open_window(options, cx, |window, cx| {
         cx.new(|cx| Settings::new(section, window, cx))
     }) {
@@ -65,19 +63,36 @@ fn open_section(section: Option<Section>, cx: &mut App) {
     }
 }
 
+fn preview(cx: &App) -> Option<hs_runtime::Player> {
+    cx.global::<Desktop>()
+        .windows
+        .iter()
+        .rev()
+        .filter_map(|w| w.view.upgrade())
+        .find_map(|view| {
+            let view = view.read(cx);
+            view.presentation().ready.then(|| view.player().clone())
+        })
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
     Appearance,
     Controls,
-    Audio,
     Emulation,
 }
 impl Section {
+    fn height(self, has_preview: bool) -> f32 {
+        match self {
+            Self::Emulation => 260.,
+            Self::Appearance if !has_preview => 300.,
+            _ => 420.,
+        }
+    }
     fn name(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
             Self::Controls => "Controls",
-            Self::Audio => "Audio",
             Self::Emulation => "Emulation",
         }
     }
@@ -162,16 +177,7 @@ impl Settings {
                 }
             }
         }));
-        let preview = cx
-            .global::<Desktop>()
-            .windows
-            .iter()
-            .rev()
-            .filter_map(|w| w.view.upgrade())
-            .find_map(|view| {
-                let view = view.read(cx);
-                view.presentation().ready.then(|| view.player().clone())
-            });
+        let preview = preview(cx);
         cx.spawn_in(window, async move |view, cx| loop {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(100))
@@ -420,7 +426,7 @@ impl Settings {
             .child(
                 Button::new(("key", index))
                     .small()
-                    .w_32()
+                    .w_40()
                     .accessibility_label(format!("Change {label} binding"))
                     .when(capture, |button| button.label("Press a key"))
                     .when(!capture, |button| {
@@ -439,29 +445,19 @@ impl Settings {
             .into_any_element()
     }
 
-    fn audio(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn emulation(&self, cx: &mut Context<Self>) -> AnyElement {
+        let preferences = &cx.global::<Desktop>().preferences;
         v_flex()
             .gap_5()
             .child(
                 Switch::new("sound")
                     .label("Sound")
-                    .checked(!cx.global::<Desktop>().preferences.mute)
+                    .checked(!preferences.mute)
                     .on_change(cx.listener(|view, enabled: &bool, _, cx| {
                         view.update(|p| p.mute = !*enabled, cx);
                         cx.global::<Desktop>().runtime.sound_enabled(*enabled);
                     })),
             )
-            .child(
-                Button::new("retry-audio")
-                    .label("Reconnect Audio")
-                    .on_click(|_, _, cx| cx.global::<Desktop>().runtime.retry_audio()),
-            )
-            .into_any_element()
-    }
-    fn emulation(&self, cx: &mut Context<Self>) -> AnyElement {
-        let preferences = &cx.global::<Desktop>().preferences;
-        v_flex()
-            .gap_4()
             .child(self.speed_choice(
                 "default-speed",
                 "Default speed",
@@ -476,6 +472,25 @@ impl Settings {
                 true,
                 cx,
             ))
+            .when_some(
+                cx.global::<Desktop>()
+                    .windows
+                    .iter()
+                    .filter_map(|window| window.view.upgrade())
+                    .find_map(|view| view.read(cx).presentation().audio_error.clone()),
+                |root, error| {
+                    root.child(
+                        v_flex()
+                            .gap_2()
+                            .child(div().text_sm().text_color(cx.theme().danger).child(error))
+                            .child(
+                                Button::new("retry-audio").small().label("Retry").on_click(
+                                    |_, _, cx| cx.global::<Desktop>().runtime.retry_audio(),
+                                ),
+                            ),
+                    )
+                },
+            )
             .into_any_element()
     }
     fn speed_choice(
@@ -533,31 +548,29 @@ impl Render for Settings {
         let content = match self.section {
             Section::Appearance => self.appearance(cx),
             Section::Controls => self.controls(cx),
-            Section::Audio => self.audio(cx),
             Section::Emulation => self.emulation(cx),
         };
-        let menu = SidebarMenu::new().children(
-            [
-                Section::Appearance,
-                Section::Controls,
-                Section::Audio,
-                Section::Emulation,
-            ]
-            .map(|section| {
-                SidebarMenuItem::new(section.name())
-                    .active(self.section == section)
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.section = section;
-                        view.update(
-                            |preferences| preferences.settings_page = section as usize,
-                            cx,
-                        );
-                        view.capture = None;
-                        view.error = None;
-                        cx.notify();
-                    }))
-            }),
-        );
+        let sections = [Section::Appearance, Section::Controls, Section::Emulation];
+        let tabs = TabBar::new("settings-sections")
+            .segmented()
+            .selected_index(
+                sections
+                    .iter()
+                    .position(|section| *section == self.section)
+                    .unwrap_or(0),
+            )
+            .children(sections.map(|section| Tab::new().label(section.name()).flex_1()))
+            .on_click(cx.listener(move |view, ix: &usize, window, cx| {
+                view.section = sections[*ix];
+                window.resize(size(
+                    px(520.),
+                    px(view.section.height(view.preview.is_some())),
+                ));
+                view.update(|preferences| preferences.settings_page = *ix, cx);
+                view.capture = None;
+                view.error = None;
+                cx.notify();
+            }));
         v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -630,47 +643,19 @@ impl Render for Settings {
                 }
             }))
             .child(theme::title("Settings", window, cx))
+            .child(div().px_6().pt_4().pb_2().child(tabs))
             .child(
                 div()
-                    .flex()
-                    .items_stretch()
+                    .id("settings-pane")
                     .flex_1()
                     .min_h_0()
-                    .child(
-                        Sidebar::new("settings-sections")
-                            .collapsible(false)
-                            .w_40()
-                            .h_full()
-                            .child(menu),
-                    )
-                    .child(
-                        div()
-                            .id("settings-pane")
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_y_scroll()
-                            .child(
-                                v_flex()
-                                    .p_6()
-                                    .gap_5()
-                                    .child(
-                                        div()
-                                            .text_lg()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(self.section.name()),
-                                    )
-                                    .child(content)
-                                    .when_some(self.error, |root, error| {
-                                        root.child(
-                                            div()
-                                                .text_sm()
-                                                .text_color(cx.theme().danger)
-                                                .child(error),
-                                        )
-                                    }),
-                            ),
-                    ),
+                    .overflow_y_scroll()
+                    .child(v_flex().p_6().gap_5().child(content).when_some(
+                        self.error,
+                        |root, error| {
+                            root.child(div().text_sm().text_color(cx.theme().danger).child(error))
+                        },
+                    )),
             )
     }
 }

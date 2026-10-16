@@ -9,7 +9,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         menu::AppMenuBar,
         status_bar::StatusBar,
-        v_flex, ActiveTheme, WindowExt,
+        v_flex, ActiveTheme, Sizable, WindowExt,
     },
     prelude::*,
     *,
@@ -25,7 +25,6 @@ pub(crate) enum FileCommand {
     SaveState,
     LoadState,
     Screenshot,
-    Diagnostics,
 }
 
 #[derive(Clone, Copy)]
@@ -58,6 +57,7 @@ pub(crate) struct PlayerView {
     scale: u8,
     raw: bool,
     status: bool,
+    pending_status: Option<(bool, Size<Pixels>)>,
     error: Option<String>,
     last_error: Option<String>,
     menu_bar: Entity<AppMenuBar>,
@@ -114,6 +114,20 @@ impl PlayerView {
                 theme::apply(0, cx);
             }
         });
+        let bounds = cx.observe_window_bounds(window, |view, window, cx| {
+            if let Some((status, target)) = view.pending_status {
+                let actual = window.viewport_size();
+                if (f32::from(actual.height - target.height)).abs() < 1. {
+                    view.status = status;
+                    view.pending_status = None;
+                    cx.notify();
+                }
+            }
+            let mut available = window.viewport_size();
+            available.height -= theme::player_chrome(window.rem_size(), view.status);
+            let scale = lcd::scale(available, window.scale_factor()) / window.scale_factor();
+            view.scale = if scale.fract() == 0. { scale as u8 } else { 0 };
+        });
         let lost = cx.on_blur(&focus, window, |view, _, _| {
             view.release();
             view.player.send(Command::Focus(false));
@@ -152,11 +166,12 @@ impl PlayerView {
             scale: 4,
             raw: false,
             status: false,
+            pending_status: None,
             error: None,
             last_error: None,
             menu_bar: AppMenuBar::new(cx),
             closing: Closing::Open,
-            _subscriptions: vec![activated, lost, focused, release, appearance],
+            _subscriptions: vec![activated, lost, focused, release, appearance, bounds],
         }
     }
 
@@ -382,7 +397,7 @@ impl PlayerView {
             self.raw,
             self.status,
             self.scale,
-            &cx.global::<Desktop>().preferences.recent,
+            &cx.global::<Desktop>().preferences,
             self.selected_slot(cx),
         )
     }
@@ -555,63 +570,57 @@ impl PlayerView {
             Intent::Speed(percent) => self.player.send(Command::Speed(percent)),
             Intent::Scale(scale) => {
                 self.scale = scale;
-                self.fit(window);
+                self.fit(window, Some(scale));
             }
-            Intent::Fit => self.fit(window),
+            Intent::Fit => self.fit(window, None),
             Intent::Fullscreen => window.toggle_fullscreen(),
             Intent::Status => {
-                self.status = !self.status;
-                if !window.is_fullscreen() {
-                    let mut size = window.viewport_size();
-                    let height = theme::status_height(window.rem_size());
-                    size.height += if self.status { height } else { -height };
-                    window.resize(size);
+                let (previous, mut target) = self
+                    .pending_status
+                    .unwrap_or((self.status, window.viewport_size()));
+                let status = !previous;
+                if window.is_fullscreen() {
+                    self.status = status;
+                } else {
+                    target.height += theme::player_chrome(window.rem_size(), status)
+                        - theme::player_chrome(window.rem_size(), previous);
+                    self.pending_status = Some((status, target));
+                    window.resize(target);
                 }
             }
             Intent::Raw => self.raw = !self.raw,
-            Intent::Recent(pair) => self.open_pair(pair, cx),
+            Intent::RecentEeprom(pair) => self.open_pair(pair, cx),
+            Intent::RecentFirmware(path) => self.selected(FileCommand::Firmware, path, window, cx),
             Intent::Recents => {
-                let recent = &cx.global::<Desktop>().preferences.recent;
-                let items: Vec<_> = recent
-                    .iter()
-                    .map(|pair| {
-                        MenuItem::action(
-                            settings::filename(&pair.eeprom),
-                            Intent::Recent(pair.clone()),
-                        )
-                    })
-                    .collect();
-                commands::native(items).show(window.mouse_position(), window, cx);
+                commands::native(self.menu(cx).recents()).show(window.mouse_position(), window, cx);
             }
             Intent::Tool(kind) => {
                 crate::tools::open(self.player.clone(), cx.weak_entity(), kind, window, cx)
             }
             Intent::Settings => crate::preferences::open(cx),
-            Intent::DiagnosticsExport => self.choose(FileCommand::Diagnostics, window, cx),
             Intent::Controls => crate::preferences::open_controls(cx),
-            Intent::About => window.open_dialog(cx, |dialog, _, _| {
-                dialog
-                    .title("hachistep")
-                    .child(img("icon.png").size_16())
-                    .child(format!(
-                        "Pokéwalker emulator · {}",
-                        env!("CARGO_PKG_VERSION")
-                    ))
-                    .child("MIT license")
-            }),
+            Intent::About => crate::about::open(cx),
             Intent::Documentation => cx.open_url("https://github.com/lumirth/hachistep#readme"),
             Intent::Report => cx.open_url("https://github.com/lumirth/hachistep/issues/new"),
         }
         cx.notify();
     }
 
-    fn fit(&self, window: &mut Window) {
+    fn fit(&self, window: &mut Window, preset: Option<u8>) {
+        if window.is_fullscreen() {
+            return;
+        }
         let dpi = window.scale_factor();
-        let physical = (f32::from(self.scale) * dpi).round().max(1.);
-        window.resize(size(
-            px(96. * physical / dpi),
-            px(64. * physical / dpi) + theme::player_chrome(window.rem_size(), self.status),
-        ));
+        let chrome = theme::player_chrome(window.rem_size(), self.status);
+        let mut available = window.viewport_size();
+        available.height -= chrome;
+        let physical = preset.map_or_else(
+            || lcd::scale(available, dpi),
+            |scale| (f32::from(scale) * dpi).round().max(1.),
+        );
+        let mut target = lcd::dimensions(physical, dpi);
+        target.height += chrome;
+        window.resize(target);
     }
 
     pub fn choose(&mut self, operation: FileCommand, window: &mut Window, cx: &mut Context<Self>) {
@@ -653,7 +662,6 @@ impl PlayerView {
                     FileCommand::SaveEepromAs => "walker.bin",
                     FileCommand::SaveState => "walker.hstepstate",
                     FileCommand::Screenshot => "screen.png",
-                    FileCommand::Diagnostics => "hachistep-diagnostics.json",
                     _ => unreachable!(),
                 };
                 let receiver = cx.update(|_, cx| cx.prompt_for_new_path(&directory, Some(name)));
@@ -685,6 +693,10 @@ impl PlayerView {
     ) {
         match operation {
             FileCommand::Firmware => {
+                cx.global_mut::<Desktop>()
+                    .preferences
+                    .remember_firmware(path.clone());
+                crate::save_preferences(cx);
                 if self.presentation.ready {
                     crate::new_window(cx, Some(crate::Launch::Firmware(path)));
                 } else {
@@ -719,10 +731,6 @@ impl PlayerView {
                 Ok(bytes) => self.player.send(Command::WriteFile { path, bytes }),
                 Err(error) => self.error = Some(error.to_string()),
             },
-            FileCommand::Diagnostics => {
-                let bytes = serde_json::to_vec_pretty(&serde_json::json!({ "application":env!("CARGO_PKG_VERSION"),"core":hs_runtime::CORE_REVISION,"speed":self.presentation.speed,"connection":self.presentation.connection_name(),"scale":self.scale,"paused":self.presentation.paused })).unwrap();
-                self.player.send(Command::WriteFile { path, bytes });
-            }
         }
         cx.notify();
     }
@@ -747,13 +755,38 @@ impl PlayerView {
         }
         self.player.send(Command::Buttons(self.buttons));
     }
-    fn empty(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn empty(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let mut content = v_flex()
             .size_full()
             .items_center()
             .justify_center()
             .gap_3()
             .p_6();
+        if window.viewport_size().width < px(288.) || window.viewport_size().height < px(192.) {
+            content = content.p_2().gap_1();
+            if self.pending.is_some() {
+                return content.child("Opening…").into_any_element();
+            }
+            let intent = if self.firmware.is_some() {
+                Intent::OpenEeprom
+            } else {
+                Intent::OpenFirmware
+            };
+            return content
+                .child(Button::new("open").small().label("Open…").on_click(
+                    cx.listener(move |view, _, window, cx| {
+                        view.execute(intent.clone(), window, cx)
+                    }),
+                ))
+                .when(self.firmware.is_some(), |root| {
+                    root.child(Button::new("new").small().ghost().label("New…").on_click(
+                        cx.listener(|view, _, window, cx| {
+                            view.execute(Intent::NewEeprom, window, cx)
+                        }),
+                    ))
+                })
+                .into_any_element();
+        }
         if self.pending.is_some() {
             content = content.child("Opening…");
         } else if let Some(firmware) = &self.firmware {
@@ -805,7 +838,7 @@ impl Render for PlayerView {
             )
             .into_any_element()
         } else {
-            self.empty(cx)
+            self.empty(window, cx)
         };
         v_flex()
             .size_full()

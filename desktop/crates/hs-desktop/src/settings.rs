@@ -29,6 +29,7 @@ pub(crate) struct Preferences {
     pub turbo_key: String,
     pub slots: BTreeMap<PathBuf, u8>,
     pub recent: Vec<Recent>,
+    pub recent_firmware: Vec<PathBuf>,
 }
 
 impl Default for Preferences {
@@ -45,6 +46,7 @@ impl Default for Preferences {
             turbo_key: "space".into(),
             slots: BTreeMap::new(),
             recent: Vec::new(),
+            recent_firmware: Vec::new(),
         }
     }
 }
@@ -98,12 +100,24 @@ impl Preferences {
                 }
             })
             .expect("create preferences worker");
+        if settings.recent_firmware.is_empty() {
+            for pair in settings.recent.clone().into_iter().rev() {
+                settings.remember_firmware(pair.firmware);
+            }
+        }
         (settings, send)
     }
     pub fn remember(&mut self, pair: Recent) {
-        self.recent.retain(|existing| existing != &pair);
+        self.remember_firmware(pair.firmware.clone());
+        self.recent
+            .retain(|existing| existing.eeprom != pair.eeprom);
         self.recent.insert(0, pair);
         self.recent.truncate(12);
+    }
+    pub fn remember_firmware(&mut self, path: PathBuf) {
+        self.recent_firmware.retain(|existing| existing != &path);
+        self.recent_firmware.insert(0, path);
+        self.recent_firmware.truncate(12);
     }
 }
 
@@ -112,6 +126,22 @@ pub(crate) fn filename(path: &Path) -> String {
         .unwrap_or(path.as_os_str())
         .to_string_lossy()
         .into_owned()
+}
+
+pub(crate) fn recent_label(path: &Path, others: &[&Path]) -> String {
+    for parent in path.ancestors().skip(1) {
+        if let Ok(suffix) = path.strip_prefix(parent) {
+            if others
+                .iter()
+                .filter(|other| other.ends_with(suffix))
+                .count()
+                <= 1
+            {
+                return suffix.display().to_string();
+            }
+        }
+    }
+    path.display().to_string()
 }
 
 pub(crate) const GAMEPAD: [(hs_runtime::GamepadButton, &str); 8] = [

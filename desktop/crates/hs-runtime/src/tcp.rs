@@ -1,5 +1,5 @@
 use crate::optical::Edge;
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{ensure, Context, Result};
 use hs_core::{Duration, Input, Time, TimedInput};
 use std::{
     collections::VecDeque,
@@ -53,12 +53,14 @@ struct Incoming {
 
 pub(crate) struct Tcp {
     pub state: Arc<Mutex<Connection>>,
-    tx: SyncSender<u8>,
+    tx: SyncSender<Vec<u8>>,
     rx: Receiver<(Instant, u8)>,
     stop: Arc<AtomicBool>,
     frame: Option<(Time, u16)>,
     incoming: VecDeque<TimedInput>,
     receive_end: Time,
+    burst: Vec<u8>,
+    transmit_end: Time,
 }
 
 impl Drop for Tcp {
@@ -108,6 +110,8 @@ impl Tcp {
             frame: None,
             incoming: VecDeque::new(),
             receive_end: Time::ZERO,
+            burst: Vec::new(),
+            transmit_end: Time::ZERO,
         }
     }
 
@@ -141,10 +145,18 @@ impl Tcp {
             .frame
             .is_some_and(|(start, _)| now.raw() >= start.raw() + BIT * 10)
         {
-            let (_, zeros) = self.frame.take().unwrap();
+            let (start, zeros) = self.frame.take().unwrap();
             ensure!(zeros & (1 << 9) == 0, "IR waveform is not 115200 baud 8N1");
+            self.burst.push(!(zeros >> 1) as u8);
+            self.transmit_end = Time::from_raw(start.raw() + BIT * 10);
+        }
+        // Peers frame bursts by idle time, so keep a guest burst in one socket write.
+        if !self.burst.is_empty()
+            && self.frame.is_none()
+            && (now.raw() >= self.transmit_end.raw() + BIT * 3 || self.burst.len() >= CAPACITY)
+        {
             self.tx
-                .try_send(!(zeros >> 1) as u8)
+                .try_send(std::mem::take(&mut self.burst))
                 .context("TCP output queue is full or disconnected")?;
         }
         Ok(())
@@ -198,7 +210,7 @@ fn transport(
     allow_remote: bool,
     stop: &AtomicBool,
     state: &Mutex<Connection>,
-    outgoing: Receiver<u8>,
+    outgoing: Receiver<Vec<u8>>,
     incoming: Incoming,
 ) -> Result<()> {
     let mut socket = if listen {
@@ -254,7 +266,7 @@ fn transport(
             let mut bytes = [0; 1024];
             while !stop.load(Ordering::Relaxed) {
                 match socket.read(&mut bytes) {
-                    Ok(0) => bail!("Peer closed the connection"),
+                    Ok(0) => break,
                     Ok(count) => {
                         let arrived = Instant::now();
                         for &byte in &bytes[..count] {
@@ -284,15 +296,17 @@ fn transport(
     })
 }
 
-fn write_bytes(socket: &mut TcpStream, outgoing: Receiver<u8>, stop: &AtomicBool) -> Result<()> {
+fn write_bytes(
+    socket: &mut TcpStream,
+    outgoing: Receiver<Vec<u8>>,
+    stop: &AtomicBool,
+) -> Result<()> {
     while !stop.load(Ordering::Relaxed) {
-        let first = match outgoing.recv_timeout(WallDuration::from_millis(50)) {
+        let bytes = match outgoing.recv_timeout(WallDuration::from_millis(50)) {
             Ok(byte) => byte,
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        let mut bytes = vec![first];
-        bytes.extend(outgoing.try_iter().take(CAPACITY - 1));
         socket.write_all(&bytes)?;
     }
     Ok(())

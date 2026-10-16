@@ -3,23 +3,22 @@ use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
-        description_list::DescriptionList,
+        collapsible::Collapsible,
         h_flex,
         input::{Input, InputEvent, InputState, NumberInput},
         radio::RadioGroup,
         slider::{Slider, SliderEvent, SliderState},
-        v_flex, ActiveTheme, Disableable, Sizable,
+        v_flex, ActiveTheme, Disableable, IconName, Sizable,
     },
     prelude::*,
     *,
 };
 use hs_runtime::{Command, Player, Presentation};
-use std::time::Duration;
+use std::{collections::BTreeSet, time::Duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     Motion,
-    Diagnostics,
     Link,
     Tcp,
 }
@@ -28,7 +27,6 @@ impl Kind {
     fn name(self) -> &'static str {
         match self {
             Self::Motion => "Walking",
-            Self::Diagnostics => "Diagnostics",
             Self::Link => "Local Link",
             Self::Tcp => "TCP Connection",
         }
@@ -62,12 +60,7 @@ pub(crate) fn open(
     let screen = parent.display(cx).map(|d| d.bounds());
     cx.defer(move |cx| {
         let key = (player.id(), kind);
-        let peer_key = player.presentation().peer.map(|id| (id, kind));
-        let existing = cx.global::<Desktop>().tools.get(&key).copied().or_else(|| {
-            (kind == Kind::Link)
-                .then(|| peer_key.and_then(|key| cx.global::<Desktop>().tools.get(&key).copied()))
-                .flatten()
-        });
+        let existing = cx.global::<Desktop>().tools.get(&key).copied();
         if existing.is_some_and(|handle| {
             handle
                 .update(cx, |_, window, _| window.activate_window())
@@ -83,15 +76,18 @@ pub(crate) fn open(
             .map(settings::filename)
             .unwrap_or_else(|| "hachistep".into());
         let (width, height) = match kind {
-            Kind::Motion => (380., 300.),
-            Kind::Diagnostics => (480., 460.),
-            Kind::Link => (420., link_height(&player, cx)),
-            Kind::Tcp => (420., 320.),
+            Kind::Motion => (392., 340.),
+            Kind::Link => (440., 200.),
+            Kind::Tcp => (420., 300.),
         };
         let mut options = crate::options(&format!("{name} · {filename}"), width, height);
         options.window_min_size = Some(size(
-            px(340.),
-            px(if kind == Kind::Link { 140. } else { 260. }),
+            px(if kind == Kind::Link { 400. } else { 360. }),
+            px(match kind {
+                Kind::Link => 180.,
+                Kind::Tcp => 260.,
+                Kind::Motion => 320.,
+            }),
         ));
         let mut origin = parent_bounds.origin + point(parent_bounds.size.width + px(12.), px(0.));
         if let Some(screen) = screen {
@@ -107,7 +103,7 @@ pub(crate) fn open(
             .global::<Desktop>()
             .tool_bounds
             .get(&key)
-            .map(|(bounds, _)| *bounds)
+            .copied()
             .unwrap_or_else(|| Bounds::new(origin, size(px(width), px(height))));
         options.window_bounds = Some(WindowBounds::Windowed(bounds));
         match gpui_kit::open_window(options, cx, |window, cx| {
@@ -121,23 +117,6 @@ pub(crate) fn open(
     });
 }
 
-fn link_height(player: &Player, cx: &App) -> f32 {
-    if player.presentation().peer.is_some() {
-        return 280.;
-    }
-    let count = cx
-        .global::<Desktop>()
-        .windows
-        .iter()
-        .filter_map(|w| w.view.upgrade())
-        .filter(|view| {
-            let view = view.read(cx);
-            view.player().id() != player.id() && view.presentation().ready
-        })
-        .count();
-    (90. + count as f32 * 70.).clamp(140., 370.)
-}
-
 struct Tool {
     player: Player,
     owner: WeakEntity<PlayerView>,
@@ -148,7 +127,8 @@ struct Tool {
     tcp: TcpOptions,
     error: Option<String>,
     focus: FocusHandle,
-    automatic_size: Option<Size<Pixels>>,
+    details: BTreeSet<hs_runtime::Id>,
+    activity_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl Tool {
@@ -230,11 +210,6 @@ impl Tool {
         });
         let focus = cx.focus_handle().tab_stop(true);
         focus.focus(window, cx);
-        let automatic = cx
-            .global::<Desktop>()
-            .tool_bounds
-            .get(&key)
-            .is_none_or(|(_, automatic)| *automatic);
         cx.spawn_in(window, async move |view, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_millis(50))
@@ -245,7 +220,9 @@ impl Tool {
                         if view.player.presentation().closed {
                             window.remove_window();
                         } else {
-                            view.layout(window, cx);
+                            cx.global_mut::<Desktop>()
+                                .tool_bounds
+                                .insert((view.player.id(), view.kind), window.bounds());
                             if window.is_window_active() {
                                 crate::player_menu(&view.owner, cx);
                             }
@@ -269,7 +246,8 @@ impl Tool {
             tcp,
             error: None,
             focus,
-            automatic_size: automatic.then_some(window.bounds().size),
+            details: BTreeSet::new(),
+            activity_open: false,
             _subscriptions: vec![
                 cadence_changed,
                 slider_changed,
@@ -278,23 +256,6 @@ impl Tool {
                 activation,
             ],
         }
-    }
-    fn layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let bounds = window.bounds();
-        if self.automatic_size.is_some_and(|size| size != bounds.size) {
-            self.automatic_size = None;
-        }
-        if self.kind == Kind::Link && self.automatic_size.is_some() {
-            let size = size(bounds.size.width, px(link_height(&self.player, cx)));
-            if size != bounds.size {
-                window.resize(size);
-                self.automatic_size = Some(size);
-            }
-        }
-        cx.global_mut::<Desktop>().tool_bounds.insert(
-            (self.player.id(), self.kind),
-            (window.bounds(), self.automatic_size.is_some()),
-        );
     }
     fn remember_tcp(&self, cx: &mut App) {
         cx.global_mut::<Desktop>()
@@ -321,155 +282,62 @@ impl Tool {
         v_flex()
             .gap_5()
             .child(
+                h_flex().justify_between().gap_4().child("Cadence").child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().w_32().child(NumberInput::new(&self.cadence)))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("steps/min"),
+                        ),
+                ),
+            )
+            .child(Slider::new(&self.slider))
+            .child(
                 h_flex()
                     .justify_between()
-                    .text_sm()
-                    .child("Acceleration")
                     .child(
-                        div().flex().gap_3().children(
-                            [
-                                ("X", cx.theme().chart_1),
-                                ("Y", cx.theme().chart_2),
-                                ("Z", cx.theme().chart_3),
-                            ]
-                            .map(|(axis, color)| div().text_color(color).child(axis)),
-                        ),
-                    ),
-            )
-            .child(div().h_24().child(instruments::motion(&frame, cx)))
-            .child(
-                h_flex().justify_between().gap_4().child("Cadence").child(
-                    div().w_32().child(
-                        NumberInput::new(&self.cadence)
-                            .small()
-                            .suffix(div().text_xs().child("/min")),
-                    ),
-                ),
-            )
-            .child(div().px_2().child(Slider::new(&self.slider)))
-            .child(
-                div().flex().justify_end().child(
-                    Button::new("walking")
-                        .label(if frame.walking {
-                            "Stop Walking"
-                        } else {
-                            "Start Walking"
-                        })
-                        .on_click(cx.listener(|view, _, _, cx| view.walking(cx))),
-                ),
-            )
-            .into_any_element()
-    }
-    fn diagnostics(&self, cx: &mut Context<Self>) -> AnyElement {
-        let frame = self.player.presentation();
-        let firmware = frame.firmware.clone();
-        v_flex()
-            .gap_5()
-            .child(
-                DescriptionList::horizontal()
-                    .columns(1)
-                    .bordered(false)
-                    .small()
-                    .item("Application", env!("CARGO_PKG_VERSION"), 1)
-                    .item(
-                        "Core revision",
-                        hs_runtime::CORE_REVISION
-                            .chars()
-                            .take(12)
-                            .collect::<String>(),
-                        1,
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if frame.walking { "Walking" } else { "Stopped" }),
                     )
-                    .item(
-                        "EEPROM",
-                        frame
-                            .eeprom
-                            .as_deref()
-                            .map(settings::filename)
-                            .unwrap_or_default(),
-                        1,
-                    )
-                    .item(
-                        "Firmware",
-                        Button::new("copy-firmware")
-                            .ghost()
-                            .small()
-                            .label(format!("{}…", &firmware[..firmware.len().min(12)]))
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(firmware.clone()))
+                    .child(
+                        Button::new("walking")
+                            .label(if frame.walking {
+                                "Stop Walking"
+                            } else {
+                                "Start Walking"
                             })
-                            .into_any_element(),
-                        1,
-                    )
-                    .item(
-                        "Execution",
-                        if frame.paused {
-                            "Paused".into()
-                        } else {
-                            format!("{:.1}%", frame.speed * 100.)
-                        },
-                        1,
-                    )
-                    .item("Guest time", elapsed(frame.time.raw()), 1)
-                    .item(
-                        "LCD",
-                        if frame.display_enabled {
-                            "Enabled"
-                        } else {
-                            "Off"
-                        },
-                        1,
-                    )
-                    .item("Infrared", frame.connection_name(), 1)
-                    .item(
-                        "Audio buffer",
-                        format!(
-                            "{:.1} ms",
-                            frame.audio_buffered as f64 * 1000. / f64::from(frame.audio_rate)
-                        ),
-                        1,
-                    )
-                    .item("Audio underruns", frame.audio_underruns.to_string(), 1),
+                            .on_click(cx.listener(|view, _, _, cx| view.walking(cx))),
+                    ),
             )
-            .when_some(frame.audio_error, |root, error| {
-                root.child(div().text_sm().text_color(cx.theme().danger).child(error))
-            })
             .child(
-                div()
-                    .flex()
+                v_flex()
                     .gap_2()
+                    .pt_4()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
                     .child(
-                        Button::new("retry-audio")
-                            .label("Reconnect Audio")
-                            .on_click(|_, _, cx| cx.global::<Desktop>().runtime.retry_audio()),
+                        h_flex()
+                            .justify_between()
+                            .text_sm()
+                            .child("Acceleration")
+                            .child(
+                                h_flex().gap_3().children(
+                                    [
+                                        ("X", cx.theme().chart_1),
+                                        ("Y", cx.theme().chart_2),
+                                        ("Z", cx.theme().chart_3),
+                                    ]
+                                    .map(|(axis, color)| div().text_color(color).child(axis)),
+                                ),
+                            ),
                     )
-                    .child(Button::new("export").label("Export…").on_click(
-                        cx.listener(|view, _, _, cx| view.invoke(Intent::DiagnosticsExport, cx)),
-                    )),
+                    .child(div().h_20().child(instruments::motion(&frame, cx))),
             )
-            .into_any_element()
-    }
-    fn peer(&self, id: hs_runtime::Id, cx: &App) -> Option<(Player, String)> {
-        cx.global::<Desktop>()
-            .windows
-            .iter()
-            .filter_map(|w| w.view.upgrade())
-            .find_map(|view| {
-                let view = view.read(cx);
-                (view.player().id() == id).then(|| (view.player().clone(), view.filename()))
-            })
-    }
-    fn thumbnail(&self, player: &Player, name: String, cx: &App) -> AnyElement {
-        let frame = player.presentation();
-        v_flex()
-            .items_center()
-            .gap_2()
-            .child(div().w(rems(9.)).h_24().child(lcd::display(
-                frame.pixels,
-                frame.contrast,
-                false,
-                cx.global::<Desktop>().preferences.palette,
-            )))
-            .child(div().text_sm().child(name))
             .into_any_element()
     }
     fn activity(&self, frame: &Presentation, cx: &App) -> AnyElement {
@@ -492,40 +360,31 @@ impl Tool {
             )
             .into_any_element()
     }
+    fn activity_disclosure(&self, frame: &Presentation, cx: &mut Context<Self>) -> AnyElement {
+        Collapsible::new()
+            .open(self.activity_open)
+            .child(
+                Button::new("activity")
+                    .self_start()
+                    .px_0()
+                    .icon(if self.activity_open {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .ghost()
+                    .small()
+                    .label("Activity")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.activity_open = !view.activity_open;
+                        cx.notify();
+                    })),
+            )
+            .content(self.activity(frame, cx))
+            .into_any_element()
+    }
     fn link(&self, cx: &mut Context<Self>) -> AnyElement {
         let frame = self.player.presentation();
-        if let Some(peer) = frame.peer.and_then(|id| self.peer(id, cx)) {
-            return v_flex()
-                .gap_5()
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .gap_3()
-                        .child(
-                            self.thumbnail(
-                                &self.player,
-                                frame
-                                    .eeprom
-                                    .as_deref()
-                                    .map(settings::filename)
-                                    .unwrap_or_default(),
-                                cx,
-                            ),
-                        )
-                        .child(div().text_color(cx.theme().primary).child("↔"))
-                        .child(self.thumbnail(&peer.0, peer.1, cx)),
-                )
-                .child(self.activity(&frame, cx))
-                .child(
-                    h_flex()
-                        .justify_between()
-                        .child(div().text_sm().child("Linked"))
-                        .child(Button::new("disconnect").label("Disconnect").on_click(
-                            cx.listener(|view, _, _, _| view.player.send(Command::Disconnect)),
-                        )),
-                )
-                .into_any_element();
-        }
         let peers: Vec<_> = cx
             .global::<Desktop>()
             .windows
@@ -534,19 +393,21 @@ impl Tool {
             .filter_map(|view| {
                 let view = view.read(cx);
                 let other = view.presentation();
-                (view.player().id() != self.player.id() && other.ready && !other.closing)
-                    .then(|| (view.player().clone(), view.filename()))
+                (view.player().id() != self.player.id()
+                    && other.ready
+                    && (!other.closing || frame.peer == Some(view.player().id()))
+                    && frame.peer.is_none_or(|id| id == view.player().id()))
+                .then(|| (view.player().clone(), view.filename()))
             })
             .collect();
-        let available = frame.connection == hs_runtime::Connection::Disconnected;
+        let available = !frame.connection.is_active();
         v_flex()
-            .gap_3()
+            .gap_2()
+            .when(frame.paused, |root| {
+                root.child(div().text_sm().child("Resume emulation to connect."))
+            })
             .when(!available, |root| {
-                root.child(
-                    div()
-                        .text_sm()
-                        .child("Disconnect TCP to link a local player."),
-                )
+                root.child(div().text_sm().child("Disconnect TCP to link locally."))
             })
             .when(peers.is_empty(), |root| {
                 root.child(
@@ -554,54 +415,116 @@ impl Tool {
                         .py_6()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("No other players open"),
+                        .child("No other emulation windows open"),
                 )
             })
             .children(peers.into_iter().map(|(player, name)| {
                 let other = player.presentation();
-                let busy = other.peer.is_some()
-                    || other.connection != hs_runtime::Connection::Disconnected;
                 let id = player.id();
-                h_flex()
-                    .gap_4()
-                    .py_2()
-                    .child(div().w_24().h_16().child(lcd::display(
-                        other.pixels,
-                        other.contrast,
-                        false,
-                        cx.global::<Desktop>().preferences.palette,
-                    )))
+                let linked = frame.peer == Some(id);
+                let busy = !linked && (other.peer.is_some() || other.connection.is_active());
+                let status = if linked {
+                    "Linked".into()
+                } else if other.closing {
+                    "Closing".into()
+                } else if other.peer.is_some() {
+                    "Linked locally".into()
+                } else if busy {
+                    other.connection_name()
+                } else if other.paused {
+                    "Paused".into()
+                } else {
+                    "Available".into()
+                };
+                let open = self.details.contains(&id);
+                Collapsible::new()
+                    .open(open)
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(name)
+                        h_flex()
+                            .gap_4()
+                            .py_3()
                             .child(
                                 div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(if busy {
-                                        "Connected"
-                                    } else if other.paused {
-                                        "Paused"
-                                    } else {
-                                        "Available"
-                                    }),
+                                    .w(lcd::dimensions(1., 1.).width)
+                                    .h(lcd::dimensions(1., 1.).height)
+                                    .flex_shrink_0()
+                                    .child(lcd::display(
+                                        other.pixels,
+                                        other.contrast,
+                                        false,
+                                        cx.global::<Desktop>().preferences.palette,
+                                    )),
+                            )
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_1()
+                                    .child(div().text_ellipsis().child(name))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(status),
+                                    )
+                                    .child(
+                                        Button::new(("details", id))
+                                            .self_start()
+                                            .px_0()
+                                            .icon(if open {
+                                                IconName::ChevronDown
+                                            } else {
+                                                IconName::ChevronRight
+                                            })
+                                            .ghost()
+                                            .xsmall()
+                                            .label("Details")
+                                            .on_click(cx.listener(move |view, _, _, cx| {
+                                                if !view.details.remove(&id) {
+                                                    view.details.insert(id);
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            )
+                            .child(
+                                Button::new(("connect", id))
+                                    .small()
+                                    .w_24()
+                                    .label(if linked { "Disconnect" } else { "Connect" })
+                                    .disabled(
+                                        !linked
+                                            && (busy || !available || other.paused || frame.paused),
+                                    )
+                                    .on_click(cx.listener(move |view, _, _, _| {
+                                        view.player.send(if linked {
+                                            Command::Disconnect
+                                        } else {
+                                            Command::Link(id)
+                                        })
+                                    })),
                             ),
                     )
-                    .child(
-                        Button::new(("connect", id))
-                            .small()
-                            .label("Connect")
-                            .disabled(busy || !available || other.paused || frame.paused)
-                            .on_click(cx.listener(move |view, _, _, _| {
-                                view.player.send(Command::Link(id))
-                            })),
+                    .content(
+                        v_flex()
+                            .gap_2()
+                            .pb_3()
+                            .text_sm()
+                            .child(format!("Emulated time: {}", elapsed(other.time.raw())))
+                            .child(
+                                div().text_color(cx.theme().muted_foreground).child(
+                                    other
+                                        .eeprom
+                                        .map(|path| path.display().to_string())
+                                        .unwrap_or_else(|| "Untitled EEPROM".into()),
+                                ),
+                            ),
                     )
+                    .into_any_element()
             }))
+            .when(frame.peer.is_some(), |root| {
+                root.child(self.activity_disclosure(&frame, cx))
+            })
             .into_any_element()
     }
     fn tcp(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -644,7 +567,6 @@ impl Tool {
                         })),
                 )
             })
-            .child(self.activity(&frame, cx))
             .child(
                 h_flex()
                     .justify_between()
@@ -684,6 +606,7 @@ impl Tool {
                             })),
                     ),
             )
+            .child(self.activity_disclosure(&frame, cx))
             .into_any_element()
     }
 }
@@ -702,7 +625,6 @@ impl Render for Tool {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.kind {
             Kind::Motion => self.motion(cx),
-            Kind::Diagnostics => self.diagnostics(cx),
             Kind::Link => self.link(cx),
             Kind::Tcp => self.tcp(cx),
         };
@@ -740,11 +662,13 @@ impl Render for Tool {
                     .overflow_y_scroll()
                     .child(
                         v_flex()
-                            .p_5()
+                            .p_4()
                             .gap_4()
                             .child(content)
                             .when_some(
-                                self.player.presentation().connection_error,
+                                (self.kind != Kind::Motion)
+                                    .then_some(frame.connection_error)
+                                    .flatten(),
                                 |root, error| {
                                     root.child(
                                         div().text_sm().text_color(cx.theme().danger).child(error),

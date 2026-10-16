@@ -7,7 +7,8 @@ pub(crate) enum Intent {
     OpenFirmware,
     OpenEeprom,
     NewEeprom,
-    Recent(crate::settings::Recent),
+    RecentEeprom(crate::settings::Recent),
+    RecentFirmware(std::path::PathBuf),
     Recents,
     SaveEeprom,
     SaveEepromAs,
@@ -34,7 +35,6 @@ pub(crate) enum Intent {
     Raw,
     Tool(crate::tools::Kind),
     Settings,
-    DiagnosticsExport,
     Controls,
     Documentation,
     Report,
@@ -92,6 +92,7 @@ pub(crate) struct MenuState {
     status: bool,
     scale: u8,
     recent: Vec<crate::settings::Recent>,
+    recent_firmware: Vec<std::path::PathBuf>,
     selected_slot: u8,
 }
 
@@ -101,7 +102,7 @@ impl MenuState {
         raw: bool,
         status: bool,
         scale: u8,
-        recent: &[crate::settings::Recent],
+        preferences: &crate::settings::Preferences,
         selected_slot: u8,
     ) -> Self {
         Self {
@@ -119,7 +120,8 @@ impl MenuState {
             raw,
             status,
             scale,
-            recent: recent.to_vec(),
+            recent: preferences.recent.clone(),
+            recent_firmware: preferences.recent_firmware.clone(),
             selected_slot,
         }
     }
@@ -223,6 +225,37 @@ impl MenuState {
         ]))
     }
 
+    pub fn recents(&self) -> [MenuItem; 2] {
+        let firmware: Vec<_> = self
+            .recent_firmware
+            .iter()
+            .map(|path| path.as_path())
+            .collect();
+        let eeprom: Vec<_> = self
+            .recent
+            .iter()
+            .map(|pair| pair.eeprom.as_path())
+            .collect();
+        [
+            MenuItem::submenu(
+                Menu::new("Recent Firmware").items(self.recent_firmware.iter().map(|path| {
+                    item(
+                        &crate::settings::recent_label(path, &firmware),
+                        Intent::RecentFirmware(path.clone()),
+                    )
+                })),
+            ),
+            MenuItem::submenu(
+                Menu::new("Recent EEPROM").items(self.recent.iter().map(|pair| {
+                    item(
+                        &crate::settings::recent_label(&pair.eeprom, &eeprom),
+                        Intent::RecentEeprom(pair.clone()),
+                    )
+                })),
+            ),
+        ]
+    }
+
     fn menus(&self) -> Vec<Menu> {
         let Self {
             ready,
@@ -232,17 +265,13 @@ impl MenuState {
             selected_slot,
             ..
         } = *self;
-        let recent = &self.recent;
+        let [firmware_recent, eeprom_recent] = self.recents();
         let mut files = vec![
             item("New Window", Intent::NewWindow),
             item("Open Firmware…", Intent::OpenFirmware),
             item("Open EEPROM…", Intent::OpenEeprom),
-            MenuItem::submenu(Menu::new("Open Recent").items(recent.iter().map(|pair| {
-                item(
-                    &crate::settings::filename(&pair.eeprom),
-                    Intent::Recent(pair.clone()),
-                )
-            }))),
+            firmware_recent,
+            eeprom_recent,
             MenuItem::separator(),
             self.active("Save EEPROM", Intent::SaveEeprom)
                 .disabled(!ready || !self.modified || self.saving),
@@ -258,11 +287,6 @@ impl MenuState {
                 Intent::Tool(crate::tools::Kind::Motion),
             ),
             self.infrared_menu(),
-            MenuItem::separator(),
-            self.active(
-                "Diagnostics…",
-                Intent::Tool(crate::tools::Kind::Diagnostics),
-            ),
         ];
         if !cfg!(target_os = "macos") {
             tools.push(item("Settings…", Intent::Settings));

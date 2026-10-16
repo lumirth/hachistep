@@ -1,4 +1,5 @@
 extern crate gpui_kit as gpui;
+mod about;
 mod commands;
 mod instruments;
 mod lcd;
@@ -44,7 +45,8 @@ struct Desktop {
     menu: Option<commands::MenuState>,
     preferences_window: Option<(AnyWindowHandle, WeakEntity<preferences::Settings>)>,
     tools: BTreeMap<(hs_runtime::Id, tools::Kind), AnyWindowHandle>,
-    tool_bounds: BTreeMap<(hs_runtime::Id, tools::Kind), (Bounds<Pixels>, bool)>,
+    tool_bounds: BTreeMap<(hs_runtime::Id, tools::Kind), Bounds<Pixels>>,
+    about_window: Option<AnyWindowHandle>,
     tcp_options: BTreeMap<hs_runtime::Id, tools::TcpOptions>,
 }
 impl Global for Desktop {}
@@ -88,6 +90,12 @@ fn create_window(cx: &mut App, launch: Option<Launch>) {
         384.,
         256. + f32::from(theme::player_chrome(theme::FONT_SIZE, false)),
     );
+    if cfg!(target_os = "macos") {
+        window_options.window_min_size = Some(size(
+            px(96.),
+            px(64.) + theme::player_chrome(theme::FONT_SIZE, false),
+        ));
+    }
     let previous = cx
         .global::<Desktop>()
         .active_player
@@ -230,6 +238,7 @@ fn main() {
                 disabled_commands: Vec::new(),
                 menu: None,
                 preferences_window: None,
+                about_window: None,
                 tools: BTreeMap::new(),
                 tool_bounds: BTreeMap::new(),
                 tcp_options: BTreeMap::new(),
@@ -264,7 +273,7 @@ fn main() {
                 false,
                 false,
                 4,
-                &cx.global::<Desktop>().preferences.recent,
+                &cx.global::<Desktop>().preferences,
                 1,
             )
             .install(cx);
@@ -272,6 +281,7 @@ fn main() {
                 commands::Intent::NewWindow => new_window(cx, None),
                 commands::Intent::Quit => quit(cx),
                 commands::Intent::Settings => preferences::open(cx),
+                commands::Intent::About => about::open(cx),
                 _ => (),
             });
             create_window(cx, pair.clone().map(Launch::Files));

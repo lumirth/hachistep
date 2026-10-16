@@ -613,6 +613,7 @@ impl Worker {
     fn run(&mut self) {
         let mut last = Instant::now();
         let mut publish = Instant::now();
+        let mut audio_check = Instant::now();
         loop {
             let behind = self.sessions.values().any(|s| {
                 !s.paused
@@ -631,6 +632,14 @@ impl Worker {
             }
             while let Ok(reply) = self.replies.try_recv() {
                 self.reply(reply);
+            }
+            if audio_check.elapsed() >= Duration::from_secs(1) {
+                if self.sound.needs_restart() {
+                    if let Err(error) = self.restart_audio() {
+                        *self.sound.error.lock().unwrap() = Some(error.to_string());
+                    }
+                }
+                audio_check = Instant::now();
             }
             self.poll_gamepads();
             if last.elapsed() > Duration::from_millis(500) {
@@ -655,6 +664,17 @@ impl Worker {
             }
         }
     }
+    fn restart_audio(&mut self) -> Result<()> {
+        let enabled = self.sound.enabled.load(Ordering::Relaxed);
+        self.sound = Sound::new();
+        self.sound.enabled.store(enabled, Ordering::Relaxed);
+        for (&id, session) in &mut self.sessions {
+            session.samples = self.sound.add(id);
+            session.clear_audio(self.sound.rate)?;
+        }
+        Ok(())
+    }
+
     fn dispatch(&mut self, id: Id, command: Command) {
         for link in &mut self.links {
             link.prediction = [None, None];
@@ -697,16 +717,7 @@ impl Worker {
                 self.sound.enabled.store(enabled, Ordering::Relaxed);
                 return Ok(());
             }
-            Command::RetryAudio => {
-                let enabled = self.sound.enabled.load(Ordering::Relaxed);
-                self.sound = Sound::new();
-                self.sound.enabled.store(enabled, Ordering::Relaxed);
-                for (&id, session) in &mut self.sessions {
-                    session.samples = self.sound.add(id);
-                    session.clear_audio(self.sound.rate)?;
-                }
-                return Ok(());
-            }
+            Command::RetryAudio => return self.restart_audio(),
             Command::GamepadMapping(mapping) => {
                 if self.mapping != mapping {
                     self.mapping = mapping;
@@ -956,7 +967,8 @@ impl Worker {
             .get(&peer)
             .context("The other player closed")?;
         ensure!(
-            a.tcp.is_none() && b.tcp.is_none(),
+            a.tcp.as_ref().is_none_or(|tcp| !tcp.active())
+                && b.tcp.as_ref().is_none_or(|tcp| !tcp.active()),
             "Disconnect TCP before linking local players"
         );
         let link = Link::new(
@@ -967,6 +979,7 @@ impl Worker {
         ensure!(!a.paused && !b.paused, "Resume both players before linking");
         for id in [id, peer] {
             let session = self.sessions.get_mut(&id).unwrap();
+            session.tcp = None;
             let changed = session.fast || session.speed_percent != 100;
             session.fast = false;
             session.turbo_toggle = false;

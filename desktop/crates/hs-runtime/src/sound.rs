@@ -80,6 +80,10 @@ impl Sound {
         Ok((stream, config.sample_rate))
     }
 
+    pub fn needs_restart(&self) -> bool {
+        self.error.lock().unwrap().is_some()
+    }
+
     pub fn add(&mut self, id: u64) -> Samples {
         let queue = Arc::new(Mutex::new(Channel {
             prefill: self.rate as usize / 25,

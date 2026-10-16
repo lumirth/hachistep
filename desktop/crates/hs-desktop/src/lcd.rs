@@ -79,6 +79,16 @@ impl Palette {
     }
 }
 
+pub(crate) fn scale(available: Size<Pixels>, dpi: f32) -> f32 {
+    (f32::from(available.width) * dpi / 96.)
+        .min(f32::from(available.height) * dpi / 64.)
+        .floor()
+}
+
+pub(crate) fn dimensions(scale: f32, dpi: f32) -> Size<Pixels> {
+    size(px(96. * scale / dpi), px(64. * scale / dpi))
+}
+
 pub(crate) fn display(
     pixels: Arc<[u8; 6144]>,
     contrast: u8,
@@ -92,7 +102,7 @@ pub(crate) fn display(
             let dpi = window.scale_factor();
             let width = f32::from(bounds.size.width) * dpi;
             let height = f32::from(bounds.size.height) * dpi;
-            let scale = (width / 96.).min(height / 64.).floor();
+            let scale = scale(bounds.size, dpi);
             if scale < 1. {
                 return;
             }
