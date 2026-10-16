@@ -23,7 +23,7 @@ def main():
         (contents / "Resources").mkdir()
         shutil.copy2(args.binary or ROOT / "target/release/hs-desktop", contents / "MacOS/hachistep")
         shutil.copy2(assets / "Hachistep.icns", contents / "Resources/Hachistep.icns")
-        shutil.copy2(ROOT.parents[1] / "LICENSE", contents / "Resources/LICENSE")
+        shutil.copy2(ROOT.parent / "LICENSE", contents / "Resources/LICENSE")
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump({
                 "CFBundleExecutable": "hachistep", "CFBundleName": "hachistep",
@@ -35,7 +35,7 @@ def main():
         shutil.make_archive(str(out / "hachistep-macos"), "zip", out, "hachistep.app")
     elif sys.platform == "win32":
         shutil.copy2(args.binary or ROOT / "target/release/hs-desktop.exe", out / "hachistep.exe")
-        shutil.copy2(ROOT.parents[1] / "LICENSE", out / "LICENSE")
+        shutil.copy2(ROOT.parent / "LICENSE", out / "LICENSE")
     else:
         parser.error("Desktop packaging supports macOS and Windows")
     print(out)

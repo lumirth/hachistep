@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-hs-core = { path = "../../../../crates/hs-core" }
+hs-core = { path = "../../../crates/hs-core" }
 borsh.workspace = true
 sha2.workspace = true
 anyhow = "1"

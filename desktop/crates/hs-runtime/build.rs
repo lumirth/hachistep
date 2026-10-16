@@ -8,5 +8,5 @@ fn main() {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .unwrap_or_else(|| "source-archive".into());
     println!("cargo:rustc-env=HS_CORE_REVISION={}", revision.trim());
-    println!("cargo:rerun-if-changed=../../../../crates/hs-core/src");
+    println!("cargo:rerun-if-changed=../../../crates/hs-core/src");
 }

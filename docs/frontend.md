@@ -1,12 +1,12 @@
 # Desktop frontend
 
-This example uses `hs-core` through a GPUI Kit player.
+A GPUI Kit frontend for `hs-core`.
 
 On macOS or Windows, build with Rust and the platform's native development tools
 installed, including the Windows SDK on Windows:
 
 ```sh
-cargo run --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --locked
+cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
 ```
 
 Firmware must be a raw 49,152-byte image; EEPROM images must contain 65,536 bytes.
@@ -34,15 +34,15 @@ it does not preserve the sender's inter-byte timing.
 Launch firmware and an EEPROM directly:
 
 ```sh
-cargo run --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --locked -- --firmware firmware.bin --eeprom alice.bin
+cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked -- --firmware firmware.bin --eeprom alice.bin
 ```
 
 After a release build, package the application and its supplied platform icon:
 
 ```sh
-python3 examples/desktop/package.py --out out/desktop
+python3 desktop/package.py --out out/desktop
 ```
 
 This creates `hachistep.app` and its ZIP on macOS, or `hachistep.exe` on Windows.
 
-The example pins an AccessKit 0.26.3 [KVO teardown backport](https://github.com/lumirth/accesskit/commit/e09cf84b8e0af7659423e5b91eed41c5ac2dd693) to prevent a macOS crash when closing a window after keyboard input. [Issue #10](https://github.com/lumirth/hachistep/issues/10) tracks returning to a published release.
+The desktop pins an AccessKit 0.26.3 [KVO teardown backport](https://github.com/lumirth/accesskit/commit/e09cf84b8e0af7659423e5b91eed41c5ac2dd693) to prevent a macOS crash when closing a window after keyboard input. [Issue #10](https://github.com/lumirth/hachistep/issues/10) tracks returning to a published release.
