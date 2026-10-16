@@ -1,12 +1,7 @@
 # Embedding HachiStep
 
 `hs_core::Machine` runs one device. The host supplies images and timestamped inputs,
-advances to a deadline, and consumes output events. Use the
-[replay example](../crates/hs-core/examples/replay.rs) as a complete caller:
-
-```sh
-cargo run -p hs-core --release --example replay -- firmware.bin eeprom.bin
-```
+advances to a deadline, and consumes output events.
 
 ## Construct and run
 
@@ -56,7 +51,8 @@ Map these drive values to your panel tint and contrast response.
 
 `display_contrast()` returns electronic volume from 0 to 63. `display_enabled()` and
 `display_start_line()` expose controller state. `display_drive()` returns the current
-digital COM/SEG output, including modulation and polarity, without advancing time.
+COM/SEG drive, including modulation, polarity and nominal supply voltages in microvolts,
+without advancing time. Its electrode accessors apply those voltages to individual outputs.
 
 `machine.audio(sample_rate)` creates an `Audio` renderer at the current time and
 buzzer drive. Feed each output event to `audio.event(event, samples)`, then call

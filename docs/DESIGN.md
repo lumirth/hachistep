@@ -57,8 +57,10 @@ The core must be usable by a frontend without knowledge of its internal schedule
 component synchronization. The CLI must support reproducible sessions and useful
 outputs with ordinary files and commands.
 
-Demonstrate behavior with independently specified guest programs and complete firmware
-sessions. New coverage should answer a real behavioral question.
+Hachiware owns independently specified guest programs, firmware sessions, behavioral
+checks and shared measurements. HachiStep owns emulation, its CLI and the adapter
+that exposes it to those experiments. New coverage should answer a real behavioral
+question.
 
 An EEPROM save contains persistent bytes. A save state captures a running session;
 its in-memory representation is a snapshot. Use those distinctions consistently.

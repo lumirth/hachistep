@@ -1,7 +1,9 @@
 //! Deterministic frontend. Input files are never overwritten.
 #![recursion_limit = "256"] // Expansion depth of the report's JSON object.
 mod args;
+mod audio;
 mod digest;
+mod link;
 mod output;
 mod timeline;
 use hs_core::{Conditions, Duration, Images, Machine, Time};
@@ -9,9 +11,10 @@ use std::{fs, io, process::ExitCode, time::Instant};
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use clap::Parser;
     use std::io::Read;
-    let (options, inspect) = match args::Cli::parse().command {
-        args::Command::Inspect(options) => (options, true),
-        args::Command::Run(options) => (options, false),
+    let (options, inspect, peer) = match args::Cli::parse().command {
+        args::Command::Inspect(options) => (options, true, None),
+        args::Command::Run(options) => (options, false, None),
+        args::Command::Link(options) => (options.run.clone(), false, Some(options)),
     };
     let args::Options {
         firmware,
@@ -32,6 +35,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         battery_drop_mv,
         chunk_us: chunk,
         peek: peeks,
+        write_ram,
+        audio,
     } = options;
     if bus_trace && !cfg!(feature = "trace") {
         return Err("--bus-trace requires cargo build -p hs-cli --features trace".into());
@@ -61,6 +66,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             },
         )?
     };
+    for (at, bytes) in write_ram {
+        m.write_ram(at, &bytes)?;
+    }
     let start = m.now();
     let conditions = m.conditions();
     let status = m.eeprom_status();
@@ -111,33 +119,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         bus_trace,
         ..Default::default()
     };
+    if let Some(path) = &audio {
+        events.audio = Some(audio::Capture::new(&m, path)?);
+    }
     let wall = Instant::now();
     let mut failure = None;
     let mut cursor = changes.partition_point(|input| input.at < m.now());
-    while m.now() < end {
-        let to = match chunk {
-            Some(chunk) => m
-                .now()
-                .checked_add(Duration::from_micros(chunk))
-                .ok_or("time overflow")?
-                .min(end),
-            None => end,
-        };
-        let mut stop = cursor;
-        while stop < changes.len() && changes[stop].at < to {
-            stop += 1;
-        }
-        match m.run_until(to, &changes[cursor..stop], &mut events) {
-            Ok(result) => cursor += result.inputs_consumed,
-            Err(e) => {
-                failure = Some(e);
-                break;
+    if let Some(options) = peer {
+        link::run(&mut m, &mut events, &changes, end, &options)?;
+    } else {
+        while m.now() < end {
+            let to = match chunk {
+                Some(chunk) => m
+                    .now()
+                    .checked_add(Duration::from_micros(chunk))
+                    .ok_or("time overflow")?
+                    .min(end),
+                None => end,
+            };
+            let mut stop = cursor;
+            while stop < changes.len() && changes[stop].at < to {
+                stop += 1;
             }
+            match m.run_until(to, &changes[cursor..stop], &mut events) {
+                Ok(result) => cursor += result.inputs_consumed,
+                Err(e) => {
+                    failure = Some(e);
+                    break;
+                }
+            }
+            events.check()?;
         }
-        events.check()?;
     }
     let elapsed = wall.elapsed().as_secs_f64();
     events.finish()?;
+    if audio.is_some() {
+        events
+            .audio
+            .take()
+            .ok_or("missing audio renderer")?
+            .finish(m.now())?;
+    }
     let failure_message = failure.as_ref().map(ToString::to_string);
     let report = output::report(
         &m,

@@ -19,8 +19,22 @@ pub enum Command {
     Inspect(Options),
     /// Execute to an exclusive absolute emulated horizon.
     Run(Options),
+    /// Connect two devices through an optical channel.
+    Link(LinkOptions),
 }
 #[derive(Args)]
+pub struct LinkOptions {
+    #[command(flatten)]
+    pub run: Options,
+    #[arg(long)]
+    pub peer_eeprom: PathBuf,
+    #[arg(long)]
+    pub peer_input: Option<PathBuf>,
+    /// Optical propagation delay and maximum run-ahead, in microseconds.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..))]
+    pub delay_us: u64,
+}
+#[derive(Args, Clone)]
 pub struct Options {
     #[arg(
         long,
@@ -79,6 +93,24 @@ pub struct Options {
     /// Side-effect-free final inspection at a hexadecimal address; repeatable.
     #[arg(long, value_parser = address)]
     pub peek: Vec<u16>,
+    /// Edit RAM before execution: hexadecimal ADDRESS:BYTES. Repeatable.
+    #[arg(long, value_parser = ram_write)]
+    pub write_ram: Vec<(u16, Vec<u8>)>,
+    /// Capture mono 48 kHz signed 16-bit audio in a new WAV file.
+    #[arg(long)]
+    pub audio: Option<PathBuf>,
+}
+fn ram_write(text: &str) -> Result<(u16, Vec<u8>), String> {
+    let (at, hex) = text.split_once(':').ok_or("expected ADDRESS:BYTES")?;
+    let at = address(at).map_err(|e| e.to_string())?;
+    if hex.is_empty() || !hex.len().is_multiple_of(2) || !hex.is_ascii() {
+        return Err("expected nonempty hexadecimal bytes".into());
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((at, bytes))
 }
 fn status(text: &str) -> Result<u8, std::num::ParseIntError> {
     text.strip_prefix("0x")

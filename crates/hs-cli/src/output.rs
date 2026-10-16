@@ -19,9 +19,15 @@ pub struct Events {
     pub trace_limit: u64,
     pub error: Option<io::Error>,
     pub bus_trace: bool,
+    pub audio: Option<crate::audio::Capture>,
 }
 impl Output for Events {
     fn event(&mut self, event: Event) -> ControlFlow<()> {
+        if let Some(audio) = &mut self.audio {
+            if let Err(e) = audio.event(event) {
+                self.error = Some(e);
+            }
+        }
         let is_bus = match event {
             #[cfg(feature = "trace")]
             Event::Bus { .. } => true,
@@ -148,6 +154,7 @@ pub fn report(
         "sleeping": m.sleeping(),
         "display_on": m.display_enabled(),
         "display_start": m.display_start_line(),
+        "display_contrast": m.display_contrast(),
         "events": e.count,
         "lcd_events": e.lcd,
         "nv_commits": e.nv,

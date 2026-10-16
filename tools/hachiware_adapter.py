@@ -44,6 +44,7 @@ CONDITIONS = {
 def capabilities() -> dict:
     return {
         "target": "H8/38606F",
+        "sessions": ["capture", "history", "chunk", "edit_ram", "audio", "link"],
         "observations": sorted([*STORAGE, *SCALARS]),
         "inputs": [
             "ir",
@@ -111,6 +112,26 @@ def export(output: Path, requested: list[str]) -> None:
                 shutil.copyfileobj(incoming, outgoing)
 
 
+def session_export(output: Path, report: dict) -> None:
+    fields = {key: report[key] for key in ("sleeping", "display_on", "display_start", "display_contrast")}
+    fields["er0"] = report["er"][0]
+    result = {
+        "fault": report["fault"],
+        "start_raw": report["start_time_raw"],
+        "end_raw": report["time_raw"],
+        "requested_raw": report["requested_time_raw"],
+        "observations": fields,
+        "artifacts": {**{field: f"{field}.bin" for field in STORAGE}, "state": "state.bin"},
+        "counters": {key: report[key] for key in ("interrupt_entries", "nv_commits", "ir_events", "buzzer_events")},
+        "history": {"path": "events.txt", "complete": report["trace_complete"],
+                    "records": report["trace_records"]},
+        "run_seconds": report["wall_seconds"],
+    }
+    with (output / "session.json").open("x") as stream:
+        json.dump(result, stream, indent=2)
+        stream.write("\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -122,6 +143,15 @@ def main() -> int:
     parser.add_argument("--milliseconds", type=int)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--session", action="store_true")
+    parser.add_argument("--load-state", type=Path)
+    parser.add_argument("--chunk-us", type=int)
+    parser.add_argument("--write-ram", action="append", default=[])
+    parser.add_argument("--history", action="store_true")
+    parser.add_argument("--audio", action="store_true")
+    parser.add_argument("--peer-eeprom", type=Path)
+    parser.add_argument("--peer-input", type=Path)
+    parser.add_argument("--delay-us", type=int, default=1)
     parser.add_argument(
         "--observe", action="append", default=[], choices=[*STORAGE, *SCALARS]
     )
@@ -129,31 +159,47 @@ def main() -> int:
     if args.describe:
         print(json.dumps(capabilities(), indent=2))
         return 0
-    for field in ("runner", "firmware", "eeprom", "milliseconds", "out"):
+    for field in ("runner", "milliseconds", "out"):
         if getattr(args, field) is None:
             parser.error(f"--{field} is required for execution")
-    if args.milliseconds <= 0:
-        parser.error("--milliseconds must be positive")
-    command = [
-        "run",
-        "--firmware",
-        str(args.firmware.resolve()),
-        "--eeprom",
-        str(args.eeprom.resolve()),
-        "--milliseconds",
-        str(args.milliseconds),
-        "--battery-drop-mv",
-        str(CONDITIONS["battery_sense_drop_mv"]),
-        "--out",
-        str(args.out.resolve()),
-    ]
+    if args.milliseconds < 0 or (not args.session and args.milliseconds == 0):
+        parser.error("--milliseconds must be positive, or zero for session inspection")
+    if args.load_state:
+        initial = ["--load-state", str(args.load_state.resolve())]
+    elif args.firmware and args.eeprom:
+        initial = ["--firmware", str(args.firmware.resolve()), "--eeprom", str(args.eeprom.resolve()),
+                   "--battery-drop-mv", str(CONDITIONS["battery_sense_drop_mv"])]
+    else:
+        parser.error("provide --firmware and --eeprom, or --load-state")
+    command = ["link" if args.peer_eeprom else "run", *initial,
+               "--milliseconds", str(args.milliseconds), "--out", str(args.out.resolve())]
     if args.input:
         command += ["--input", str(args.input.resolve())]
+    if args.chunk_us:
+        command += ["--chunk-us", str(args.chunk_us)]
+    for edit in args.write_ram:
+        command += ["--write-ram", edit]
+    if args.history:
+        command += ["--trace", str(args.out.resolve() / "events.txt"), "--trace-limit", "2000000"]
+    if args.audio:
+        command += ["--audio", str(args.out.resolve() / "audio.wav")]
+    if args.peer_eeprom:
+        command += ["--peer-eeprom", str(args.peer_eeprom.resolve()), "--delay-us", str(args.delay_us)]
+        if args.peer_input:
+            command += ["--peer-input", str(args.peer_input.resolve())]
     result = subprocess.run(cli_command(args.runner, command), check=False)
     report_path = args.out / "report.json"
     if report_path.is_file():
         report = json.loads(report_path.read_text())
-        export(args.out, args.observe)
+        requested = sorted(STORAGE) if args.session else args.observe
+        export(args.out, requested)
+        if args.session:
+            session_export(args.out, report)
+            if args.peer_eeprom:
+                peer = args.out / "peer"
+                peer_report = json.loads((peer / "report.json").read_text())
+                export(peer, requested)
+                session_export(peer, peer_report)
         with (args.out / "observations.json").open("x", encoding="utf-8") as stream:
             json.dump(observations(report, args.milliseconds, args.observe), stream)
             stream.write("\n")
