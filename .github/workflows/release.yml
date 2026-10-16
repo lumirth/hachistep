@@ -89,7 +89,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           revision=$(git rev-parse HEAD)
-          run=$(gh run list --workflow ci.yml --branch main --commit "$revision" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          run=$(gh run list --workflow ci.yml --branch main --event push --commit "$revision" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
           test -n "$run"
           gh run watch "$run" --exit-status --interval 10
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')

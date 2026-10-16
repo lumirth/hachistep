@@ -9,8 +9,8 @@ permissions:
 env:
   CARGO_PROFILE_DEV_DEBUG: 0
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 jobs:
   changes:
     runs-on: ubuntu-24.04
