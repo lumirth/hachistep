@@ -1,18 +1,14 @@
 use crate::{
     commands::Intent,
-    lcd,
     settings::{self, Preferences},
     theme, Desktop,
 };
 use gpui_kit::{
     component::{
         button::Button,
-        color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
         h_flex,
-        input::{Input, InputEvent, InputState},
         kbd::Kbd,
         menu::{DropdownMenu, PopupMenuItem},
-        radio::RadioGroup,
         switch::Switch,
         tab::{Tab, TabBar},
         v_flex, ActiveTheme, Sizable,
@@ -34,7 +30,14 @@ fn open_section(section: Option<Section>, cx: &mut App) {
                 let _ = view.update(cx, |view, cx| {
                     if let Some(section) = section {
                         view.section = section;
-                        window.resize(size(px(520.), px(section.height(view.preview.is_some()))));
+                        window.resize(size(
+                            px(crate::palettes::WIDTH),
+                            px(if section == Section::Appearance {
+                                view.palettes.read(cx).height()
+                            } else {
+                                section.height()
+                            }),
+                        ));
                     }
                     view.capture = None;
                     cx.notify();
@@ -50,7 +53,7 @@ fn open_section(section: Option<Section>, cx: &mut App) {
         [Section::Appearance, Section::Controls, Section::Emulation]
             [cx.global::<Desktop>().preferences.settings_page.min(2)],
     );
-    let mut options = crate::options("Settings", 520., section.height(preview(cx).is_some()));
+    let mut options = crate::options("Settings", crate::palettes::WIDTH, section.height());
     options.is_resizable = false;
     options.window_min_size = None;
     match gpui_kit::open_window(options, cx, |window, cx| {
@@ -63,18 +66,6 @@ fn open_section(section: Option<Section>, cx: &mut App) {
     }
 }
 
-fn preview(cx: &App) -> Option<hs_runtime::Player> {
-    cx.global::<Desktop>()
-        .windows
-        .iter()
-        .rev()
-        .filter_map(|w| w.view.upgrade())
-        .find_map(|view| {
-            let view = view.read(cx);
-            view.presentation().ready.then(|| view.player().clone())
-        })
-}
-
 #[derive(Clone, Copy, PartialEq)]
 enum Section {
     Appearance,
@@ -82,11 +73,11 @@ enum Section {
     Emulation,
 }
 impl Section {
-    fn height(self, has_preview: bool) -> f32 {
+    fn height(self) -> f32 {
         match self {
-            Self::Emulation => 260.,
-            Self::Appearance if !has_preview => 300.,
-            _ => 420.,
+            Self::Emulation => 400.,
+            Self::Appearance => crate::palettes::HEIGHT,
+            Self::Controls => 420.,
         }
     }
     fn name(self) -> &'static str {
@@ -103,9 +94,8 @@ pub(crate) struct Settings {
     focus: FocusHandle,
     capture: Option<usize>,
     error: Option<&'static str>,
-    colors: [Entity<ColorPickerState>; 2],
-    hex: [Entity<InputState>; 2],
-    preview: Option<hs_runtime::Player>,
+    palettes: Entity<crate::palettes::Editor>,
+    firmware_error: Option<String>,
     target: Option<WeakEntity<crate::player::PlayerView>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -115,54 +105,8 @@ impl Settings {
         let focus = cx.focus_handle().tab_stop(true);
         focus.focus(window, cx);
         let release = cx.on_release(|_, cx| cx.global_mut::<Desktop>().preferences_window = None);
-        let palette = cx.global::<Desktop>().preferences.palette;
-        let colors = [palette.panel, palette.ink]
-            .map(|color| cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb(color))));
-        let hex = [palette.panel, palette.ink].map(|color| {
-            cx.new(|cx| {
-                InputState::new(window, cx)
-                    .default_value(format!("{color:06X}"))
-                    .validate(|text, _| {
-                        text.len() <= 6 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-            })
-        });
+        let palettes = cx.new(|cx| crate::palettes::Editor::new(window, cx));
         let mut subscriptions = vec![release];
-        for (index, picker) in colors.iter().enumerate() {
-            subscriptions.push(cx.subscribe_in(
-                picker,
-                window,
-                move |view, _, event: &ColorPickerEvent, window, cx| {
-                    if let ColorPickerEvent::Change(Some(color)) = event {
-                        let rgba = color.to_rgb();
-                        let value = ((rgba.r * 255.).round() as u32) << 16
-                            | ((rgba.g * 255.).round() as u32) << 8
-                            | (rgba.b * 255.).round() as u32;
-                        view.set_color(index, value, window, cx);
-                    }
-                },
-            ));
-            subscriptions.push(cx.subscribe_in(
-                &hex[index],
-                window,
-                move |view, _, event: &InputEvent, window, cx| {
-                    let text = view.hex[index].read(cx).value();
-                    if matches!(event, InputEvent::Change) && text.len() == 6 {
-                        if let Ok(value) = u32::from_str_radix(&text, 16) {
-                            view.set_color(index, value, window, cx);
-                        }
-                    } else if matches!(event, InputEvent::Blur | InputEvent::PressEnter { .. }) {
-                        let palette = cx.global::<Desktop>().preferences.palette;
-                        let value = if index == 0 {
-                            palette.panel
-                        } else {
-                            palette.ink
-                        };
-                        view.set_color(index, value, window, cx);
-                    }
-                },
-            ));
-        }
         let target = cx.global::<Desktop>().active_player.clone().or_else(|| {
             cx.global::<Desktop>()
                 .windows
@@ -177,7 +121,6 @@ impl Settings {
                 }
             }
         }));
-        let preview = preview(cx);
         cx.spawn_in(window, async move |view, cx| loop {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(100))
@@ -189,9 +132,6 @@ impl Settings {
                             if let Some(target) = &view.target {
                                 crate::player_menu(target, cx);
                             }
-                        }
-                        if view.section == Section::Appearance && view.preview.is_some() {
-                            cx.notify();
                         }
                     })
                 })
@@ -206,9 +146,8 @@ impl Settings {
             focus,
             capture: None,
             error: None,
-            colors,
-            hex,
-            preview,
+            palettes,
+            firmware_error: None,
             target,
             _subscriptions: subscriptions,
         }
@@ -219,144 +158,39 @@ impl Settings {
         cx.refresh_windows();
         cx.notify();
     }
-    fn set_color(&mut self, index: usize, value: u32, window: &mut Window, cx: &mut Context<Self>) {
-        let palette = cx.global::<Desktop>().preferences.palette;
-        let old = if index == 0 {
-            palette.panel
-        } else {
-            palette.ink
-        };
-        if value != old {
-            self.update(
-                |p| {
-                    if index == 0 {
-                        p.palette.panel = value
-                    } else {
-                        p.palette.ink = value
-                    }
-                },
-                cx,
-            );
-        }
-        let text = format!("{value:06X}");
-        if self.hex[index].read(cx).value().as_str() != text {
-            self.hex[index].update(cx, |input, cx| input.set_value(text, window, cx));
-        }
-        self.colors[index].update(cx, |picker, cx| picker.set_value(rgb(value), window, cx));
+    fn appearance(&self, _: &mut Context<Self>) -> AnyElement {
+        self.palettes.clone().into_any_element()
     }
-    fn appearance(&self, cx: &mut Context<Self>) -> AnyElement {
-        let palette = cx.global::<Desktop>().preferences.palette;
-        let name = lcd::PRESETS
-            .iter()
-            .find(|(_, p)| *p == palette)
-            .map(|(name, _)| *name)
-            .unwrap_or("Custom");
-        let owner = cx.weak_entity();
-        let frame = self.preview.as_ref().map(hs_runtime::Player::presentation);
-        v_flex()
-            .gap_6()
-            .child(
-                h_flex().justify_between().gap_4().child("Theme").child(
-                    RadioGroup::horizontal("appearance")
-                        .children(["System", "Light", "Dark"])
-                        .selected_index(Some(cx.global::<Desktop>().preferences.appearance))
-                        .on_change(cx.listener(|view, value, _, cx| {
-                            view.update(|p| p.appearance = *value, cx);
-                            theme::apply(*value, cx);
-                        })),
-                ),
-            )
-            .child(
-                v_flex()
-                    .gap_4()
-                    .child(h_flex().justify_between().child("LCD colors").child(
-                        Button::new("palette").small().label(name).dropdown_menu(
-                            move |mut menu, _, _| {
-                                for (preset, palette) in lcd::PRESETS {
-                                    let owner = owner.clone();
-                                    menu = menu.item(
-                                        PopupMenuItem::new(preset)
-                                            .checked(preset == name)
-                                            .on_click(move |_, window, cx| {
-                                                let _ = owner.update(cx, |view, cx| {
-                                                    view.update(|p| p.palette = palette, cx);
-                                                    for (index, color) in
-                                                        [palette.panel, palette.ink]
-                                                            .into_iter()
-                                                            .enumerate()
-                                                    {
-                                                        view.set_color(index, color, window, cx);
-                                                    }
-                                                });
-                                            }),
-                                    );
-                                }
-                                menu
-                            },
-                        ),
-                    ))
-                    .when_some(frame, |root, frame| {
-                        root.child(div().flex().justify_center().py_2().child(
-                            div().w_48().h_32().child(lcd::display(
-                                frame.pixels,
-                                frame.contrast,
-                                false,
-                                palette,
-                            )),
-                        ))
-                    })
-                    .child(
-                        div().flex().gap_5().children(
-                            ["Panel", "Ink"]
-                                .into_iter()
-                                .enumerate()
-                                .map(|(index, label)| {
-                                    div()
-                                        .flex_1()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_2()
-                                        .child(div().text_sm().child(label))
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .child(
-                                                    ColorPicker::new(&self.colors[index])
-                                                        .accessibility_label(format!(
-                                                            "Choose {label} color"
-                                                        ))
-                                                        .small(),
-                                                )
-                                                .child(
-                                                    div().flex_1().min_w_0().child(
-                                                        Input::new(&self.hex[index])
-                                                            .small()
-                                                            .prefix(
-                                                                div()
-                                                                    .text_color(
-                                                                        cx.theme().muted_foreground,
-                                                                    )
-                                                                    .child("#"),
-                                                            ),
-                                                    ),
-                                                ),
-                                        )
-                                }),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .children([0, 85, 170, 255].map(|drive| {
-                                div()
-                                    .flex_1()
-                                    .h_5()
-                                    .bg(rgb(palette.colors(32, false)[drive]))
-                            })),
-                    ),
-            )
-            .into_any_element()
+    fn choose_firmware(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |view, cx| {
+            let Ok(receiver) = cx.update(|_, cx| {
+                cx.prompt_for_paths(PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: false,
+                    prompt: Some("Choose Firmware".into()),
+                })
+            }) else {
+                return;
+            };
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            if let Some(path) = paths.first() {
+                let result = crate::firmware::Firmware::retain(path);
+                let _ = view.update(cx, |view, cx| match result {
+                    Ok(firmware) => {
+                        view.firmware_error = None;
+                        view.update(|p| p.default_firmware = Some(firmware), cx);
+                    }
+                    Err(error) => {
+                        view.firmware_error = Some(error.to_string());
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
     }
     fn controls(&self, cx: &mut Context<Self>) -> AnyElement {
         let preferences = cx.global::<Desktop>().preferences.clone();
@@ -447,49 +281,123 @@ impl Settings {
 
     fn emulation(&self, cx: &mut Context<Self>) -> AnyElement {
         let preferences = &cx.global::<Desktop>().preferences;
+        let default = preferences
+            .default_firmware
+            .as_ref()
+            .map(|f| f.name.clone());
+        let owner = cx.weak_entity();
+        let firmware = if let Some(name) = default {
+            Button::new("default-firmware")
+                .w_40()
+                .small()
+                .label(name)
+                .accessibility_label("Default firmware")
+                .child(component::Icon::new(component::IconName::ChevronDown).xsmall())
+                .dropdown_menu(move |menu, _, _| {
+                    let choose = owner.clone();
+                    let clear = owner.clone();
+                    menu.item(
+                        PopupMenuItem::new("Change…").on_click(move |_, window, cx| {
+                            let _ = choose.update(cx, |view, cx| view.choose_firmware(window, cx));
+                        }),
+                    )
+                    .item(
+                        PopupMenuItem::new("Clear Default").on_click(move |_, _, cx| {
+                            let _ = clear.update(cx, |view, cx| {
+                                view.update(|p| p.default_firmware = None, cx)
+                            });
+                        }),
+                    )
+                })
+                .into_any_element()
+        } else {
+            Button::new("default-firmware")
+                .w_40()
+                .small()
+                .label("Choose…")
+                .on_click(cx.listener(|view, _, window, cx| view.choose_firmware(window, cx)))
+                .into_any_element()
+        };
+        let heading = |text: &'static str| {
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text)
+        };
         v_flex()
             .gap_5()
             .child(
-                Switch::new("sound")
-                    .label("Sound")
-                    .checked(!preferences.mute)
-                    .on_change(cx.listener(|view, enabled: &bool, _, cx| {
-                        view.update(|p| p.mute = !*enabled, cx);
-                        cx.global::<Desktop>().runtime.sound_enabled(*enabled);
-                    })),
-            )
-            .child(self.speed_choice(
-                "default-speed",
-                "Default speed",
-                preferences.speed,
-                false,
-                cx,
-            ))
-            .child(self.speed_choice(
-                "turbo-speed",
-                "Fast-forward speed",
-                preferences.turbo,
-                true,
-                cx,
-            ))
-            .when_some(
-                cx.global::<Desktop>()
-                    .windows
-                    .iter()
-                    .filter_map(|window| window.view.upgrade())
-                    .find_map(|view| view.read(cx).presentation().audio_error.clone()),
-                |root, error| {
-                    root.child(
-                        v_flex()
-                            .gap_2()
-                            .child(div().text_sm().text_color(cx.theme().danger).child(error))
-                            .child(
-                                Button::new("retry-audio").small().label("Retry").on_click(
-                                    |_, _, cx| cx.global::<Desktop>().runtime.retry_audio(),
-                                ),
-                            ),
+                v_flex()
+                    .gap_3()
+                    .child(heading("Firmware"))
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .gap_4()
+                            .child("Default")
+                            .child(firmware),
                     )
-                },
+                    .when_some(self.firmware_error.clone(), |root, error| {
+                        root.child(div().text_sm().text_color(cx.theme().danger).child(error))
+                    }),
+            )
+            .child(component::separator::Separator::horizontal())
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(heading("Playback"))
+                    .child(self.speed_choice(
+                        "default-speed",
+                        "Default speed",
+                        preferences.speed,
+                        false,
+                        cx,
+                    ))
+                    .child(self.speed_choice(
+                        "turbo-speed",
+                        "Fast-forward speed",
+                        preferences.turbo,
+                        true,
+                        cx,
+                    )),
+            )
+            .child(component::separator::Separator::horizontal())
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(heading("Audio"))
+                    .child(
+                        h_flex().justify_between().gap_4().child("Sound").child(
+                            Switch::new("sound")
+                                .accessibility_label("Sound")
+                                .checked(!preferences.mute)
+                                .on_change(cx.listener(|view, enabled: &bool, _, cx| {
+                                    view.update(|p| p.mute = !*enabled, cx);
+                                    cx.global::<Desktop>().runtime.sound_enabled(*enabled);
+                                })),
+                        ),
+                    )
+                    .when_some(
+                        cx.global::<Desktop>()
+                            .windows
+                            .iter()
+                            .filter_map(|window| window.view.upgrade())
+                            .find_map(|view| view.read(cx).presentation().audio_error.clone()),
+                        |root, error| {
+                            root.child(
+                                v_flex()
+                                    .gap_2()
+                                    .child(
+                                        div().text_sm().text_color(cx.theme().danger).child(error),
+                                    )
+                                    .child(
+                                        Button::new("retry-audio").small().label("Retry").on_click(
+                                            |_, _, cx| cx.global::<Desktop>().runtime.retry_audio(),
+                                        ),
+                                    ),
+                            )
+                        },
+                    ),
             )
             .into_any_element()
     }
@@ -509,7 +417,7 @@ impl Settings {
             .child(
                 Button::new(id)
                     .small()
-                    .w_32()
+                    .w_40()
                     .label(format!("{value}%"))
                     .dropdown_menu(move |mut menu, _, _| {
                         for percent in [50, 75, 100, 150, 200, 400, 800] {
@@ -562,10 +470,12 @@ impl Render for Settings {
             .children(sections.map(|section| Tab::new().label(section.name()).flex_1()))
             .on_click(cx.listener(move |view, ix: &usize, window, cx| {
                 view.section = sections[*ix];
-                window.resize(size(
-                    px(520.),
-                    px(view.section.height(view.preview.is_some())),
-                ));
+                let height = if view.section == Section::Appearance {
+                    view.palettes.read(cx).height()
+                } else {
+                    view.section.height()
+                };
+                window.resize(size(px(crate::palettes::WIDTH), px(height)));
                 view.update(|preferences| preferences.settings_page = *ix, cx);
                 view.capture = None;
                 view.error = None;
@@ -576,8 +486,11 @@ impl Render for Settings {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .track_focus(&self.focus)
-            .on_action(
-                cx.listener(|view, action: &Intent, window, cx| match *action {
+            .on_action(cx.listener(|view, action: &Intent, window, cx| {
+                if crate::system_action(action, window, cx) {
+                    return;
+                }
+                match *action {
                     Intent::Close => window.remove_window(),
                     Intent::Quit => crate::quit(cx),
                     Intent::NewWindow => crate::new_window(cx, None),
@@ -585,13 +498,20 @@ impl Render for Settings {
                     _ => {
                         if let Some(target) = &view.target {
                             crate::invoke_player(target, action.clone(), cx);
+                        } else {
+                            crate::application_action(action, cx);
                         }
                     }
-                }),
-            )
+                }
+            }))
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    if view.capture.take().is_none() {
+                    if view.capture.take().is_none()
+                        && !(view.section == Section::Appearance
+                            && view
+                                .palettes
+                                .update(cx, |palette, cx| palette.cancel(window, cx)))
+                    {
                         window.remove_window();
                     }
                     cx.notify();

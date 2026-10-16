@@ -4,6 +4,13 @@ use gpui_kit::*;
 #[action(namespace = hachistep, no_json)]
 pub(crate) enum Intent {
     NewWindow,
+    Palette(Option<String>),
+    Hide,
+    HideOthers,
+    ShowAll,
+    Minimize,
+    Zoom,
+    BringAll,
     OpenFirmware,
     OpenEeprom,
     NewEeprom,
@@ -69,6 +76,13 @@ pub(crate) fn bind(cx: &mut App) {
         ]);
     }
     cx.bind_keys([KeyBinding::new("f12", Intent::UndoLoadState, None)]);
+    if cfg!(target_os = "macos") {
+        cx.bind_keys([
+            KeyBinding::new("cmd-h", Intent::Hide, None),
+            KeyBinding::new("alt-cmd-h", Intent::HideOthers, None),
+            KeyBinding::new("cmd-m", Intent::Minimize, None),
+        ]);
+    }
 }
 
 fn item(name: &str, intent: Intent) -> MenuItem {
@@ -93,6 +107,8 @@ pub(crate) struct MenuState {
     scale: u8,
     recent: Vec<crate::settings::Recent>,
     recent_firmware: Vec<std::path::PathBuf>,
+    palettes: Vec<(String, String)>,
+    palette_id: Option<String>,
     selected_slot: u8,
 }
 
@@ -122,6 +138,22 @@ impl MenuState {
             scale,
             recent: preferences.recent.clone(),
             recent_firmware: preferences.recent_firmware.clone(),
+            palettes: crate::lcd::PRESETS
+                .iter()
+                .map(|(name, _)| (name.to_string(), name.to_string()))
+                .chain(
+                    preferences
+                        .palettes
+                        .iter()
+                        .map(|p| (p.id.clone(), p.name.clone())),
+                )
+                .chain(
+                    preferences
+                        .custom_palette
+                        .map(|_| ("custom".into(), "Custom".into())),
+                )
+                .collect(),
+            palette_id: None,
             selected_slot,
         }
     }
@@ -256,6 +288,24 @@ impl MenuState {
         ]
     }
 
+    pub fn with_palette(mut self, id: Option<&str>) -> Self {
+        self.palette_id = id.map(str::to_owned);
+        self
+    }
+    fn palette_menu(&self) -> MenuItem {
+        MenuItem::submenu(
+            Menu::new("Palette").items(
+                std::iter::once(
+                    item("Use Default", Intent::Palette(None)).checked(self.palette_id.is_none()),
+                )
+                .chain(std::iter::once(MenuItem::separator()))
+                .chain(self.palettes.iter().map(|(id, name)| {
+                    item(name, Intent::Palette(Some(id.clone())))
+                        .checked(self.palette_id.as_ref() == Some(id))
+                })),
+            ),
+        )
+    }
     fn menus(&self) -> Vec<Menu> {
         let Self {
             ready,
@@ -269,6 +319,7 @@ impl MenuState {
         let mut files = vec![
             item("New Window", Intent::NewWindow),
             item("Open Firmware…", Intent::OpenFirmware),
+            item("New EEPROM", Intent::NewEeprom),
             item("Open EEPROM…", Intent::OpenEeprom),
             firmware_recent,
             eeprom_recent,
@@ -323,6 +374,7 @@ impl MenuState {
             ),
             Menu::new("View").items([
                 self.scale_menu(),
+                self.palette_menu(),
                 item("Fit Window to Display", Intent::Fit),
                 item("Fullscreen", Intent::Fullscreen),
                 MenuItem::separator(),
@@ -347,12 +399,21 @@ impl MenuState {
                     MenuItem::separator(),
                     MenuItem::os_submenu("Services", SystemMenuType::Services),
                     MenuItem::separator(),
+                    item("Hide hachistep", Intent::Hide),
+                    item("Hide Others", Intent::HideOthers),
+                    item("Show All", Intent::ShowAll),
+                    MenuItem::separator(),
                     item("Quit hachistep", Intent::Quit),
                 ]),
             );
             menus.insert(
                 menus.len() - 1,
-                Menu::new("Window").items([item("New Window", Intent::NewWindow)]),
+                Menu::new("Window").items([
+                    item("Minimize", Intent::Minimize),
+                    item("Zoom", Intent::Zoom),
+                    MenuItem::separator(),
+                    item("Bring All to Front", Intent::BringAll),
+                ]),
             );
         } else {
             menus
@@ -372,6 +433,7 @@ impl MenuState {
                 self.save_menu(),
                 MenuItem::separator(),
                 self.scale_menu(),
+                self.palette_menu(),
                 self.active("Save Screenshot…", Intent::Screenshot),
                 MenuItem::separator(),
                 self.active(

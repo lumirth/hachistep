@@ -32,6 +32,12 @@ def main():
                 "CFBundlePackageType": "APPL", "CFBundleIconFile": "Hachistep.icns",
                 "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "1",
                 "NSHighResolutionCapable": True,
+                "CFBundleDocumentTypes": [{
+                    "CFBundleTypeName": "Pokéwalker image",
+                    "CFBundleTypeRole": "Editor",
+                    "LSHandlerRank": "Alternate",
+                    "CFBundleTypeExtensions": ["bin", "rom", "eeprom"],
+                }],
             }, file)
         subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(contents.parent)], check=True)
         shutil.make_archive(str(out / "hachistep-macos"), "zip", out, "hachistep.app")

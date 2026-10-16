@@ -7,6 +7,7 @@ use crate::{
 use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
+        checkbox::Checkbox,
         menu::AppMenuBar,
         status_bar::StatusBar,
         v_flex, ActiveTheme, Sizable, WindowExt,
@@ -51,13 +52,18 @@ pub(crate) struct PlayerView {
     player: Player,
     presentation: Presentation,
     firmware: Option<PathBuf>,
+    retain_firmware: bool,
+    new_after_firmware: bool,
+    requested: Option<Recent>,
+    palette_id: Option<String>,
     pending: Option<(Player, PathBuf, Option<PathBuf>)>,
     focus: FocusHandle,
     buttons: Buttons,
     scale: u8,
     raw: bool,
     status: bool,
-    pending_status: Option<(bool, Size<Pixels>)>,
+    margin: u16,
+    pending_layout: Option<(bool, u16, Size<Pixels>)>,
     error: Option<String>,
     last_error: Option<String>,
     menu_bar: Entity<AppMenuBar>,
@@ -115,16 +121,21 @@ impl PlayerView {
             }
         });
         let bounds = cx.observe_window_bounds(window, |view, window, cx| {
-            if let Some((status, target)) = view.pending_status {
+            if let Some((status, margin, target)) = view.pending_layout {
                 let actual = window.viewport_size();
-                if (f32::from(actual.height - target.height)).abs() < 1. {
+                if (f32::from(actual.height - target.height)).abs() < 1.
+                    && (f32::from(actual.width - target.width)).abs() < 1.
+                {
                     view.status = status;
-                    view.pending_status = None;
+                    view.margin = margin;
+                    view.pending_layout = None;
                     cx.notify();
                 }
             }
             let mut available = window.viewport_size();
-            available.height -= theme::player_chrome(window.rem_size(), view.status);
+            available.width -= px(f32::from(view.margin) * 2.);
+            available.height -= theme::player_chrome(window.rem_size(), view.status)
+                + px(f32::from(view.margin) * 2.);
             let scale = lcd::scale(available, window.scale_factor()) / window.scale_factor();
             view.scale = if scale.fract() == 0. { scale as u8 } else { 0 };
         });
@@ -159,14 +170,24 @@ impl PlayerView {
         Self {
             player,
             presentation: Presentation::default(),
+            new_after_firmware: false,
+            retain_firmware: firmware.is_none()
+                && cx
+                    .global::<Desktop>()
+                    .preferences
+                    .default_firmware
+                    .is_none(),
             firmware,
+            requested: None,
+            palette_id: None,
             pending: None,
             focus,
             buttons: Buttons::RELEASED,
             scale: 4,
             raw: false,
             status: false,
-            pending_status: None,
+            margin: cx.global::<Desktop>().preferences.lcd_margin,
+            pending_layout: None,
             error: None,
             last_error: None,
             menu_bar: AppMenuBar::new(cx),
@@ -176,6 +197,21 @@ impl PlayerView {
     }
 
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let margin = cx.global::<Desktop>().preferences.lcd_margin;
+        if self
+            .pending_layout
+            .map_or(self.margin, |(_, margin, _)| margin)
+            != margin
+        {
+            let status = self
+                .pending_layout
+                .map_or(self.status, |(status, _, _)| status);
+            self.layout(status, margin, window);
+        }
+        if let Some(pair) = self.requested.take() {
+            self.resolve_pair(pair, window, cx);
+        }
+
         if let Some((player, firmware, eeprom)) = &self.pending {
             let view = player.presentation();
             if view.ready {
@@ -187,9 +223,11 @@ impl PlayerView {
                 self.pending = None;
                 self.firmware = Some(firmware.clone());
                 if let Some(eeprom) = eeprom {
-                    cx.global_mut::<Desktop>()
-                        .preferences
-                        .remember(Recent { firmware, eeprom });
+                    cx.global_mut::<Desktop>().preferences.remember(Recent {
+                        firmware_hash: crate::firmware::identify(&firmware).ok(),
+                        firmware,
+                        eeprom,
+                    });
                     crate::save_preferences(cx);
                 }
                 self.player
@@ -213,6 +251,15 @@ impl PlayerView {
         }
         let presentation = self.player.presentation();
         if presentation.closed && !matches!(self.closing, Closing::Open) {
+            if let WindowBounds::Windowed(bounds) = window.window_bounds() {
+                cx.global_mut::<Desktop>().preferences.player_bounds = Some([
+                    bounds.origin.x.into(),
+                    bounds.origin.y.into(),
+                    bounds.size.width.into(),
+                    bounds.size.height.into(),
+                ]);
+                crate::save_preferences(cx);
+            }
             let entity_id = cx.entity_id();
             let desktop = cx.global_mut::<Desktop>();
             desktop
@@ -223,10 +270,19 @@ impl PlayerView {
                 .retain(|(id, _), _| *id != self.player.id());
             desktop.tcp_options.remove(&self.player.id());
             let quitting = desktop.quitting && desktop.windows.is_empty();
+            let empty = desktop.windows.is_empty();
+            if empty {
+                desktop.active_player = None;
+            }
             window.remove_window();
+            if empty {
+                crate::install_empty_menu(cx);
+            }
             if quitting {
-                cx.quit();
-            } else if desktop.quitting {
+                if !crate::macos::finish_quit(true) {
+                    cx.quit();
+                }
+            } else if cx.global::<Desktop>().quitting {
                 cx.defer(crate::close_players);
             }
             return;
@@ -251,6 +307,7 @@ impl PlayerView {
         if self.presentation.eeprom != presentation.eeprom {
             if let (Some(firmware), Some(eeprom)) = (&self.firmware, &presentation.eeprom) {
                 cx.global_mut::<Desktop>().preferences.remember(Recent {
+                    firmware_hash: crate::firmware::identify(firmware).ok(),
                     firmware: firmware.clone(),
                     eeprom: eeprom.clone(),
                 });
@@ -400,6 +457,7 @@ impl PlayerView {
             &cx.global::<Desktop>().preferences,
             self.selected_slot(cx),
         )
+        .with_palette(self.palette_id())
     }
 
     fn selected_slot(&self, cx: &App) -> u8 {
@@ -462,6 +520,7 @@ impl PlayerView {
         let resume = self.closing.resume() && self.presentation.paused;
         self.closing = Closing::Open;
         cx.global_mut::<Desktop>().quitting = false;
+        crate::macos::finish_quit(false);
         self.player.send(Command::CancelClose);
         if resume {
             self.player.send(Command::Pause);
@@ -481,8 +540,136 @@ impl PlayerView {
         }
     }
 
+    pub fn accepts_file(&self) -> bool {
+        !self.presentation.ready && self.pending.is_none() && self.requested.is_none()
+    }
+    pub fn palette(&self, cx: &App) -> lcd::Palette {
+        let preferences = &cx.global::<Desktop>().preferences;
+        self.palette_id
+            .as_deref()
+            .and_then(|id| preferences.palette_named(id))
+            .unwrap_or(preferences.palette)
+    }
+    pub(crate) fn palette_id(&self) -> Option<&str> {
+        self.palette_id.as_deref()
+    }
     pub fn open_pair(&mut self, pair: Recent, cx: &mut Context<Self>) {
-        self.open_image(pair.firmware, Some(pair.eeprom), cx);
+        self.requested = Some(pair);
+        cx.notify();
+    }
+    fn resolve_pair(&mut self, mut pair: Recent, window: &mut Window, cx: &mut Context<Self>) {
+        let old_firmware = pair.firmware.clone();
+        let old_eeprom = pair.eeprom.clone();
+        cx.spawn_in(window, async move |view, cx| {
+            for firmware in [false, true] {
+                let path = if firmware {
+                    &pair.firmware
+                } else {
+                    &pair.eeprom
+                };
+                if firmware {
+                    let found = crate::firmware::identify(path).ok();
+                    if found.is_some()
+                        && (pair.firmware_hash.is_none() || found == pair.firmware_hash)
+                    {
+                        continue;
+                    }
+                    if let Some(path) = pair
+                        .firmware_hash
+                        .as_deref()
+                        .and_then(crate::firmware::retained)
+                    {
+                        pair.firmware = path;
+                        continue;
+                    }
+                } else if path.is_file() {
+                    continue;
+                }
+                let filename = settings::filename(path);
+                let title = if firmware && path.exists() {
+                    "Firmware changed"
+                } else if firmware {
+                    "Firmware not found"
+                } else {
+                    "EEPROM not found"
+                };
+                let action = if firmware {
+                    "Locate Firmware…"
+                } else {
+                    "Locate EEPROM…"
+                };
+                let Ok(answer) = cx.update(|window, cx| {
+                    window.prompt(
+                        PromptLevel::Info,
+                        title,
+                        Some(&filename),
+                        &[action, "Cancel"],
+                        cx,
+                    )
+                }) else {
+                    return;
+                };
+                if answer.await.ok() != Some(0) {
+                    return;
+                }
+                let Ok(receiver) = cx.update(|_, cx| {
+                    cx.prompt_for_paths(PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: false,
+                        prompt: Some(action.into()),
+                    })
+                }) else {
+                    return;
+                };
+                let Ok(Ok(Some(paths))) = receiver.await else {
+                    return;
+                };
+                let Some(path) = paths.into_iter().next() else {
+                    return;
+                };
+                if firmware {
+                    let found = crate::firmware::identify(&path);
+                    match found {
+                        Ok(hash)
+                            if pair
+                                .firmware_hash
+                                .as_ref()
+                                .is_none_or(|expected| *expected == hash) =>
+                        {
+                            pair.firmware = path
+                        }
+                        _ => {
+                            let _ = view.update(cx, |view, cx| {
+                                view.error =
+                                    Some("Choose the firmware used with this EEPROM.".into());
+                                cx.notify();
+                            });
+                            return;
+                        }
+                    }
+                } else {
+                    pair.eeprom = path;
+                }
+            }
+            let _ = cx.update(|_, cx| {
+                view.update(cx, |view, cx| {
+                    for recent in &mut cx.global_mut::<Desktop>().preferences.recent {
+                        if recent.firmware == old_firmware
+                            && recent.firmware_hash == pair.firmware_hash
+                        {
+                            recent.firmware = pair.firmware.clone();
+                        }
+                        if recent.eeprom == old_eeprom {
+                            recent.eeprom = pair.eeprom.clone();
+                        }
+                    }
+                    crate::save_preferences(cx);
+                    view.open_image(pair.firmware, Some(pair.eeprom), cx);
+                })
+            });
+        })
+        .detach();
     }
 
     pub fn open_image(
@@ -492,6 +679,24 @@ impl PlayerView {
         cx: &mut Context<Self>,
     ) {
         self.release();
+        let firmware = if self.retain_firmware {
+            match crate::firmware::Firmware::retain(&firmware) {
+                Ok(retained) => {
+                    let path = retained.path().unwrap();
+                    cx.global_mut::<Desktop>().preferences.default_firmware = Some(retained);
+                    crate::save_preferences(cx);
+                    self.retain_firmware = false;
+                    path
+                }
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    cx.notify();
+                    return;
+                }
+            }
+        } else {
+            firmware
+        };
         let canonical = eeprom.as_ref().and_then(|path| path.canonicalize().ok());
         let existing: Vec<_> = cx
             .global::<Desktop>()
@@ -517,7 +722,11 @@ impl PlayerView {
             crate::new_window(
                 cx,
                 Some(match eeprom {
-                    Some(eeprom) => crate::Launch::Files(Recent { firmware, eeprom }),
+                    Some(eeprom) => crate::Launch::Files(Recent {
+                        firmware_hash: crate::firmware::identify(&firmware).ok(),
+                        firmware,
+                        eeprom,
+                    }),
                     None => crate::Launch::Blank(firmware),
                 }),
             );
@@ -541,14 +750,29 @@ impl PlayerView {
             return;
         }
         self.release();
+        if crate::system_action(&intent, window, cx) {
+            return;
+        }
         match intent {
             Intent::NewWindow => crate::new_window(cx, None),
             Intent::Quit => crate::quit(cx),
             Intent::OpenFirmware => self.choose(FileCommand::Firmware, window, cx),
             Intent::OpenEeprom => self.choose(FileCommand::Eeprom, window, cx),
+            Intent::Hide
+            | Intent::HideOthers
+            | Intent::ShowAll
+            | Intent::Minimize
+            | Intent::Zoom
+            | Intent::BringAll => {}
+            Intent::Palette(ref id) => {
+                self.palette_id = id.clone();
+            }
             Intent::NewEeprom => {
                 if let Some(firmware) = self.firmware.clone() {
                     self.open_image(firmware, None, cx);
+                } else {
+                    self.new_after_firmware = true;
+                    self.choose(FileCommand::Firmware, window, cx);
                 }
             }
             Intent::SaveEeprom => self.save_eeprom(window, cx),
@@ -575,18 +799,12 @@ impl PlayerView {
             Intent::Fit => self.fit(window, None),
             Intent::Fullscreen => window.toggle_fullscreen(),
             Intent::Status => {
-                let (previous, mut target) = self
-                    .pending_status
-                    .unwrap_or((self.status, window.viewport_size()));
-                let status = !previous;
-                if window.is_fullscreen() {
-                    self.status = status;
-                } else {
-                    target.height += theme::player_chrome(window.rem_size(), status)
-                        - theme::player_chrome(window.rem_size(), previous);
-                    self.pending_status = Some((status, target));
-                    window.resize(target);
-                }
+                let (status, margin, _) = self.pending_layout.unwrap_or((
+                    self.status,
+                    self.margin,
+                    window.viewport_size(),
+                ));
+                self.layout(!status, margin, window);
             }
             Intent::Raw => self.raw = !self.raw,
             Intent::RecentEeprom(pair) => self.open_pair(pair, cx),
@@ -606,6 +824,24 @@ impl PlayerView {
         cx.notify();
     }
 
+    fn layout(&mut self, status: bool, margin: u16, window: &mut Window) {
+        if window.is_fullscreen() {
+            self.status = status;
+            self.margin = margin;
+            self.pending_layout = None;
+            return;
+        }
+        let (previous_status, previous_margin, mut target) =
+            self.pending_layout
+                .unwrap_or((self.status, self.margin, window.viewport_size()));
+        let delta = px((f32::from(margin) - f32::from(previous_margin)) * 2.);
+        target.width += delta;
+        target.height += delta + theme::player_chrome(window.rem_size(), status)
+            - theme::player_chrome(window.rem_size(), previous_status);
+        self.pending_layout = Some((status, margin, target));
+        window.resize(target);
+    }
+
     fn fit(&self, window: &mut Window, preset: Option<u8>) {
         if window.is_fullscreen() {
             return;
@@ -613,13 +849,16 @@ impl PlayerView {
         let dpi = window.scale_factor();
         let chrome = theme::player_chrome(window.rem_size(), self.status);
         let mut available = window.viewport_size();
-        available.height -= chrome;
+        let margin = px(f32::from(self.margin) * 2.);
+        available.width -= margin;
+        available.height -= chrome + margin;
         let physical = preset.map_or_else(
             || lcd::scale(available, dpi),
             |scale| (f32::from(scale) * dpi).round().max(1.),
         );
         let mut target = lcd::dimensions(physical, dpi);
-        target.height += chrome;
+        target.width += margin;
+        target.height += chrome + margin;
         window.resize(target);
     }
 
@@ -684,7 +923,7 @@ impl PlayerView {
         })
         .detach();
     }
-    fn selected(
+    pub(crate) fn selected(
         &mut self,
         operation: FileCommand,
         path: PathBuf,
@@ -693,6 +932,19 @@ impl PlayerView {
     ) {
         match operation {
             FileCommand::Firmware => {
+                if !path.is_file() {
+                    self.choose(FileCommand::Firmware, _window, cx);
+                    return;
+                }
+                if let Err(error) = crate::firmware::identify(&path) {
+                    self.error = Some(error.to_string());
+                    return;
+                }
+                self.retain_firmware = cx
+                    .global::<Desktop>()
+                    .preferences
+                    .default_firmware
+                    .is_none();
                 cx.global_mut::<Desktop>()
                     .preferences
                     .remember_firmware(path.clone());
@@ -703,20 +955,28 @@ impl PlayerView {
                     if let Some((pending, _, _)) = self.pending.take() {
                         pending.send(Command::Close);
                     }
-                    self.firmware = Some(path);
+                    self.firmware = Some(path.clone());
+                    if std::mem::take(&mut self.new_after_firmware) {
+                        self.open_image(path, None, cx);
+                    }
                 }
             }
             FileCommand::Eeprom => {
                 if let Some(firmware) = self.firmware.clone() {
                     self.open_pair(
                         Recent {
+                            firmware_hash: crate::firmware::identify(&firmware).ok(),
                             firmware,
                             eeprom: path,
                         },
                         cx,
                     );
                 } else {
-                    self.error = Some("Open firmware first.".into());
+                    self.requested = Some(Recent {
+                        firmware: PathBuf::from("firmware.bin"),
+                        eeprom: path,
+                        firmware_hash: None,
+                    });
                 }
             }
             FileCommand::SaveEepromAs => self.player.send(Command::SaveEepromAs(path)),
@@ -726,7 +986,7 @@ impl PlayerView {
                 &self.presentation.pixels,
                 self.presentation.contrast,
                 self.raw,
-                cx.global::<Desktop>().preferences.palette,
+                self.palette(cx),
             ) {
                 Ok(bytes) => self.player.send(Command::WriteFile { path, bytes }),
                 Err(error) => self.error = Some(error.to_string()),
@@ -756,6 +1016,17 @@ impl PlayerView {
         self.player.send(Command::Buttons(self.buttons));
     }
     fn empty(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let selected_default = self
+            .firmware
+            .as_ref()
+            .zip(cx.global::<Desktop>().preferences.default_firmware.as_ref())
+            .filter(|(path, firmware)| {
+                path.file_stem()
+                    .is_some_and(|stem| stem == firmware.hash.as_str())
+            });
+        let firmware_name = selected_default
+            .map(|(_, firmware)| firmware.name.clone())
+            .or_else(|| self.firmware.as_deref().map(settings::filename));
         let mut content = v_flex()
             .size_full()
             .items_center()
@@ -789,37 +1060,99 @@ impl PlayerView {
         }
         if self.pending.is_some() {
             content = content.child("Opening…");
-        } else if let Some(firmware) = &self.firmware {
+        } else if let Some(firmware_name) = firmware_name {
             content = content
-                .child(settings::filename(firmware))
-                .child(Button::new("open-save").label("Open EEPROM…").on_click(
-                    cx.listener(|view, _, window, cx| view.execute(Intent::OpenEeprom, window, cx)),
-                ))
                 .child(
-                    Button::new("new-save")
-                        .ghost()
-                        .label("Create EEPROM…")
+                    svg()
+                        .path(if cx.theme().is_dark() {
+                            "wordmark-dark.svg"
+                        } else {
+                            "wordmark.svg"
+                        })
+                        .w_48()
+                        .h_12()
+                        .text_color(cx.theme().primary),
+                )
+                .child(
+                    component::h_flex()
+                        .w_48()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(firmware_name),
+                        )
+                        .child(
+                            Button::new("change-firmware")
+                                .small()
+                                .label("Change…")
+                                .on_click(cx.listener(|view, _, window, cx| {
+                                    view.execute(Intent::OpenFirmware, window, cx)
+                                })),
+                        ),
+                )
+                .when(selected_default.is_none(), |root| {
+                    root.child(
+                        Checkbox::new("default-firmware")
+                            .text_sm()
+                            .label("Use as default firmware")
+                            .checked(self.retain_firmware)
+                            .on_change(cx.listener(|view, checked, _, cx| {
+                                view.retain_firmware = *checked;
+                                cx.notify();
+                            })),
+                    )
+                })
+                .child(
+                    Button::new("open-save")
+                        .w_48()
+                        .label("Open EEPROM…")
                         .on_click(cx.listener(|view, _, window, cx| {
-                            view.execute(Intent::NewEeprom, window, cx)
+                            view.execute(Intent::OpenEeprom, window, cx)
                         })),
-                );
+                )
+                .child(Button::new("new-save").w_48().label("New EEPROM").on_click(
+                    cx.listener(|view, _, window, cx| view.execute(Intent::NewEeprom, window, cx)),
+                ));
         } else {
             content = content
-                .child(img("icon.png").size_12())
+                .child(
+                    svg()
+                        .path(if cx.theme().is_dark() {
+                            "wordmark-dark.svg"
+                        } else {
+                            "wordmark.svg"
+                        })
+                        .w_48()
+                        .h_12()
+                        .text_color(cx.theme().primary),
+                )
                 .child(
                     Button::new("open-firmware")
+                        .w_48()
                         .label("Open Firmware…")
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.execute(Intent::OpenFirmware, window, cx)
                         })),
                 )
-                .child(
-                    Button::new("recent")
-                        .ghost()
-                        .label("Open Recent…")
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.execute(Intent::Recents, window, cx)
-                        })),
+                .when(
+                    !cx.global::<Desktop>().preferences.recent.is_empty()
+                        || !cx
+                            .global::<Desktop>()
+                            .preferences
+                            .recent_firmware
+                            .is_empty(),
+                    |root| {
+                        root.child(Button::new("recent").w_48().label("Open Recent…").on_click(
+                            cx.listener(|view, _, window, cx| {
+                                view.execute(Intent::Recents, window, cx)
+                            }),
+                        ))
+                    },
                 );
         }
         content.into_any_element()
@@ -830,13 +1163,17 @@ impl Render for PlayerView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loaded = self.presentation.ready;
         let content = if loaded {
-            lcd::display(
-                self.presentation.pixels.clone(),
-                self.presentation.contrast,
-                self.raw,
-                cx.global::<Desktop>().preferences.palette,
-            )
-            .into_any_element()
+            div()
+                .size_full()
+                .p(px(f32::from(self.margin)))
+                .bg(rgb(self.palette(cx).panel))
+                .child(lcd::display(
+                    self.presentation.pixels.clone(),
+                    self.presentation.contrast,
+                    self.raw,
+                    self.palette(cx),
+                ))
+                .into_any_element()
         } else {
             self.empty(window, cx)
         };
@@ -844,6 +1181,10 @@ impl Render for PlayerView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_drop(cx.listener(|_, files: &ExternalPaths, _, cx| {
+                let paths = files.0.to_vec();
+                cx.defer(move |cx| crate::open_paths(paths, cx));
+            }))
             .on_action(cx.listener(|view, action: &Intent, window, cx| {
                 view.execute(action.clone(), window, cx)
             }))

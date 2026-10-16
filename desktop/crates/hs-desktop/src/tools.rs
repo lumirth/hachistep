@@ -452,7 +452,7 @@ impl Tool {
                                         other.pixels,
                                         other.contrast,
                                         false,
-                                        cx.global::<Desktop>().preferences.palette,
+                                        crate::palette_for(id, cx),
                                     )),
                             )
                             .child(
@@ -642,6 +642,9 @@ impl Render for Tool {
             .text_color(cx.theme().foreground)
             .track_focus(&self.focus)
             .on_action(cx.listener(|view, action: &Intent, window, cx| {
+                if crate::system_action(action, window, cx) {
+                    return;
+                }
                 if *action == Intent::Close {
                     window.remove_window();
                 } else {

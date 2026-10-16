@@ -10,6 +10,10 @@ cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
 ```
 
 Firmware must be a raw 49,152-byte image; EEPROM images must contain 65,536 bytes.
+A default firmware is copied into application storage and used by new windows.
+Existing sessions retain their firmware. Recent EEPROMs remember their firmware's
+SHA-256 identity; a missing image is resolved from retained copies or located again.
+
 EEPROM changes stay in memory until Save EEPROM or Save EEPROM As. A new EEPROM
 starts untitled; closing a modified session offers Save, Don't Save, or Cancel.
 Hardware calibration, status, and programmed flash live in its adjacent `.hachistep`

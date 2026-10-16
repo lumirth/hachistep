@@ -51,14 +51,21 @@ impl Render for About {
             .id("about")
             .tab_group()
             .track_focus(&self.focus)
-            .on_action(cx.listener(|_, intent: &Intent, window, cx| match intent {
-                Intent::Close => window.remove_window(),
-                Intent::Quit => crate::quit(cx),
-                Intent::Settings => crate::preferences::open(cx),
-                Intent::NewWindow => crate::new_window(cx, None),
-                _ => {
-                    if let Some(owner) = cx.global::<Desktop>().active_player.clone() {
-                        crate::invoke_player(&owner, intent.clone(), cx);
+            .on_action(cx.listener(|_, intent: &Intent, window, cx| {
+                if crate::system_action(intent, window, cx) {
+                    return;
+                }
+                match intent {
+                    Intent::Close => window.remove_window(),
+                    Intent::Quit => crate::quit(cx),
+                    Intent::Settings => crate::preferences::open(cx),
+                    Intent::NewWindow => crate::new_window(cx, None),
+                    _ => {
+                        if let Some(owner) = cx.global::<Desktop>().active_player.clone() {
+                            crate::invoke_player(&owner, intent.clone(), cx);
+                        } else {
+                            crate::application_action(intent, cx);
+                        }
                     }
                 }
             }))

@@ -2986,10 +2986,13 @@ dependencies = [
  "directories",
  "gpui-kit",
  "hs-runtime",
+ "objc",
  "png 0.18.1",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
+ "url",
  "winresource",
 ]
 

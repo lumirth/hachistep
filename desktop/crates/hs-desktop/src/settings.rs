@@ -13,6 +13,15 @@ use std::{
 pub(crate) struct Recent {
     pub firmware: PathBuf,
     pub eeprom: PathBuf,
+    #[serde(default)]
+    pub firmware_hash: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct SavedPalette {
+    pub id: String,
+    pub name: String,
+    pub colors: crate::lcd::Palette,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -20,6 +29,12 @@ pub(crate) struct Recent {
 pub(crate) struct Preferences {
     pub appearance: usize,
     pub palette: crate::lcd::Palette,
+    pub palette_id: String,
+    pub lcd_margin: u16,
+    pub custom_palette: Option<crate::lcd::Palette>,
+    pub palettes: Vec<SavedPalette>,
+    pub default_firmware: Option<crate::firmware::Firmware>,
+    pub player_bounds: Option<[f32; 4]>,
     pub settings_page: usize,
     pub keys: [String; 3],
     pub gamepad: [usize; 3],
@@ -37,6 +52,12 @@ impl Default for Preferences {
         Self {
             appearance: 0,
             palette: crate::lcd::Palette::default(),
+            palette_id: String::new(),
+            lcd_margin: 0,
+            custom_palette: None,
+            palettes: Vec::new(),
+            default_firmware: None,
+            player_bounds: None,
             settings_page: 0,
             keys: ["a".into(), "s".into(), "d".into()],
             gamepad: [0, 1, 2],
@@ -60,6 +81,21 @@ impl Preferences {
             .and_then(|p| fs::read(p).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
+        if settings.palette_id.is_empty() {
+            settings.palette_id = crate::lcd::PRESETS
+                .iter()
+                .find(|(_, colors)| *colors == settings.palette)
+                .map(|(name, _)| name.to_string())
+                .unwrap_or_else(|| "custom".into());
+            if settings.palette_id == "custom" {
+                settings.custom_palette = Some(settings.palette);
+            }
+        }
+        for recent in &mut settings.recent {
+            if recent.firmware_hash.is_none() {
+                recent.firmware_hash = crate::firmware::identify(&recent.firmware).ok();
+            }
+        }
         if settings.keys.iter().any(String::is_empty) {
             settings.keys = ["a".into(), "s".into(), "d".into()];
         }
@@ -71,6 +107,7 @@ impl Preferences {
             settings.turbo_key = "space".into();
         }
         settings.appearance = settings.appearance.min(2);
+        settings.lcd_margin = settings.lcd_margin.min(128);
         if !(25..=800).contains(&settings.speed) {
             settings.speed = 100;
         }
@@ -105,7 +142,31 @@ impl Preferences {
                 settings.remember_firmware(pair.firmware);
             }
         }
+        settings
+            .recent_firmware
+            .retain(|path| !crate::firmware::is_retained(path));
         (settings, send)
+    }
+    pub fn palette_named(&self, id: &str) -> Option<crate::lcd::Palette> {
+        if id == "custom" {
+            return self.custom_palette;
+        }
+        crate::lcd::PRESETS
+            .iter()
+            .find(|(name, _)| *name == id)
+            .map(|(_, colors)| *colors)
+            .or_else(|| self.palettes.iter().find(|p| p.id == id).map(|p| p.colors))
+    }
+    pub fn select_palette(&mut self, id: &str) {
+        if let Some(colors) = self.palette_named(id) {
+            self.palette = colors;
+            self.palette_id = id.to_owned();
+        }
+    }
+    pub fn edit_palette(&mut self, colors: crate::lcd::Palette) {
+        self.palette = colors;
+        self.custom_palette = Some(colors);
+        self.palette_id = "custom".into();
     }
     pub fn remember(&mut self, pair: Recent) {
         self.remember_firmware(pair.firmware.clone());
@@ -115,6 +176,9 @@ impl Preferences {
         self.recent.truncate(12);
     }
     pub fn remember_firmware(&mut self, path: PathBuf) {
+        if crate::firmware::is_retained(&path) {
+            return;
+        }
         self.recent_firmware.retain(|existing| existing != &path);
         self.recent_firmware.insert(0, path);
         self.recent_firmware.truncate(12);
