@@ -1,6 +1,6 @@
 # Run firmware with the CLI
 
-To be clear, the CLI isn't exactly built to be human-friendly. It mostly exists to allow a programmatic interface for agents. It should still be functional enough for real people to tinker with. 
+To be clear, the CLI isn't exactly built to be human-friendly. It mostly exists to allow a programmatic interface for agents. It should still be functional enough for real people to tinker with.
 
 The CLI runs a firmware image against a timeline of physical inputs. The captures
 let you inspect where the device ended up, then resume it or repeat the experiment
