@@ -811,6 +811,9 @@ impl PlayerView {
             }
             Intent::Fit => self.fit(window, None),
             Intent::Fullscreen => window.toggle_fullscreen(),
+            Intent::ToggleWalking => self
+                .player
+                .send(Command::Walking(!self.presentation.walking)),
             Intent::Status => {
                 let (status, margin, _) = self.pending_layout.unwrap_or((
                     self.status,
@@ -1362,7 +1365,10 @@ impl Render for PlayerView {
                                     status_button("status-walking")
                                         .icon(gpui_kit::assets::IconName::Footprints)
                                         .accessibility_label("Walking Simulation")
-                                        .tooltip(format!("Walking · {}/min", frame.cadence))
+                                        .tooltip(format!(
+                                            "Walking Simulation · {}/min",
+                                            frame.cadence
+                                        ))
                                         .on_click(cx.listener(|view, _, window, cx| {
                                             view.execute(
                                                 Intent::Tool(crate::tools::Kind::Motion),

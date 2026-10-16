@@ -32,6 +32,7 @@ pub(crate) enum Intent {
     Close,
     Quit,
     Pause,
+    ToggleWalking,
     Reset,
     Speed(u16),
     Mute,
@@ -93,6 +94,7 @@ fn item(name: &str, intent: Intent) -> MenuItem {
 pub(crate) struct MenuState {
     ready: bool,
     paused: bool,
+    walking: bool,
     connected: bool,
     speed_percent: u16,
     turbo: bool,
@@ -124,6 +126,7 @@ impl MenuState {
         Self {
             ready: frame.ready,
             paused: frame.paused,
+            walking: frame.walking,
             connected: frame.is_connection_active(),
             speed_percent: frame.speed_percent,
             turbo: frame.turbo,
@@ -258,6 +261,23 @@ impl MenuState {
         })))
     }
 
+    fn walking_menu(&self) -> MenuItem {
+        MenuItem::submenu(Menu::new("Walking").items([
+            self.active(
+                if self.walking {
+                    "Stop Walking"
+                } else {
+                    "Start Walking"
+                },
+                Intent::ToggleWalking,
+            ),
+            self.active(
+                "Walking Simulation…",
+                Intent::Tool(crate::tools::Kind::Motion),
+            ),
+        ]))
+    }
+
     fn infrared_menu(&self) -> MenuItem {
         MenuItem::submenu(Menu::new("Infrared").items([
             self.active("Local Link…", Intent::Tool(crate::tools::Kind::Link)),
@@ -340,13 +360,7 @@ impl MenuState {
             MenuItem::separator(),
             item("Close Window", Intent::Close),
         ];
-        let mut tools = vec![
-            self.active(
-                "Walking Simulation…",
-                Intent::Tool(crate::tools::Kind::Motion),
-            ),
-            self.infrared_menu(),
-        ];
+        let mut tools = vec![self.walking_menu(), self.infrared_menu()];
         if !cfg!(target_os = "macos") {
             tools.push(item("Settings…", Intent::Settings));
             files.push(item("Exit", Intent::Quit));
@@ -439,10 +453,7 @@ impl MenuState {
                 self.palette_menu(),
                 self.active("Save Screenshot…", Intent::Screenshot),
                 MenuItem::separator(),
-                self.active(
-                    "Walking Simulation…",
-                    Intent::Tool(crate::tools::Kind::Motion),
-                ),
+                self.walking_menu(),
                 self.infrared_menu(),
             ])
             .collect()
