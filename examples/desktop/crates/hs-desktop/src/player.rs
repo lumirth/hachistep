@@ -439,14 +439,17 @@ impl PlayerView {
     }
 
     pub(crate) fn install_menu(&self, cx: &mut App) {
-        cx.set_menus(commands::menus(
-            &self.presentation,
-            self.raw,
-            self.status,
-            self.scale,
-            &cx.global::<Desktop>().preferences.recent,
-            self.selected_slot(cx),
-        ));
+        commands::install(
+            commands::menus(
+                &self.presentation,
+                self.raw,
+                self.status,
+                self.scale,
+                &cx.global::<Desktop>().preferences.recent,
+                self.selected_slot(cx),
+            ),
+            cx,
+        );
     }
     pub fn begin_close(&mut self) {
         if let Some((pending, _, _)) = self.pending.take() {
@@ -548,6 +551,9 @@ impl PlayerView {
     }
 
     pub fn execute(&mut self, intent: Intent, window: &mut Window, cx: &mut Context<Self>) {
+        if cx.global::<Desktop>().disabled_commands.contains(&intent) {
+            return;
+        }
         self.release();
         match intent {
             Intent::NewWindow => crate::new_window(cx, None),
@@ -569,11 +575,7 @@ impl PlayerView {
             Intent::LoadSlot(slot) => self.slot(slot, true, cx),
             Intent::SelectSlot(slot) => self.select_slot(slot, cx),
             Intent::UndoLoadState => self.player.send(Command::UndoLoadState),
-            Intent::ToggleTurbo => {
-                if !self.presentation.is_connection_active() {
-                    self.player.send(Command::ToggleTurbo);
-                }
-            }
+            Intent::ToggleTurbo => self.player.send(Command::ToggleTurbo),
             Intent::Screenshot => self.choose(FileCommand::Screenshot, window, cx),
             Intent::Close => self.request_close(window, cx),
             Intent::Pause => self.player.send(Command::Pause),
@@ -582,11 +584,7 @@ impl PlayerView {
                 .player
                 .send(Command::Walking(!self.presentation.walking)),
             Intent::Mute => self.player.send(Command::Mute(!self.presentation.muted)),
-            Intent::Speed(percent) => {
-                if percent == 100 || !self.presentation.is_connection_active() {
-                    self.player.send(Command::Speed(percent));
-                }
-            }
+            Intent::Speed(percent) => self.player.send(Command::Speed(percent)),
             Intent::Scale(scale) => {
                 self.scale = scale;
                 self.fit(window);

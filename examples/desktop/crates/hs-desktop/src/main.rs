@@ -40,6 +40,7 @@ struct Desktop {
     windows: Vec<OpenWindow>,
     active_player: Option<WeakEntity<PlayerView>>,
     quitting: bool,
+    disabled_commands: Vec<commands::Intent>,
     preferences_window: Option<(AnyWindowHandle, WeakEntity<preferences::Settings>)>,
     tools: BTreeMap<(hs_runtime::Id, tools::Kind), AnyWindowHandle>,
     tool_bounds: BTreeMap<(hs_runtime::Id, tools::Kind), (Bounds<Pixels>, bool)>,
@@ -233,6 +234,7 @@ fn main() {
                 windows: Vec::new(),
                 active_player: None,
                 quitting: false,
+                disabled_commands: Vec::new(),
                 preferences_window: None,
                 tools: BTreeMap::new(),
                 tool_bounds: BTreeMap::new(),
@@ -252,15 +254,30 @@ fn main() {
                     }
                 });
             }));
+            let validation_context = cx.to_async();
+            platform.on_validate_app_menu_command(Box::new(move |action| {
+                validation_context.update(|cx| {
+                    if let Some(action) = action.as_any().downcast_ref::<commands::Invoke>() {
+                        !cx.global::<Desktop>()
+                            .disabled_commands
+                            .contains(&action.intent)
+                    } else {
+                        cx.is_action_available(action)
+                    }
+                })
+            }));
             commands::bind(cx);
-            cx.set_menus(commands::menus(
-                &hs_runtime::Presentation::default(),
-                false,
-                false,
-                4,
-                &cx.global::<Desktop>().preferences.recent,
-                1,
-            ));
+            commands::install(
+                commands::menus(
+                    &hs_runtime::Presentation::default(),
+                    false,
+                    false,
+                    4,
+                    &cx.global::<Desktop>().preferences.recent,
+                    1,
+                ),
+                cx,
+            );
             cx.on_action(|action: &commands::Invoke, cx| match action.intent {
                 commands::Intent::NewWindow => new_window(cx, None),
                 commands::Intent::Quit => quit(cx),

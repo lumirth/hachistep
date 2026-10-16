@@ -4,14 +4,14 @@ use hs_core::{Duration, Input, Time, TimedInput};
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError},
         Arc, Mutex,
     },
     thread,
-    time::Duration as WallDuration,
+    time::{Duration as WallDuration, Instant},
 };
 
 // pw IrConfigure: 3.6864 MHz, BRR=0, SEMR=0, SMR=0 gives 115200 baud, 8N1 SIR.
@@ -46,10 +46,15 @@ impl std::fmt::Display for Connection {
     }
 }
 
+struct Incoming {
+    bytes: SyncSender<(Instant, u8)>,
+    wake: thread::Thread,
+}
+
 pub(crate) struct Tcp {
     pub state: Arc<Mutex<Connection>>,
     tx: SyncSender<u8>,
-    rx: Receiver<u8>,
+    rx: Receiver<(Instant, u8)>,
     stop: Arc<AtomicBool>,
     frame: Option<(Time, u16)>,
     incoming: VecDeque<TimedInput>,
@@ -63,7 +68,7 @@ impl Drop for Tcp {
 }
 
 impl Tcp {
-    pub fn start(address: String, listen: bool, allow_remote: bool) -> Self {
+    pub fn start(address: String, listen: bool, allow_remote: bool, wake: thread::Thread) -> Self {
         let (tx, outgoing) = mpsc::sync_channel(CAPACITY);
         let (incoming, rx) = mpsc::sync_channel(CAPACITY);
         let state = Arc::new(Mutex::new(if listen {
@@ -84,7 +89,10 @@ impl Tcp {
                     &worker_stop,
                     &worker_state,
                     outgoing,
-                    incoming,
+                    Incoming {
+                        bytes: incoming,
+                        wake,
+                    },
                 );
                 *worker_state.lock().unwrap() = match result {
                     Ok(()) => Connection::Disconnected,
@@ -142,13 +150,26 @@ impl Tcp {
         Ok(())
     }
 
-    pub fn inputs(&mut self, now: Time, end: Time) -> Result<Vec<TimedInput>> {
+    pub fn inputs(
+        &mut self,
+        now: Time,
+        end: Time,
+        anchor: Instant,
+        anchor_time: Time,
+    ) -> Result<Vec<TimedInput>> {
         while self.incoming.len() < CAPACITY * 2 {
-            let byte = match self.rx.try_recv() {
+            let (arrived, byte) = match self.rx.try_recv() {
                 Ok(byte) => byte,
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             };
-            let start = now.max(self.receive_end);
+            let elapsed = arrived
+                .saturating_duration_since(anchor)
+                .as_micros()
+                .min(u64::MAX as u128) as u64;
+            let arrived = anchor_time
+                .checked_add(Duration::from_micros(elapsed))
+                .context("IR clock overflow")?;
+            let start = now.max(arrived).max(self.receive_end);
             for cell in 0..9 {
                 if cell == 0 || byte & (1 << (cell - 1)) == 0 {
                     let at = Time::from_raw(start.raw() + BIT * cell);
@@ -178,7 +199,7 @@ fn transport(
     stop: &AtomicBool,
     state: &Mutex<Connection>,
     outgoing: Receiver<u8>,
-    incoming: SyncSender<u8>,
+    incoming: Incoming,
 ) -> Result<()> {
     let mut socket = if listen {
         let address: SocketAddr = address
@@ -217,40 +238,62 @@ fn transport(
         connected.context("Could not connect to peer")?
     };
     socket.set_nodelay(true)?;
-    socket.set_nonblocking(true)?;
+    socket.set_nonblocking(false)?;
+    socket.set_read_timeout(Some(WallDuration::from_millis(50)))?;
+    socket.set_write_timeout(Some(WallDuration::from_millis(50)))?;
+    let mut writer = socket.try_clone()?;
     *state.lock().unwrap() = Connection::Connected;
-    let mut pending = VecDeque::<u8>::new();
-    let mut bytes = [0; 1024];
+    thread::scope(|scope| {
+        let transmit = scope.spawn(move || {
+            let sent = write_bytes(&mut writer, outgoing, stop);
+            stop.store(true, Ordering::Relaxed);
+            let _ = writer.shutdown(Shutdown::Both);
+            sent
+        });
+        let receive = (|| -> Result<()> {
+            let mut bytes = [0; 1024];
+            while !stop.load(Ordering::Relaxed) {
+                match socket.read(&mut bytes) {
+                    Ok(0) => bail!("Peer closed the connection"),
+                    Ok(count) => {
+                        let arrived = Instant::now();
+                        for &byte in &bytes[..count] {
+                            incoming
+                                .bytes
+                                .try_send((arrived, byte))
+                                .context("Incoming IR queue is full; connection interrupted")?;
+                        }
+                        incoming.wake.unpark();
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Ok(())
+        })();
+        stop.store(true, Ordering::Relaxed);
+        let _ = socket.shutdown(Shutdown::Both);
+        let sent = transmit
+            .join()
+            .map_err(|_| anyhow::anyhow!("TCP writer stopped unexpectedly"))?;
+        sent.and(receive)
+    })
+}
+
+fn write_bytes(socket: &mut TcpStream, outgoing: Receiver<u8>, stop: &AtomicBool) -> Result<()> {
     while !stop.load(Ordering::Relaxed) {
-        while pending.len() < CAPACITY {
-            match outgoing.try_recv() {
-                Ok(byte) => pending.push_back(byte),
-                Err(_) => break,
-            }
-        }
-        if !pending.is_empty() {
-            match socket.write(pending.make_contiguous()) {
-                Ok(0) => bail!("Peer closed the connection"),
-                Ok(count) => {
-                    pending.drain(..count);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
-                Err(error) => return Err(error.into()),
-            }
-        }
-        match socket.read(&mut bytes) {
-            Ok(0) => bail!("Peer closed the connection"),
-            Ok(count) => {
-                for &byte in &bytes[..count] {
-                    incoming
-                        .try_send(byte)
-                        .context("Incoming IR queue is full; connection interrupted")?;
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => (),
-            Err(error) => return Err(error.into()),
-        }
-        thread::sleep(WallDuration::from_millis(1));
+        let first = match outgoing.recv_timeout(WallDuration::from_millis(50)) {
+            Ok(byte) => byte,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let mut bytes = vec![first];
+        bytes.extend(outgoing.try_iter().take(CAPACITY - 1));
+        socket.write_all(&bytes)?;
     }
     Ok(())
 }

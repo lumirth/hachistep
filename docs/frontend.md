@@ -27,7 +27,9 @@ slots become available after the EEPROM is saved.
 Infrared connections require 100% speed. Pausing, resetting, or closing a player
 disconnects it. Local links preserve each machine's clock state and forward optical
 transitions at the next 64.64 time unit after emission. Snapshot lookahead finds the
-next transition before either recipient runs past it.
+next transition before either recipient runs past it. TCP exchanges decoded
+115200-baud 8N1 bytes and reconstructs optical input at their observed arrival times;
+it does not preserve the sender's inter-byte timing.
 
 Launch firmware and an EEPROM directly:
 

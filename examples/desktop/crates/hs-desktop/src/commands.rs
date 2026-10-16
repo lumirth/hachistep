@@ -109,6 +109,34 @@ fn item(name: &str, intent: Intent) -> MenuItem {
     MenuItem::action(name.to_owned(), Invoke::new(intent))
 }
 
+pub(crate) fn install(menus: Vec<Menu>, cx: &mut App) {
+    fn collect(items: &[MenuItem], inherited: bool, disabled: &mut Vec<Intent>) {
+        for item in items {
+            match item {
+                MenuItem::Action {
+                    action,
+                    disabled: item_disabled,
+                    ..
+                } if inherited || *item_disabled => {
+                    if let Some(action) = action.as_any().downcast_ref::<Invoke>() {
+                        disabled.push(action.intent.clone());
+                    }
+                }
+                MenuItem::Submenu(menu) => {
+                    collect(&menu.items, inherited || menu.disabled, disabled)
+                }
+                _ => (),
+            }
+        }
+    }
+    let mut disabled = Vec::new();
+    for menu in &menus {
+        collect(&menu.items, menu.disabled, &mut disabled);
+    }
+    cx.global_mut::<crate::Desktop>().disabled_commands = disabled;
+    cx.set_menus(menus);
+}
+
 pub(crate) fn menus(
     frame: &hs_runtime::Presentation,
     raw: bool,

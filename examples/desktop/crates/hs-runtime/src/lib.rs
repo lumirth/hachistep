@@ -37,6 +37,7 @@ pub const CORE_REVISION: &str = env!("HS_CORE_REVISION");
 pub struct Player {
     id: Id,
     commands: Sender<(Id, Command)>,
+    worker: thread::Thread,
     presentation: Arc<Mutex<Presentation>>,
 }
 
@@ -46,6 +47,7 @@ impl Player {
     }
     pub fn send(&self, command: Command) {
         let _ = self.commands.send((self.id, command));
+        self.worker.unpark();
     }
     pub fn presentation(&self) -> Presentation {
         self.presentation.lock().unwrap().clone()
@@ -56,6 +58,7 @@ impl Player {
 pub struct Runtime {
     next: Arc<AtomicU64>,
     commands: Sender<(Id, Command)>,
+    worker: thread::Thread,
 }
 
 impl Default for Runtime {
@@ -67,13 +70,16 @@ impl Default for Runtime {
 impl Runtime {
     pub fn new() -> Self {
         let (commands, receiver) = mpsc::channel();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("hachistep-machines".into())
             .spawn(move || Worker::new(receiver).run())
-            .expect("create emulation worker");
+            .expect("create emulation worker")
+            .thread()
+            .clone();
         Self {
             next: Arc::new(AtomicU64::new(1)),
             commands,
+            worker,
         }
     }
     pub fn player(&self) -> Player {
@@ -82,6 +88,7 @@ impl Runtime {
         let player = Player {
             id,
             commands: self.commands.clone(),
+            worker: self.worker.clone(),
             presentation: presentation.clone(),
         };
         player.send(Command::Attach(presentation));
@@ -89,12 +96,15 @@ impl Runtime {
     }
     pub fn sound_enabled(&self, enabled: bool) {
         let _ = self.commands.send((0, Command::Sound(enabled)));
+        self.worker.unpark();
     }
     pub fn retry_audio(&self) {
         let _ = self.commands.send((0, Command::RetryAudio));
+        self.worker.unpark();
     }
     pub fn gamepad_mapping(&self, mapping: [GamepadButton; 3]) {
         let _ = self.commands.send((0, Command::GamepadMapping(mapping)));
+        self.worker.unpark();
     }
 }
 
@@ -395,7 +405,7 @@ impl Session {
     ) -> Result<Vec<Edge>> {
         let now = self.machine.now();
         if let Some(tcp) = &mut self.tcp {
-            inputs.extend(tcp.inputs(now, end)?);
+            inputs.extend(tcp.inputs(now, end, self.anchor, self.anchor_time)?);
         }
         let inputs = self.planned_inputs(end, inputs);
         let mut sink = Sink {
@@ -609,19 +619,14 @@ impl Worker {
                     && s.target().raw().saturating_sub(s.machine.now().raw())
                         > hs_core::Duration::from_micros(2000).raw()
             });
-            match self.receive.recv_timeout(if behind {
-                Duration::ZERO
-            } else {
-                Duration::from_millis(1)
-            }) {
-                Ok((id, command)) => self.dispatch(id, command),
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => (),
+            if !behind {
+                thread::park_timeout(Duration::from_millis(1));
             }
             for _ in 0..256 {
                 match self.receive.try_recv() {
                     Ok((id, command)) => self.dispatch(id, command),
-                    Err(_) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(mpsc::TryRecvError::Empty) => break,
                 }
             }
             while let Ok(reply) = self.replies.try_recv() {
@@ -629,17 +634,9 @@ impl Worker {
             }
             self.poll_gamepads();
             if last.elapsed() > Duration::from_millis(500) {
-                let ids: Vec<_> = self
-                    .sessions
-                    .iter()
-                    .filter_map(|(&id, session)| session.tcp.is_some().then_some(id))
-                    .collect();
-                for id in ids {
-                    let _ = self.disconnect(id);
-                }
                 let linked: Vec<_> = self.links.iter().flat_map(|link| link.ids).collect();
                 for (&id, session) in &mut self.sessions {
-                    if linked.contains(&id) {
+                    if linked.contains(&id) || session.tcp.as_ref().is_some_and(tcp::Tcp::active) {
                         continue;
                     }
                     session.release();
@@ -925,12 +922,18 @@ impl Worker {
                 listen,
                 allow_remote,
             } => {
+                ensure!(!session.paused, "Resume emulation before connecting");
                 session.fast = false;
                 session.turbo_toggle = false;
                 session.speed_percent = 100;
                 session.reanchor();
                 session.clear_audio(self.sound.rate)?;
-                session.tcp = Some(tcp::Tcp::start(address, listen, allow_remote));
+                session.tcp = Some(tcp::Tcp::start(
+                    address,
+                    listen,
+                    allow_remote,
+                    thread::current(),
+                ));
             }
             Command::CancelClose => session.closing = false,
             _ => (),

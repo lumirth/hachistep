@@ -635,12 +635,7 @@ impl Tool {
     }
     fn tcp(&self, cx: &mut Context<Self>) -> AnyElement {
         let frame = self.player.presentation();
-        let busy = matches!(
-            frame.connection,
-            hs_runtime::Connection::Listening
-                | hs_runtime::Connection::Connecting
-                | hs_runtime::Connection::Connected
-        );
+        let busy = frame.connection.is_active();
         let local = frame.peer.is_some();
         div()
             .flex()
@@ -710,7 +705,7 @@ impl Tool {
                             } else {
                                 "Connect"
                             })
-                            .disabled(local)
+                            .disabled(local || (frame.paused && !busy))
                             .on_click(cx.listener(move |view, _, _, _| {
                                 if busy {
                                     view.player.send(Command::Disconnect);
