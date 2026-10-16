@@ -65,7 +65,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: core
-          cache-on-failure: true
+          cache-on-failure: ${{ github.event_name == 'pull_request' }}
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo check --workspace --all-features --target wasm32-wasip1 --locked
       - run: cargo build --release --locked -p hs-cli
@@ -106,7 +106,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ needs.changes.outputs.package == 'true' && 'build' || 'desktop' }}
-          cache-on-failure: true
+          cache-on-failure: ${{ github.event_name == 'pull_request' }}
           workspaces: |
             .
             desktop
