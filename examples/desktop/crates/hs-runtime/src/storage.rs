@@ -58,7 +58,6 @@ struct Transaction {
 
 pub(crate) struct Binding {
     pub path: PathBuf,
-    _lock: File,
     expected: [u8; 32],
     companion: Option<[u8; 32]>,
     previous: Option<Persistent>,
@@ -125,14 +124,6 @@ impl Binding {
         } else {
             path.canonicalize()?
         };
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(adjacent(&path, ".hachistep.lock"))?;
-        lock.try_lock_exclusive()
-            .context("EEPROM is already open in another player")?;
         if create {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -147,12 +138,14 @@ impl Binding {
         let companion = optional(&companion_path)?;
         let mut binding = Self {
             path,
-            _lock: lock,
             expected: hash(&eeprom),
             companion: companion.as_deref().map(hash),
             previous: None,
         };
-        binding.recover()?;
+        if adjacent(&binding.path, ".hachistep.pending").exists() {
+            let _lock = lock(&binding.path)?;
+            binding.recover()?;
+        }
         let eeprom = read(&binding.path)?;
         let machine = match optional(&companion_path)? {
             Some(bytes) => {
@@ -200,6 +193,7 @@ impl Binding {
     }
 
     pub fn commit(&mut self, next: Persistent) -> Result<()> {
+        let _lock = lock(&self.path)?;
         self.recover()?;
         let current = read(&self.path)?;
         let companion = optional(&adjacent(&self.path, ".hachistep"))?;
@@ -237,6 +231,18 @@ impl Binding {
         *self = replacement;
         Ok(())
     }
+}
+
+fn lock(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(adjacent(path, ".hachistep.lock"))?;
+    file.try_lock_exclusive()
+        .context("EEPROM is being saved by another player")?;
+    Ok(file)
 }
 
 fn optional(path: &Path) -> Result<Option<Vec<u8>>> {

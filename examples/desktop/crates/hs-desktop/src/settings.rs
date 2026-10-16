@@ -20,6 +20,8 @@ pub(crate) struct Recent {
 #[serde(default)]
 pub(crate) struct Preferences {
     pub appearance: usize,
+    pub palette: crate::lcd::Palette,
+    pub settings_page: usize,
     pub keys: [String; 3],
     pub gamepad: [usize; 3],
     pub mute: bool,
@@ -34,6 +36,8 @@ impl Default for Preferences {
     fn default() -> Self {
         Self {
             appearance: 0,
+            palette: crate::lcd::Palette::default(),
+            settings_page: 0,
             keys: ["a".into(), "s".into(), "d".into()],
             gamepad: [0, 1, 2],
             mute: false,

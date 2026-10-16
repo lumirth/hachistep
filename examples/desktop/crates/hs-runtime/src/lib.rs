@@ -87,6 +87,9 @@ impl Runtime {
         player.send(Command::Attach(presentation));
         player
     }
+    pub fn sound_enabled(&self, enabled: bool) {
+        let _ = self.commands.send((0, Command::Sound(enabled)));
+    }
     pub fn retry_audio(&self) {
         let _ = self.commands.send((0, Command::RetryAudio));
     }
@@ -99,8 +102,7 @@ pub enum Command {
     Attach(Arc<Mutex<Presentation>>),
     Open {
         firmware: PathBuf,
-        eeprom: PathBuf,
-        create: bool,
+        eeprom: Option<PathBuf>,
     },
     Buttons(Buttons),
     Focus(bool),
@@ -115,6 +117,7 @@ pub enum Command {
     Cadence(u16),
     Mute(bool),
     RetryAudio,
+    Sound(bool),
     GamepadMapping([gilrs::Button; 3]),
     SaveEepromAs(PathBuf),
     SaveState(PathBuf),
@@ -124,7 +127,8 @@ pub enum Command {
         path: PathBuf,
         bytes: Vec<u8>,
     },
-    RetrySave,
+    SaveEeprom,
+    PrepareClose,
     Link(Id),
     Tcp {
         address: String,
@@ -158,9 +162,18 @@ pub struct Presentation {
     pub peer: Option<Id>,
     pub connection: Connection,
     pub saving: bool,
+    pub modified: bool,
     pub eeprom_error: Option<String>,
     pub error: Option<String>,
     pub audio_error: Option<String>,
+    pub audio_resets: u64,
+    pub audio_buffered: usize,
+    pub audio_rate: u32,
+    pub connection_error: Option<String>,
+    pub audio_underruns: u64,
+    pub motion_samples: Arc<[hs_core::Acceleration]>,
+    pub activity: Arc<[(Time, bool)]>,
+    pub display_enabled: bool,
     pub closing: bool,
     pub closed: bool,
 }
@@ -187,9 +200,18 @@ impl Default for Presentation {
             peer: None,
             connection: Connection::Disconnected,
             saving: false,
+            modified: false,
             eeprom_error: None,
             error: None,
             audio_error: None,
+            audio_resets: 0,
+            audio_buffered: 0,
+            audio_rate: 48_000,
+            connection_error: None,
+            audio_underruns: 0,
+            motion_samples: Arc::from([]),
+            activity: Arc::from([]),
+            display_enabled: false,
             closing: false,
             closed: false,
         }
@@ -204,6 +226,11 @@ impl Presentation {
             self.connection.to_string()
         }
     }
+}
+
+enum SaveTarget {
+    Current,
+    Path(PathBuf),
 }
 
 struct Session {
@@ -225,7 +252,7 @@ struct Session {
     dirty: bool,
     saving: bool,
     closing: bool,
-    last_flush: Instant,
+    pending_save: Option<SaveTarget>,
     anchor: Instant,
     anchor_time: Time,
     speed_start: (Instant, Time),
@@ -233,6 +260,10 @@ struct Session {
     emitting: bool,
     sound: Audio,
     samples: Samples,
+    audio_resets: u64,
+    motion_samples: VecDeque<hs_core::Acceleration>,
+    motion_sample: u8,
+    activity: VecDeque<(Time, bool)>,
     tcp: Option<tcp::Tcp>,
 }
 
@@ -260,7 +291,7 @@ impl Session {
             dirty: false,
             saving: false,
             closing: false,
-            last_flush: wall,
+            pending_save: None,
             anchor: wall,
             anchor_time: now,
             speed_start: (wall, now),
@@ -268,6 +299,10 @@ impl Session {
             emitting: false,
             sound,
             samples,
+            audio_resets: 0,
+            motion_samples: VecDeque::new(),
+            motion_sample: 0,
+            activity: VecDeque::new(),
             tcp: None,
         })
     }
@@ -276,7 +311,11 @@ impl Session {
         self.anchor_time = self.machine.now();
     }
     fn clear_audio(&mut self, rate: u32) -> Result<()> {
-        self.samples.lock().unwrap().clear();
+        self.audio_resets += 1;
+        let mut channel = self.samples.lock().unwrap();
+        channel.queue.clear();
+        channel.enabled = false;
+        channel.primed = false;
         self.sound = self.machine.audio(rate)?;
         Ok(())
     }
@@ -337,9 +376,17 @@ impl Session {
             self.reset_release = None;
         }
         while self.next_motion < end {
+            let sample = self.motion.sample();
+            self.motion_sample = (self.motion_sample + 1) % 4;
+            if self.motion_sample == 0 {
+                if self.motion_samples.len() == 512 {
+                    self.motion_samples.pop_front();
+                }
+                self.motion_samples.push_back(sample);
+            }
             inputs.push(TimedInput {
                 at: self.next_motion.max(now),
-                input: Input::Acceleration(self.motion.sample()),
+                input: Input::Acceleration(sample),
             });
             self.next_motion =
                 Time::from_raw(self.next_motion.raw() + hs_core::Duration::from_micros(1000).raw());
@@ -348,6 +395,11 @@ impl Session {
             inputs.extend(tcp.inputs(now, end)?);
         }
         inputs.sort_by_key(|input| input.at);
+        for input in &inputs {
+            if matches!(input.input, Input::InfraredLevel(true)) {
+                self.record_activity(input.at, false);
+            }
+        }
         let mut sink = Sink {
             sound: &mut self.sound,
             samples: Vec::new(),
@@ -356,35 +408,56 @@ impl Session {
             error: None,
         };
         self.machine.run_until(end, &inputs, &mut sink)?;
-        sink.sound.advance(self.machine.now(), &mut |samples| {
-            sink.samples.extend_from_slice(samples)
-        })?;
         if let Some(error) = sink.error {
             return Err(error);
         }
         self.dirty |= sink.dirty;
-        if let Some(edge) = sink.edges.last() {
+        let Sink { edges, samples, .. } = sink;
+        for edge in &edges {
+            if edge.emitting {
+                self.record_activity(edge.at, true);
+            }
+        }
+        if let Some(edge) = edges.last() {
             self.emitting = edge.emitting;
         }
         if let Some(tcp) = &mut self.tcp {
             if tcp.connected() {
-                for edge in &sink.edges {
+                for edge in &edges {
                     tcp.emit(edge)?;
                 }
                 tcp.finish(self.machine.now())?;
             }
         }
-        if !sink.samples.is_empty()
-            && !self.muted
-            && !self.fast
-            && !self.paused
-            && self.speed_percent == 100
+        self.enqueue_audio(samples);
+        Ok(edges)
+    }
+    fn finish_audio(&mut self) -> Result<()> {
+        let mut samples = Vec::new();
+        self.sound.advance(self.machine.now(), &mut |block| {
+            samples.extend_from_slice(block)
+        })?;
+        self.enqueue_audio(samples);
+        Ok(())
+    }
+    fn enqueue_audio(&self, samples: Vec<i16>) {
+        if samples.is_empty() || self.muted || self.fast || self.paused || self.speed_percent != 100
         {
-            let mut queue = self.samples.lock().unwrap();
-            let available = (sink.sound.sample_rate() as usize / 10).saturating_sub(queue.len());
-            queue.extend(sink.samples.into_iter().take(available));
+            return;
         }
-        Ok(sink.edges)
+        let mut channel = self.samples.lock().unwrap();
+        channel.enabled = true;
+        let available = channel
+            .prefill
+            .saturating_mul(3)
+            .saturating_sub(channel.queue.len());
+        channel.queue.extend(samples.into_iter().take(available));
+    }
+    fn record_activity(&mut self, at: Time, transmit: bool) {
+        if self.activity.len() == 256 {
+            self.activity.pop_front();
+        }
+        self.activity.push_back((at, transmit));
     }
     fn capture_state(&self) -> PendingSession {
         PendingSession {
@@ -398,6 +471,8 @@ impl Session {
     fn restore(&mut self, saved: PendingSession, rate: u32, linked: bool) -> Result<()> {
         self.machine = Machine::from_snapshot(&saved.snapshot);
         self.motion = saved.motion;
+        self.motion_samples.clear();
+        self.activity.clear();
         self.next_motion = saved.next_motion;
         self.reset_release = saved.reset_release;
         self.paused = true;
@@ -522,7 +597,11 @@ impl Worker {
             }
             self.poll_gamepads();
             if last.elapsed() > Duration::from_millis(500) {
-                let ids: Vec<_> = self.sessions.keys().copied().collect();
+                let ids: Vec<_> = self
+                    .sessions
+                    .iter()
+                    .filter_map(|(&id, session)| session.tcp.is_some().then_some(id))
+                    .collect();
                 for id in ids {
                     let _ = self.disconnect(id);
                 }
@@ -562,11 +641,7 @@ impl Worker {
                 self.views.insert(id, view);
                 return Ok(());
             }
-            Command::Open {
-                firmware,
-                eeprom,
-                create,
-            } => {
+            Command::Open { firmware, eeprom } => {
                 ensure!(
                     !self.sessions.contains_key(&id),
                     "Close the current EEPROM before opening another"
@@ -579,12 +654,17 @@ impl Worker {
                     id,
                     firmware,
                     eeprom,
-                    create,
                 })?;
                 return Ok(());
             }
+            Command::Sound(enabled) => {
+                self.sound.enabled.store(enabled, Ordering::Relaxed);
+                return Ok(());
+            }
             Command::RetryAudio => {
+                let enabled = self.sound.enabled.load(Ordering::Relaxed);
                 self.sound = Sound::new();
+                self.sound.enabled.store(enabled, Ordering::Relaxed);
                 for (&id, session) in &mut self.sessions {
                     session.samples = self.sound.add(id);
                     session.clear_audio(self.sound.rate)?;
@@ -600,7 +680,14 @@ impl Worker {
                 }
                 return Ok(());
             }
-            Command::Link(peer) => return self.connect(id, peer),
+            Command::Link(peer) => {
+                let error = self
+                    .connect(id, peer)
+                    .err()
+                    .map(|error| format!("{error:#}"));
+                self.view(id, |view| view.connection_error = error);
+                return Ok(());
+            }
             Command::Disconnect => return self.disconnect(id),
             Command::LoadState(path) => {
                 self.jobs.send(Job::Load { id, path })?;
@@ -627,8 +714,16 @@ impl Worker {
             }
             Command::Close => {
                 self.disconnect(id)?;
+                self.sessions.remove(&id);
+                self.jobs.send(Job::Close(id))?;
+                return Ok(());
+            }
+            Command::PrepareClose => {
                 if let Some(session) = self.sessions.get_mut(&id) {
-                    ensure!(!session.machine.eeprom_busy() || !session.paused, "EEPROM programming is paused. Resume to finish, or save an exact state before closing");
+                    ensure!(
+                        !session.machine.eeprom_busy() || !session.paused,
+                        "EEPROM programming is paused. Resume before closing."
+                    );
                     session.release();
                     session.closing = true;
                 } else {
@@ -647,8 +742,6 @@ impl Worker {
                 }
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.release();
-                    session.reanchor();
-                    session.clear_audio(self.sound.rate)?;
                 }
                 return Ok(());
             }
@@ -670,6 +763,7 @@ impl Worker {
                     .paused;
                 for id in ids {
                     if let Some(session) = self.sessions.get_mut(&id) {
+                        let previous = (session.paused, session.fast, session.speed_percent);
                         match command {
                             Command::Pause => {
                                 session.paused = !paused;
@@ -716,8 +810,10 @@ impl Worker {
                             }
                             _ => unreachable!(),
                         }
-                        session.reanchor();
-                        session.clear_audio(self.sound.rate)?;
+                        if previous != (session.paused, session.fast, session.speed_percent) {
+                            session.reanchor();
+                            session.clear_audio(self.sound.rate)?;
+                        }
                     }
                 }
                 return Ok(());
@@ -736,11 +832,7 @@ impl Worker {
                     session.queue_buttons();
                 }
             }
-            Command::Release => {
-                session.release();
-                session.reanchor();
-                session.clear_audio(self.sound.rate)?;
-            }
+            Command::Release => session.release(),
             Command::Reset => {
                 session.release();
                 session.fast = false;
@@ -772,22 +864,19 @@ impl Worker {
                 session.muted = muted;
                 session.clear_audio(self.sound.rate)?;
             }
-            Command::SaveEepromAs(path) => {
+            Command::SaveEepromAs(_) | Command::SaveEeprom => {
                 ensure!(
-                    !session.saving,
-                    "EEPROM programming is in progress. Try Save EEPROM As again when it finishes"
+                    !session.saving && session.pending_save.is_none(),
+                    "EEPROM is being saved"
                 );
-                session.saving = true;
-                self.jobs.send(Job::SaveEepromAs {
-                    id,
-                    path,
-                    image: session.image(),
-                })?;
-                session.dirty = false;
-            }
-            Command::RetrySave => {
-                session.dirty = true;
-                session.last_flush = Instant::now() - Duration::from_secs(2);
+                ensure!(
+                    !session.machine.eeprom_busy() || !session.paused,
+                    "EEPROM programming is paused. Resume before saving."
+                );
+                session.pending_save = Some(match command {
+                    Command::SaveEepromAs(path) => SaveTarget::Path(path),
+                    _ => SaveTarget::Current,
+                });
                 self.view(id, |view| view.eeprom_error = None);
             }
             Command::Tcp {
@@ -836,13 +925,17 @@ impl Worker {
         let turbo = a.turbo_percent;
         for id in [id, peer] {
             let session = self.sessions.get_mut(&id).unwrap();
+            let changed =
+                session.paused != paused || session.fast || session.speed_percent != speed;
             session.paused = paused;
             session.fast = false;
             session.turbo_toggle = false;
             session.speed_percent = speed;
             session.turbo_percent = turbo;
             session.reanchor();
-            session.clear_audio(self.sound.rate)?;
+            if changed {
+                session.clear_audio(self.sound.rate)?;
+            }
         }
         self.links.push(link);
         Ok(())
@@ -854,6 +947,7 @@ impl Worker {
             vec![id]
         };
         for id in ids {
+            self.view(id, |view| view.connection_error = None);
             if let Some(session) = self.sessions.get_mut(&id) {
                 session.tcp = None;
                 let now = session.machine.now();
@@ -869,7 +963,6 @@ impl Worker {
                     .make_contiguous()
                     .sort_by_key(|input| input.at);
                 session.reanchor();
-                session.clear_audio(self.sound.rate)?;
             }
         }
         Ok(())
@@ -888,12 +981,14 @@ impl Worker {
                     .map(|b| format!("{b:02x}"))
                     .collect();
                 match Session::new(*machine, firmware, self.sound.add(id), self.sound.rate) {
-                    Ok(session) => {
+                    Ok(mut session) => {
+                        session.dirty = path.is_none();
                         self.sessions.insert(id, session);
                         self.view(id, |view| {
                             view.ready = true;
                             view.loading = false;
-                            view.eeprom = Some(path);
+                            view.modified = path.is_none();
+                            view.eeprom = path;
                             view.slots = slots;
                             view.firmware = identity;
                         });
@@ -907,7 +1002,6 @@ impl Worker {
             Reply::Saved { id, path, slots } => {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.saving = false;
-                    session.last_flush = Instant::now();
                 }
                 self.view(id, |view| {
                     view.eeprom = Some(path);
@@ -995,6 +1089,7 @@ impl Worker {
             }
         }
         for ix in 0..self.links.len() {
+            let started = Instant::now();
             let ids = self.links[ix].ids;
             if self.sessions.get(&ids[0]).is_none_or(|s| s.paused) {
                 continue;
@@ -1007,6 +1102,7 @@ impl Worker {
                 .min(hs_core::Duration::from_micros(4000).raw());
             let end = Time::from_raw(self.links[ix].elapsed.raw() + budget);
             let result = (|| -> Result<()> {
+                let mut steps = 0;
                 while self.links[ix].elapsed < end {
                     let to = Time::from_raw(
                         self.links[ix].elapsed.raw() + hs_core::Duration::from_micros(1).raw(),
@@ -1023,6 +1119,13 @@ impl Worker {
                         self.links[ix].transmit(side, edges.into_iter())?;
                     }
                     self.links[ix].elapsed = to;
+                    steps += 1;
+                    if steps == 64 {
+                        if started.elapsed() >= Duration::from_millis(4) {
+                            break;
+                        }
+                        steps = 0;
+                    }
                 }
                 Ok(())
             })();
@@ -1033,39 +1136,53 @@ impl Worker {
                 }
             }
         }
+        for (&id, session) in &mut self.sessions {
+            if let Err(error) = session.finish_audio() {
+                session.paused = true;
+                if let Some(view) = self.views.get(&id) {
+                    view.lock().unwrap().error = Some(error.to_string());
+                }
+            }
+        }
     }
     fn flush(&mut self) {
-        let mut close = Vec::new();
+        let mut stopping = Vec::new();
         for (&id, session) in &mut self.sessions {
             if session.saving || session.machine.eeprom_busy() {
                 continue;
             }
-            let eeprom_error = self
-                .views
-                .get(&id)
-                .is_some_and(|v| v.lock().unwrap().eeprom_error.is_some());
-            if session.dirty
-                && !eeprom_error
-                && (session.closing || session.last_flush.elapsed() >= Duration::from_millis(500))
-            {
-                if self
-                    .jobs
-                    .send(Job::Commit {
-                        id,
-                        image: session.image(),
-                    })
-                    .is_ok()
-                {
+            if let Some(path) = session.pending_save.take() {
+                let image = session.image();
+                let job = match path {
+                    SaveTarget::Path(path) => Job::SaveEepromAs { id, path, image },
+                    SaveTarget::Current => Job::Commit { id, image },
+                };
+                if self.jobs.send(job).is_ok() {
                     session.dirty = false;
                     session.saving = true;
                 }
-            } else if session.closing && !session.dirty {
-                close.push(id);
+            } else if session.closing {
+                stopping.push(id);
             }
         }
-        for id in close {
-            self.sessions.remove(&id);
-            let _ = self.jobs.send(Job::Close(id));
+        for id in stopping {
+            let ids = self
+                .links
+                .iter()
+                .find(|link| link.ids.contains(&id))
+                .map(|link| link.ids.to_vec())
+                .unwrap_or_else(|| vec![id]);
+            if ids.iter().any(|id| self.sessions[id].machine.eeprom_busy()) {
+                continue;
+            }
+            for id in ids {
+                let session = self.sessions.get_mut(&id).unwrap();
+                if !session.paused {
+                    session.paused = true;
+                    session.reanchor();
+                    let _ = session.clear_audio(self.sound.rate);
+                }
+            }
         }
     }
     fn publish(&mut self) {
@@ -1098,7 +1215,8 @@ impl Worker {
                 view.speed = session.speed;
                 view.speed_percent = session.speed_percent;
                 view.turbo = session.fast;
-                view.saving = session.saving || session.dirty;
+                view.saving = session.saving || session.pending_save.is_some();
+                view.modified = session.dirty || view.saving;
                 view.closing = session.closing;
                 view.peer = self.links.iter().find(|l| l.ids.contains(&id)).map(|l| {
                     if l.ids[0] == id {
@@ -1113,6 +1231,14 @@ impl Worker {
                     .map(|tcp| tcp.state.lock().unwrap().clone())
                     .unwrap_or(Connection::Disconnected);
                 view.audio_error = self.sound.error.lock().unwrap().clone();
+                view.audio_resets = session.audio_resets;
+                let channel = session.samples.lock().unwrap();
+                view.audio_buffered = channel.queue.len();
+                view.audio_rate = self.sound.rate;
+                view.audio_underruns = channel.underruns;
+                view.motion_samples = session.motion_samples.iter().copied().collect();
+                view.activity = session.activity.iter().copied().collect();
+                view.display_enabled = session.machine.display_enabled();
             }
         }
     }

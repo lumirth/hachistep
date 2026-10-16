@@ -1,16 +1,18 @@
 extern crate gpui_kit as gpui;
 mod commands;
+mod instruments;
 mod lcd;
 mod player;
 mod preferences;
 mod settings;
+mod theme;
 mod tools;
 
 use gpui_kit::*;
 use hs_runtime::Runtime;
 use player::PlayerView;
 use settings::Preferences;
-use std::{path::PathBuf, sync::mpsc::Sender};
+use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::Sender};
 
 struct Assets;
 impl AssetSource for Assets {
@@ -36,8 +38,12 @@ struct Desktop {
     preferences: Preferences,
     persist: Sender<Preferences>,
     windows: Vec<OpenWindow>,
+    active_player: Option<WeakEntity<PlayerView>>,
     quitting: bool,
-    preferences_window: Option<AnyWindowHandle>,
+    preferences_window: Option<(AnyWindowHandle, WeakEntity<preferences::Settings>)>,
+    tools: BTreeMap<(hs_runtime::Id, tools::Kind), AnyWindowHandle>,
+    tool_bounds: BTreeMap<(hs_runtime::Id, tools::Kind), (Bounds<Pixels>, bool)>,
+    tcp_options: BTreeMap<hs_runtime::Id, tools::TcpOptions>,
 }
 impl Global for Desktop {}
 
@@ -49,21 +55,18 @@ fn options(title: &str, width: f32, height: f32) -> WindowOptions {
         ))),
         titlebar: Some(TitlebarOptions {
             title: Some(title.to_owned().into()),
-            appears_transparent: false,
-            ..Default::default()
+            ..component::TitleBar::title_bar_options()
         }),
         window_min_size: Some(size(px(288.), px(192.))),
         app_id: Some("me.kukas.hachistep".into()),
-        ..Default::default()
+        ..component::TitleBar::window_options()
     }
 }
 
 enum Launch {
     Firmware(PathBuf),
-    Files {
-        pair: settings::Recent,
-        create: bool,
-    },
+    Files(settings::Recent),
+    Blank(PathBuf),
 }
 
 fn new_window(cx: &mut App, launch: Option<Launch>) {
@@ -71,13 +74,54 @@ fn new_window(cx: &mut App, launch: Option<Launch>) {
 }
 
 fn create_window(cx: &mut App, launch: Option<Launch>) {
-    let (firmware, files) = match launch {
-        Some(Launch::Firmware(firmware)) => (Some(firmware), None),
-        Some(Launch::Files { pair, create }) => (None, Some((pair, create))),
-        None => (None, None),
+    let (firmware, files, blank) = match launch {
+        Some(Launch::Firmware(firmware)) => (Some(firmware), None, None),
+        Some(Launch::Files(pair)) => (None, Some(pair), None),
+        Some(Launch::Blank(firmware)) => (Some(firmware.clone()), None, Some(firmware)),
+        None => (None, None, None),
     };
     let runtime = cx.global::<Desktop>().runtime.clone();
-    match gpui_kit::open_window(options("hachistep", 384., 256.), cx, |window, cx| {
+    let mut window_options = options(
+        "hachistep",
+        384.,
+        256. + f32::from(theme::player_chrome(theme::FONT_SIZE, false)),
+    );
+    let previous = cx
+        .global::<Desktop>()
+        .active_player
+        .as_ref()
+        .and_then(|active| {
+            cx.global::<Desktop>()
+                .windows
+                .iter()
+                .find(|window| window.view.entity_id() == active.entity_id())
+                .map(|window| window.handle)
+        });
+    if let Some(Ok((bounds, screen))) = previous.map(|handle| {
+        handle.update(cx, |_, window, cx| {
+            (
+                window.bounds(),
+                window.display(cx).map(|display| display.bounds()),
+            )
+        })
+    }) {
+        if let Some(WindowBounds::Windowed(next)) = &mut window_options.window_bounds {
+            next.origin = bounds.origin + point(px(24.), px(24.));
+            if let Some(screen) = screen {
+                next.origin.x = next
+                    .origin
+                    .x
+                    .min(screen.right() - next.size.width)
+                    .max(screen.origin.x);
+                next.origin.y = next
+                    .origin
+                    .y
+                    .min(screen.bottom() - next.size.height)
+                    .max(screen.origin.y);
+            }
+        }
+    }
+    match gpui_kit::open_window(window_options, cx, |window, cx| {
         cx.new(|cx| PlayerView::new(runtime.player(), firmware, window, cx))
     }) {
         Ok((handle, view)) => {
@@ -85,11 +129,39 @@ fn create_window(cx: &mut App, launch: Option<Launch>) {
                 handle,
                 view: view.downgrade(),
             });
-            if let Some((pair, create)) = files {
-                view.update(cx, |view, cx| view.open_pair(pair, create, cx));
+            if let Some(pair) = files {
+                view.update(cx, |view, cx| view.open_pair(pair, cx));
+            } else if let Some(firmware) = blank {
+                view.update(cx, |view, cx| view.open_image(firmware, None, cx));
             }
         }
         Err(error) => eprintln!("Could not open player: {error:#}"),
+    }
+}
+
+fn invoke_player(owner: &WeakEntity<PlayerView>, intent: commands::Intent, cx: &mut App) {
+    let handle = cx
+        .global::<Desktop>()
+        .windows
+        .iter()
+        .find(|w| w.view.entity_id() == owner.entity_id())
+        .map(|w| w.handle);
+    if let Some(handle) = handle {
+        let _ = handle.update(cx, |_, window, cx| {
+            owner.update(cx, |owner, cx| owner.execute(intent, window, cx))
+        });
+    }
+}
+
+fn player_menu(owner: &WeakEntity<PlayerView>, previous: &mut String, cx: &mut App) {
+    if let Ok(state) = owner.update(cx, |owner, cx| {
+        let state = owner.menu_signature(cx);
+        if state != *previous {
+            owner.install_menu(cx);
+        }
+        state
+    }) {
+        *previous = state;
     }
 }
 
@@ -104,17 +176,17 @@ fn quit(cx: &mut App) {
 
 fn close_players(cx: &mut App) {
     cx.global_mut::<Desktop>().quitting = true;
-    let views: Vec<_> = cx
+    let next = cx
         .global::<Desktop>()
         .windows
-        .iter()
-        .filter_map(|w| w.view.upgrade())
-        .collect();
-    if views.is_empty() {
+        .first()
+        .map(|window| (window.handle, window.view.clone()));
+    if let Some((handle, view)) = next {
+        let _ = handle.update(cx, |_, window, cx| {
+            let _ = view.update(cx, |view, cx| view.request_close(window, cx));
+        });
+    } else {
         cx.quit();
-    }
-    for view in views {
-        view.update(cx, |view, _| view.begin_close());
     }
 }
 
@@ -151,19 +223,20 @@ fn main() {
             gpui_kit::init(cx);
             cx.set_app_identity("me.kukas.hachistep", "hachistep");
             let (preferences, persist) = Preferences::load();
-            let mode = match preferences.appearance {
-                1 => component::ThemeMode::Light,
-                2 => component::ThemeMode::Dark,
-                _ => cx.window_appearance().into(),
-            };
-            component::Theme::change(mode, None, cx);
+            theme::apply(preferences.appearance, cx);
+            let runtime = Runtime::new();
+            runtime.sound_enabled(!preferences.mute);
             cx.set_global(Desktop {
-                runtime: Runtime::new(),
+                runtime,
                 preferences,
                 persist,
                 windows: Vec::new(),
+                active_player: None,
                 quitting: false,
                 preferences_window: None,
+                tools: BTreeMap::new(),
+                tool_bounds: BTreeMap::new(),
+                tcp_options: BTreeMap::new(),
             });
             let menu_context = cx.to_async();
             platform.on_will_open_app_menu(Box::new(move || {
@@ -194,13 +267,7 @@ fn main() {
                 commands::Intent::Settings => preferences::open(cx),
                 _ => (),
             });
-            create_window(
-                cx,
-                pair.clone().map(|pair| Launch::Files {
-                    pair,
-                    create: false,
-                }),
-            );
+            create_window(cx, pair.clone().map(Launch::Files));
             cx.activate(true);
         });
 }

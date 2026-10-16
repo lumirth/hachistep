@@ -10,8 +10,8 @@ cargo run --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --
 ```
 
 Firmware must be a raw
-49,152-byte image; EEPROM images must contain 65,536 bytes. The application writes
-completed guest writes back to the selected EEPROM file. Hardware calibration,
+49,152-byte image; EEPROM images must contain 65,536 bytes. EEPROM changes stay in memory until Save EEPROM or Save EEPROM As. A new EEPROM
+starts untitled; closing a modified session offers Save, Discard, or Cancel. Hardware calibration,
 status, and programmed flash live in its adjacent `.hachistep` companion.
 Keep that companion with the EEPROM. `.hachistep.backup` retains the previous
 committed hardware image, and `.hachistep.pending` allows recovery after an
@@ -20,7 +20,8 @@ interrupted commit.
 State slots 1–10 live in `<eeprom>.states/`. The selected slot is remembered per
 EEPROM. State loads open paused and can be undone. Locally linked captures include
 both machines and their optical queues. Connect the same two EEPROMs in the same
-order before loading a linked state.
+order before loading a linked state. Untitled EEPROMs can use state files; numbered
+slots become available after the EEPROM is saved.
 
 Launch firmware and an EEPROM directly:
 

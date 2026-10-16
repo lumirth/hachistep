@@ -18,8 +18,7 @@ pub(crate) enum Job {
     Open {
         id: Id,
         firmware: PathBuf,
-        eeprom: PathBuf,
-        create: bool,
+        eeprom: Option<PathBuf>,
     },
     Commit {
         id: Id,
@@ -53,7 +52,7 @@ pub(crate) enum Reply {
         id: Id,
         machine: Box<Machine>,
         firmware: Arc<Vec<u8>>,
-        path: PathBuf,
+        path: Option<PathBuf>,
         slots: [bool; 10],
     },
     Saved {
@@ -94,14 +93,14 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
     thread::Builder::new()
         .name("hachistep-files".into())
         .spawn(move || {
-            let mut bindings = std::collections::BTreeMap::<Id, (Binding, Arc<Vec<u8>>)>::new();
+            let mut bindings =
+                std::collections::BTreeMap::<Id, (Option<Binding>, Arc<Vec<u8>>)>::new();
             for job in receive {
                 let (id, operation, result): (Id, _, Result<Reply>) = match job {
                     Job::Open {
                         id,
                         firmware,
                         eeprom,
-                        create,
                     } => (
                         id,
                         "Open",
@@ -111,15 +110,34 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                                 firmware.len() == 49_152,
                                 "Firmware must contain 49,152 bytes"
                             );
-                            let (binding, machine) = Binding::open(&eeprom, create, &firmware)?;
-                            let path = binding.path.clone();
+                            let (binding, machine) = match eeprom {
+                                Some(path) => {
+                                    let (binding, machine) =
+                                        Binding::open(&path, false, &firmware)?;
+                                    (Some(binding), machine)
+                                }
+                                None => (
+                                    None,
+                                    Machine::new(hs_core::Images {
+                                        firmware: &firmware,
+                                        eeprom: &[0xff; 65_536],
+                                        eeprom_status: 0,
+                                        sensor_nonvolatile: None,
+                                    })?,
+                                ),
+                            };
+                            let path = binding.as_ref().map(|binding| binding.path.clone());
+                            let slots = path
+                                .as_ref()
+                                .map(|path| state::slots(path))
+                                .unwrap_or([false; 10]);
                             bindings.insert(id, (binding, firmware.clone()));
                             Ok(Reply::Opened {
                                 id,
                                 machine: Box::new(machine),
                                 firmware,
-                                slots: state::slots(&path),
                                 path,
+                                slots,
                             })
                         })(),
                     ),
@@ -130,6 +148,9 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                             let (binding, _) = bindings
                                 .get_mut(&id)
                                 .ok_or_else(|| anyhow::anyhow!("Player closed"))?;
+                            let binding = binding.as_mut().ok_or_else(|| {
+                                anyhow::anyhow!("Choose an EEPROM filename first")
+                            })?;
                             binding.commit(image)?;
                             Ok(Reply::Saved {
                                 id,
@@ -142,10 +163,26 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                         id,
                         "EEPROM",
                         (|| {
+                            let canonical = path.canonicalize().ok();
+                            ensure!(
+                                !bindings.iter().any(|(other, (binding, _))| *other != id
+                                    && binding.as_ref().is_some_and(
+                                        |binding| Some(&binding.path) == canonical.as_ref()
+                                    )),
+                                "EEPROM is open in another player"
+                            );
                             let (binding, firmware) = bindings
                                 .get_mut(&id)
                                 .ok_or_else(|| anyhow::anyhow!("Player closed"))?;
-                            binding.save_as(&path, image, firmware)?;
+                            if let Some(binding) = binding {
+                                binding.save_as(&path, image, firmware)?;
+                            } else {
+                                let (mut replacement, _) =
+                                    Binding::open(&path, !path.exists(), firmware)?;
+                                replacement.commit(image)?;
+                                *binding = Some(replacement);
+                            }
+                            let binding = binding.as_ref().unwrap();
                             Ok(Reply::Saved {
                                 id,
                                 path: binding.path.clone(),
@@ -189,7 +226,8 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                             storage::atomic(&path, &storage::pack(b"HSTEPst1", &capture)?)?;
                             let slots = bindings
                                 .get(&id)
-                                .map(|(binding, _)| state::slots(&binding.path))
+                                .and_then(|(binding, _)| binding.as_ref())
+                                .map(|binding| state::slots(&binding.path))
                                 .unwrap_or([false; 10]);
                             Ok(Reply::StateWritten { id, slots })
                         })(),

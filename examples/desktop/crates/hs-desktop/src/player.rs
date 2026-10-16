@@ -2,12 +2,13 @@ use crate::{
     commands::{self, Intent, Invoke},
     lcd,
     settings::{self, Recent},
-    Desktop,
+    theme, Desktop,
 };
 use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         menu::AppMenuBar,
+        status_bar::StatusBar,
         ActiveTheme, WindowExt,
     },
     prelude::*,
@@ -20,7 +21,6 @@ use std::{path::PathBuf, time::Duration};
 pub(crate) enum FileCommand {
     Firmware,
     Eeprom,
-    NewEeprom,
     SaveEepromAs,
     SaveState,
     LoadState,
@@ -28,11 +28,31 @@ pub(crate) enum FileCommand {
     Diagnostics,
 }
 
+#[derive(Clone, Copy)]
+enum Closing {
+    Open,
+    Preparing(bool),
+    Prompt(bool),
+    Saving(bool),
+    Committed,
+}
+impl Closing {
+    fn resume(self) -> bool {
+        matches!(
+            self,
+            Self::Preparing(true) | Self::Prompt(true) | Self::Saving(true)
+        )
+    }
+    fn pending(self) -> bool {
+        matches!(self, Self::Preparing(_) | Self::Prompt(_) | Self::Saving(_))
+    }
+}
+
 pub(crate) struct PlayerView {
     player: Player,
     presentation: Presentation,
     firmware: Option<PathBuf>,
-    pending: Option<(Player, Recent)>,
+    pending: Option<(Player, PathBuf, Option<PathBuf>)>,
     focus: FocusHandle,
     buttons: Buttons,
     scale: u8,
@@ -42,7 +62,7 @@ pub(crate) struct PlayerView {
     last_error: Option<String>,
     menu_bar: Entity<AppMenuBar>,
     menu_state: String,
-    closing: bool,
+    closing: Closing,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -55,7 +75,13 @@ impl PlayerView {
             .eeprom
             .as_deref()
             .map(settings::filename)
-            .unwrap_or_else(|| "hachistep".into())
+            .unwrap_or_else(|| {
+                if self.presentation.ready {
+                    "Untitled EEPROM".into()
+                } else {
+                    "hachistep".into()
+                }
+            })
     }
     pub fn presentation(&self) -> &Presentation {
         &self.presentation
@@ -80,7 +106,13 @@ impl PlayerView {
                 window.is_window_active() && view.focus.is_focused(window),
             ));
             if window.is_window_active() {
+                cx.global_mut::<Desktop>().active_player = Some(cx.weak_entity());
                 view.install_menu(cx);
+            }
+        });
+        let appearance = cx.observe_window_appearance(window, |_, _, cx| {
+            if cx.global::<Desktop>().preferences.appearance == 0 {
+                theme::apply(0, cx);
             }
         });
         let lost = cx.on_blur(&focus, window, |view, _, _| {
@@ -92,9 +124,9 @@ impl PlayerView {
         });
         let release = cx.on_release(|view, _| view.begin_close());
         let weak = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
-            weak.update(cx, |view, _| {
-                view.begin_close();
+        window.on_window_should_close(cx, move |window, cx| {
+            weak.update(cx, |view, cx| {
+                view.request_close(window, cx);
             })
             .ok();
             false
@@ -125,26 +157,28 @@ impl PlayerView {
             last_error: None,
             menu_bar: AppMenuBar::new(cx),
             menu_state: String::new(),
-            closing: false,
-            _subscriptions: vec![activated, lost, focused, release],
+            closing: Closing::Open,
+            _subscriptions: vec![activated, lost, focused, release, appearance],
         }
     }
 
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((player, pair)) = &self.pending {
+        if let Some((player, firmware, eeprom)) = &self.pending {
             let view = player.presentation();
             if view.ready {
                 let player = player.clone();
-                let pair = pair.clone();
+                let firmware = firmware.clone();
+                let eeprom = eeprom.clone();
                 self.player.send(Command::Close);
                 self.player = player;
                 self.pending = None;
-                self.firmware = Some(pair.firmware.clone());
-                let desktop = cx.global_mut::<Desktop>();
-                desktop.preferences.remember(pair);
-                crate::save_preferences(cx);
-                self.player
-                    .send(Command::Mute(cx.global::<Desktop>().preferences.mute));
+                self.firmware = Some(firmware.clone());
+                if let Some(eeprom) = eeprom {
+                    cx.global_mut::<Desktop>()
+                        .preferences
+                        .remember(Recent { firmware, eeprom });
+                    crate::save_preferences(cx);
+                }
                 self.player
                     .send(Command::Speed(cx.global::<Desktop>().preferences.speed));
                 self.player
@@ -165,16 +199,22 @@ impl PlayerView {
             }
         }
         let presentation = self.player.presentation();
-        if presentation.closed && self.closing {
+        if presentation.closed && !matches!(self.closing, Closing::Open) {
             let entity_id = cx.entity_id();
             let desktop = cx.global_mut::<Desktop>();
             desktop
                 .windows
                 .retain(|w| w.view.upgrade().is_some_and(|v| v.entity_id() != entity_id));
+            desktop
+                .tool_bounds
+                .retain(|(id, _), _| *id != self.player.id());
+            desktop.tcp_options.remove(&self.player.id());
             let quitting = desktop.quitting && desktop.windows.is_empty();
             window.remove_window();
             if quitting {
                 cx.quit();
+            } else if desktop.quitting {
+                cx.defer(crate::close_players);
             }
             return;
         }
@@ -192,42 +232,139 @@ impl PlayerView {
             || self.presentation.muted != presentation.muted
             || self.presentation.can_undo != presentation.can_undo
             || self.presentation.slots != presentation.slots
-            || self.status;
+            || self.status
+            || self.presentation.saving != presentation.saving
+            || self.presentation.modified != presentation.modified;
+        if self.presentation.eeprom != presentation.eeprom {
+            if let (Some(firmware), Some(eeprom)) = (&self.firmware, &presentation.eeprom) {
+                cx.global_mut::<Desktop>().preferences.remember(Recent {
+                    firmware: firmware.clone(),
+                    eeprom: eeprom.clone(),
+                });
+                crate::save_preferences(cx);
+            }
+        }
         self.presentation = presentation;
-        let mut title = self
-            .presentation
-            .eeprom
-            .as_ref()
-            .map(|_| format!("hachistep — {}", self.filename()))
-            .unwrap_or_else(|| "hachistep".into());
+        window.set_window_edited(self.presentation.modified);
+        if self.closing.pending()
+            && self.presentation.closing
+            && self.presentation.paused
+            && !self.presentation.saving
+        {
+            if !self.presentation.modified {
+                self.finish_close();
+            } else if let Closing::Preparing(resume) = self.closing {
+                self.closing = Closing::Prompt(resume);
+                let receiver = window.prompt(
+                    PromptLevel::Warning,
+                    &format!("Save changes to \"{}\"?", self.filename()),
+                    None,
+                    &["Save", "Cancel", "Don't Save"],
+                    cx,
+                );
+                cx.spawn_in(window, async move |view, cx| {
+                    let answer = receiver.await.unwrap_or(1);
+                    let _ = cx.update(|window, cx| {
+                        view.update(cx, |view, cx| match answer {
+                            0 => {
+                                view.closing = Closing::Saving(view.closing.resume());
+                                view.save_eeprom(window, cx);
+                            }
+                            2 => view.finish_close(),
+                            _ => view.cancel_close(cx),
+                        })
+                    });
+                })
+                .detach();
+            }
+        }
+        let mut title = if self.presentation.ready {
+            format!("hachistep · {}", self.filename())
+        } else {
+            "hachistep".into()
+        };
         if self.presentation.paused {
-            title.push_str(" — Paused");
+            title.push_str(" · Paused");
         }
         if self.presentation.speed_percent != 100 {
-            title.push_str(&format!(" — {}%", self.presentation.speed_percent));
+            title.push_str(&format!(" · {}%", self.presentation.speed_percent));
         }
         if self.presentation.turbo {
-            title.push_str(" — Fast-forward");
+            title.push_str(" · Fast-forward");
         }
         if self.presentation.walking {
-            title.push_str(" — Walking");
+            title.push_str(" · Walking");
         }
         if self.presentation.peer.is_some()
             || self.presentation.connection == hs_runtime::Connection::Connected
         {
-            title.push_str(" — Linked");
+            title.push_str(" · Linked");
         }
         if self.presentation.eeprom_error.is_some() {
-            title.push_str(" — EEPROM error");
+            title.push_str(" · EEPROM error");
         }
         window.set_window_title(&title);
-        if let Some(error) = self.presentation.error.clone().or(self.error.clone()) {
+        if let Some(error) = self
+            .presentation
+            .eeprom_error
+            .clone()
+            .or(self.presentation.error.clone())
+            .or(self.error.clone())
+        {
             if self.last_error.as_ref() != Some(&error) {
                 self.last_error = Some(error.clone());
-                self.closing = false;
+                if self.closing.pending() {
+                    self.cancel_close(cx);
+                }
                 self.release();
+                let eeprom = self.presentation.eeprom_error.is_some();
+                let owner = cx.weak_entity();
                 window.open_dialog(cx, move |dialog, _, _| {
-                    dialog.title("hachistep").child(error.clone())
+                    let dialog = dialog
+                        .title(if eeprom {
+                            "Could not save EEPROM"
+                        } else {
+                            "hachistep"
+                        })
+                        .child(error.clone());
+                    if !eeprom {
+                        return dialog;
+                    }
+                    let save = owner.clone();
+                    let state = owner.clone();
+                    let retry = owner.clone();
+                    dialog.footer(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(Button::new("retry-eeprom").label("Retry").on_click(
+                                move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let _ = retry.update(cx, |view, _| {
+                                        view.player.send(Command::SaveEeprom)
+                                    });
+                                },
+                            ))
+                            .child(
+                                Button::new("recover-eeprom")
+                                    .label("Save EEPROM As…")
+                                    .on_click(move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        let _ = save.update(cx, |view, cx| {
+                                            view.choose(FileCommand::SaveEepromAs, window, cx)
+                                        });
+                                    }),
+                            )
+                            .child(Button::new("recover-state").label("Save State…").on_click(
+                                move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let _ = state.update(cx, |view, cx| {
+                                        view.choose(FileCommand::SaveState, window, cx)
+                                    });
+                                },
+                            )),
+                    )
                 });
             }
         } else {
@@ -237,27 +374,36 @@ impl PlayerView {
             cx.notify();
         }
         if window.is_window_active() {
-            let state = format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{:?}:{}:{}",
-                self.presentation.ready,
-                self.presentation.paused,
-                self.presentation.walking,
-                self.raw,
-                self.status,
-                self.scale,
-                self.presentation.speed_percent,
-                self.presentation.muted,
-                cx.global::<Desktop>().preferences.recent.len(),
-                self.presentation.can_undo,
-                self.presentation.slots,
-                self.selected_slot(cx),
-                self.presentation.turbo
-            );
+            let state = self.menu_signature(cx);
             if state != self.menu_state {
                 self.menu_state = state;
                 self.install_menu(cx);
             }
         }
+    }
+
+    pub(crate) fn menu_signature(&self, cx: &App) -> String {
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{:?}:{}:{:?}:{}:{}:{:?}:{:?}:{}:{}:{:?}",
+            self.presentation.ready,
+            self.presentation.paused,
+            self.presentation.walking,
+            self.raw,
+            self.status,
+            self.scale,
+            self.presentation.speed_percent,
+            self.presentation.muted,
+            cx.global::<Desktop>().preferences.recent,
+            self.presentation.can_undo,
+            self.presentation.slots,
+            self.selected_slot(cx),
+            self.presentation.turbo,
+            self.presentation.peer,
+            self.presentation.connection,
+            self.presentation.modified,
+            self.presentation.saving,
+            self.presentation.eeprom
+        )
     }
 
     fn selected_slot(&self, cx: &App) -> u8 {
@@ -292,7 +438,7 @@ impl PlayerView {
         }
     }
 
-    fn install_menu(&self, cx: &mut App) {
+    pub(crate) fn install_menu(&self, cx: &mut App) {
         cx.set_menus(commands::menus(
             &self.presentation,
             self.raw,
@@ -303,10 +449,10 @@ impl PlayerView {
         ));
     }
     pub fn begin_close(&mut self) {
-        if let Some((pending, _)) = self.pending.take() {
+        if let Some((pending, _, _)) = self.pending.take() {
             pending.send(Command::Close);
         }
-        self.closing = true;
+        self.closing = Closing::Committed;
         self.player.send(Command::Close);
     }
     pub fn release(&mut self) {
@@ -315,9 +461,49 @@ impl PlayerView {
         self.player.send(Command::Release);
     }
 
-    pub fn open_pair(&mut self, pair: Recent, create: bool, cx: &mut Context<Self>) {
+    pub fn request_close(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        if !matches!(self.closing, Closing::Open) {
+            return;
+        }
+        self.closing = Closing::Preparing(!self.presentation.paused);
         self.release();
-        let canonical = pair.eeprom.canonicalize().ok();
+        self.player.send(Command::PrepareClose);
+    }
+    fn cancel_close(&mut self, cx: &mut App) {
+        let resume = self.closing.resume() && self.presentation.paused;
+        self.closing = Closing::Open;
+        cx.global_mut::<Desktop>().quitting = false;
+        self.player.send(Command::CancelClose);
+        if resume {
+            self.player.send(Command::Pause);
+        }
+    }
+    fn finish_close(&mut self) {
+        if self.closing.resume() {
+            self.player.send(Command::Pause);
+        }
+        self.begin_close();
+    }
+    fn save_eeprom(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.presentation.eeprom.is_some() {
+            self.player.send(Command::SaveEeprom);
+        } else {
+            self.choose(FileCommand::SaveEepromAs, window, cx);
+        }
+    }
+
+    pub fn open_pair(&mut self, pair: Recent, cx: &mut Context<Self>) {
+        self.open_image(pair.firmware, Some(pair.eeprom), cx);
+    }
+
+    pub fn open_image(
+        &mut self,
+        firmware: PathBuf,
+        eeprom: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) {
+        self.release();
+        let canonical = eeprom.as_ref().and_then(|path| path.canonicalize().ok());
         let existing: Vec<_> = cx
             .global::<Desktop>()
             .windows
@@ -339,16 +525,24 @@ impl PlayerView {
             return;
         }
         if self.presentation.ready {
-            crate::new_window(cx, Some(crate::Launch::Files { pair, create }));
+            crate::new_window(
+                cx,
+                Some(match eeprom {
+                    Some(eeprom) => crate::Launch::Files(Recent { firmware, eeprom }),
+                    None => crate::Launch::Blank(firmware),
+                }),
+            );
             return;
+        }
+        if let Some((pending, _, _)) = self.pending.take() {
+            pending.send(Command::Close);
         }
         let candidate = cx.global::<Desktop>().runtime.player();
         candidate.send(Command::Open {
-            firmware: pair.firmware.clone(),
-            eeprom: pair.eeprom.clone(),
-            create,
+            firmware: firmware.clone(),
+            eeprom: eeprom.clone(),
         });
-        self.pending = Some((candidate, pair));
+        self.pending = Some((candidate, firmware, eeprom));
         self.error = None;
         cx.notify();
     }
@@ -360,7 +554,12 @@ impl PlayerView {
             Intent::Quit => crate::quit(cx),
             Intent::OpenFirmware => self.choose(FileCommand::Firmware, window, cx),
             Intent::OpenEeprom => self.choose(FileCommand::Eeprom, window, cx),
-            Intent::NewEeprom => self.choose(FileCommand::NewEeprom, window, cx),
+            Intent::NewEeprom => {
+                if let Some(firmware) = self.firmware.clone() {
+                    self.open_image(firmware, None, cx);
+                }
+            }
+            Intent::SaveEeprom => self.save_eeprom(window, cx),
             Intent::SaveEepromAs => self.choose(FileCommand::SaveEepromAs, window, cx),
             Intent::SaveState => self.choose(FileCommand::SaveState, window, cx),
             Intent::LoadState => self.choose(FileCommand::LoadState, window, cx),
@@ -372,7 +571,7 @@ impl PlayerView {
             Intent::UndoLoadState => self.player.send(Command::UndoLoadState),
             Intent::ToggleTurbo => self.player.send(Command::ToggleTurbo),
             Intent::Screenshot => self.choose(FileCommand::Screenshot, window, cx),
-            Intent::Close => self.begin_close(),
+            Intent::Close => self.request_close(window, cx),
             Intent::Pause => self.player.send(Command::Pause),
             Intent::Reset => self.player.send(Command::Reset),
             Intent::Walking => self
@@ -388,19 +587,30 @@ impl PlayerView {
             Intent::Fullscreen => window.toggle_fullscreen(),
             Intent::Status => {
                 self.status = !self.status;
-                self.fit(window);
+                if !window.is_fullscreen() {
+                    let mut size = window.viewport_size();
+                    let height = theme::status_height(window.rem_size());
+                    size.height += if self.status { height } else { -height };
+                    window.resize(size);
+                }
             }
             Intent::Raw => self.raw = !self.raw,
             Intent::Connect(peer) => self.player.send(Command::Link(peer)),
             Intent::Disconnect => self.player.send(Command::Disconnect),
-            Intent::Recent(pair) => self.open_pair(pair, false, cx),
-            Intent::Recents => crate::tools::open(
-                self.player.clone(),
-                cx.weak_entity(),
-                crate::tools::Kind::Recent,
-                window,
-                cx,
-            ),
+            Intent::Recent(pair) => self.open_pair(pair, cx),
+            Intent::Recents => {
+                let recent = &cx.global::<Desktop>().preferences.recent;
+                let items: Vec<_> = recent
+                    .iter()
+                    .map(|pair| {
+                        MenuItem::action(
+                            settings::filename(&pair.eeprom),
+                            Invoke::new(Intent::Recent(pair.clone())),
+                        )
+                    })
+                    .collect();
+                commands::native(items).show(window.mouse_position(), window, cx);
+            }
             Intent::LocalLink => crate::tools::open(
                 self.player.clone(),
                 cx.weak_entity(),
@@ -408,17 +618,10 @@ impl PlayerView {
                 window,
                 cx,
             ),
-            Intent::TcpConnect => crate::tools::open(
+            Intent::TcpConnection => crate::tools::open(
                 self.player.clone(),
                 cx.weak_entity(),
-                crate::tools::Kind::Tcp(false),
-                window,
-                cx,
-            ),
-            Intent::TcpListen => crate::tools::open(
-                self.player.clone(),
-                cx.weak_entity(),
-                crate::tools::Kind::Tcp(true),
+                crate::tools::Kind::Tcp,
                 window,
                 cx,
             ),
@@ -430,6 +633,7 @@ impl PlayerView {
                 cx,
             ),
             Intent::Settings => crate::preferences::open(cx),
+            Intent::DiagnosticsExport => self.choose(FileCommand::Diagnostics, window, cx),
             Intent::Diagnostics => crate::tools::open(
                 self.player.clone(),
                 cx.weak_entity(),
@@ -437,21 +641,7 @@ impl PlayerView {
                 window,
                 cx,
             ),
-            Intent::Controls => {
-                let [left, center, right] = cx.global::<Desktop>().preferences.keys.clone();
-                let turbo = cx.global::<Desktop>().preferences.turbo_key.to_uppercase();
-                window.open_dialog(cx, move |dialog, _, _| {
-                    dialog
-                        .title("Controls")
-                        .child(format!(
-                            "{} · Left    {} · Center    {} · Right",
-                            left.to_uppercase(),
-                            center.to_uppercase(),
-                            right.to_uppercase()
-                        ))
-                        .child(format!("{turbo} · Hold fast-forward"))
-                });
-            }
+            Intent::Controls => crate::preferences::open_controls(cx),
             Intent::About => window.open_dialog(cx, |dialog, _, _| {
                 dialog
                     .title("hachistep")
@@ -471,19 +661,9 @@ impl PlayerView {
     fn fit(&self, window: &mut Window) {
         let dpi = window.scale_factor();
         let physical = (f32::from(self.scale) * dpi).round().max(1.);
-        let menu = if cfg!(target_os = "macos") {
-            0.
-        } else {
-            f32::from(window.rem_size()) * 2.
-        };
-        let status = if self.status {
-            f32::from(window.rem_size()) * 1.5
-        } else {
-            0.
-        };
         window.resize(size(
             px(96. * physical / dpi),
-            px(64. * physical / dpi + menu + status),
+            px(64. * physical / dpi) + theme::player_chrome(window.rem_size(), self.status),
         ));
     }
 
@@ -524,7 +704,7 @@ impl PlayerView {
             .detach();
         } else {
             let name = match operation {
-                FileCommand::NewEeprom | FileCommand::SaveEepromAs => "walker.bin",
+                FileCommand::SaveEepromAs => "walker.bin",
                 FileCommand::SaveState => "walker.hstepstate",
                 FileCommand::Screenshot => "screen.png",
                 FileCommand::Diagnostics => "hachistep-diagnostics.json",
@@ -550,7 +730,13 @@ impl PlayerView {
                         cx.notify();
                     });
                 }
-                _ => (),
+                _ => {
+                    let _ = view.update(cx, |view, cx| {
+                        if view.closing.pending() {
+                            view.cancel_close(cx);
+                        }
+                    });
+                }
             })
             .detach();
         }
@@ -567,17 +753,19 @@ impl PlayerView {
                 if self.presentation.ready {
                     crate::new_window(cx, Some(crate::Launch::Firmware(path)));
                 } else {
+                    if let Some((pending, _, _)) = self.pending.take() {
+                        pending.send(Command::Close);
+                    }
                     self.firmware = Some(path);
                 }
             }
-            FileCommand::Eeprom | FileCommand::NewEeprom => {
+            FileCommand::Eeprom => {
                 if let Some(firmware) = self.firmware.clone() {
                     self.open_pair(
                         Recent {
                             firmware,
                             eeprom: path,
                         },
-                        matches!(operation, FileCommand::NewEeprom),
                         cx,
                     );
                 } else {
@@ -591,6 +779,7 @@ impl PlayerView {
                 &self.presentation.pixels,
                 self.presentation.contrast,
                 self.raw,
+                cx.global::<Desktop>().preferences.palette,
             ) {
                 Ok(bytes) => self.player.send(Command::WriteFile { path, bytes }),
                 Err(error) => self.error = Some(error.to_string()),
@@ -641,13 +830,14 @@ impl PlayerView {
                 .child(
                     Button::new("new-save")
                         .ghost()
-                        .label("New EEPROM…")
+                        .label("Create EEPROM…")
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.execute(Intent::NewEeprom, window, cx)
                         })),
                 );
         } else {
             content = content
+                .child(img("icon.png").size_12())
                 .child(
                     Button::new("open-firmware")
                         .label("Open Firmware…")
@@ -669,13 +859,14 @@ impl PlayerView {
 }
 
 impl Render for PlayerView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let loaded = self.presentation.ready;
         let content = if loaded {
             lcd::display(
                 self.presentation.pixels.clone(),
                 self.presentation.contrast,
                 self.raw,
+                cx.global::<Desktop>().preferences.palette,
             )
             .into_any_element()
         } else {
@@ -690,11 +881,37 @@ impl Render for PlayerView {
             .on_action(cx.listener(|view, action: &Invoke, window, cx| {
                 view.execute(action.intent.clone(), window, cx)
             }))
+            .child(theme::title(
+                if loaded {
+                    let filename = self.filename();
+                    if self.presentation.eeprom_error.is_some() {
+                        format!("{filename} · EEPROM error")
+                    } else if self.presentation.paused {
+                        format!("{filename} · Paused")
+                    } else if self.presentation.turbo {
+                        format!("{filename} · Fast-forward")
+                    } else if self.presentation.speed_percent != 100 {
+                        format!("{filename} · {}%", self.presentation.speed_percent)
+                    } else {
+                        filename
+                    }
+                } else {
+                    "hachistep".into()
+                },
+                window,
+                cx,
+            ))
             .when(!cfg!(target_os = "macos"), |root| {
-                root.child(div().h_8().child(self.menu_bar.clone()).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|view, _, _, _| view.release()),
-                ))
+                root.child(
+                    div()
+                        .h(theme::menu_height(window.rem_size()))
+                        .flex_shrink_0()
+                        .child(self.menu_bar.clone())
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, _, _| view.release()),
+                        ),
+                )
             })
             .child(
                 div()
@@ -706,6 +923,21 @@ impl Render for PlayerView {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| view.focus.focus(window, cx)),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                            view.release();
+                            view.focus.focus(window, cx);
+                            let items = commands::context(
+                                &view.presentation,
+                                view.raw,
+                                view.status,
+                                view.scale,
+                                view.selected_slot(cx),
+                            );
+                            commands::native(items).show(event.position, window, cx);
+                        }),
                     )
                     .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                         if !event.is_held
@@ -721,52 +953,56 @@ impl Render for PlayerView {
                     }))
                     .child(content),
             )
-            .when_some(self.presentation.eeprom_error.clone(), |root, error| {
+            .when(self.status, |root| {
+                let frame = &self.presentation;
+                let state = if !loaded {
+                    String::new()
+                } else if frame.paused {
+                    "Paused".into()
+                } else if frame.turbo {
+                    "Fast-forward".into()
+                } else {
+                    format!("{}%", frame.speed_percent)
+                };
+                let connection = frame
+                    .peer
+                    .and_then(|id| {
+                        cx.global::<Desktop>()
+                            .windows
+                            .iter()
+                            .filter_map(|w| w.view.upgrade())
+                            .filter(|v| v.entity_id() != cx.entity_id())
+                            .find_map(|view| {
+                                let view = view.read(cx);
+                                (view.player().id() == id)
+                                    .then(|| format!("Linked · {}", view.filename()))
+                            })
+                    })
+                    .unwrap_or_else(|| {
+                        if frame.connection == hs_runtime::Connection::Disconnected {
+                            String::new()
+                        } else {
+                            frame.connection_name()
+                        }
+                    });
+                let pace = if loaded
+                    && !frame.paused
+                    && frame.speed > 0.
+                    && (frame.speed * 100. - f64::from(frame.speed_percent)).abs() > 5.
+                    && !frame.turbo
+                {
+                    format!("{:.0}% actual", frame.speed * 100.)
+                } else {
+                    String::new()
+                };
                 root.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .p_3()
-                        .bg(cx.theme().warning)
-                        .text_color(cx.theme().foreground)
-                        .child(error)
-                        .child(
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(Button::new("retry-save").label("Retry").on_click(
-                                    cx.listener(|view, _, _, _| {
-                                        view.player.send(Command::RetrySave)
-                                    }),
-                                ))
-                                .child(Button::new("save-as").label("Save EEPROM As…").on_click(
-                                    cx.listener(|view, _, window, cx| {
-                                        view.choose(FileCommand::SaveEepromAs, window, cx)
-                                    }),
-                                ))
-                                .child(Button::new("save-state").label("Save State…").on_click(
-                                    cx.listener(|view, _, window, cx| {
-                                        view.choose(FileCommand::SaveState, window, cx)
-                                    }),
-                                )),
-                        ),
-                )
-            })
-            .when(self.status && loaded, |root| {
-                root.child(
-                    div()
-                        .h_6()
-                        .px_2()
-                        .text_xs()
-                        .flex()
-                        .items_center()
-                        .child(format!(
-                            "{:.2}× · {:?} · {}",
-                            self.presentation.speed,
-                            self.presentation.time,
-                            self.presentation.connection
-                        )),
+                    StatusBar::new()
+                        .h(theme::status_height(window.rem_size()))
+                        .flex_shrink_0()
+                        .py_0()
+                        .left(state)
+                        .child(pace)
+                        .right(connection),
                 )
             })
     }

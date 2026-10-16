@@ -2,14 +2,26 @@ use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
-pub(crate) type Samples = Arc<Mutex<VecDeque<i16>>>;
+#[derive(Default)]
+pub(crate) struct Channel {
+    pub queue: VecDeque<i16>,
+    pub enabled: bool,
+    pub primed: bool,
+    pub underruns: u64,
+    pub prefill: usize,
+}
+pub(crate) type Samples = Arc<Mutex<Channel>>;
 type Mixer = Arc<Mutex<BTreeMap<u64, Samples>>>;
 
 pub(crate) struct Sound {
     pub rate: u32,
+    pub enabled: Arc<AtomicBool>,
     channels: Mixer,
     pub error: Arc<Mutex<Option<String>>>,
     _stream: Option<cpal::Stream>,
@@ -19,9 +31,11 @@ impl Sound {
     pub fn new() -> Self {
         let channels = Mixer::default();
         let error = Arc::default();
-        match Self::stream(channels.clone(), Arc::clone(&error)) {
+        let enabled = Arc::new(AtomicBool::new(true));
+        match Self::stream(channels.clone(), Arc::clone(&error), enabled.clone()) {
             Ok((stream, rate)) => Self {
                 rate,
+                enabled,
                 channels,
                 error,
                 _stream: Some(stream),
@@ -30,6 +44,7 @@ impl Sound {
                 *error.lock().unwrap() = Some(format!("Audio unavailable: {failure:#}"));
                 Self {
                     rate: 48_000,
+                    enabled,
                     channels,
                     error,
                     _stream: None,
@@ -38,7 +53,11 @@ impl Sound {
         }
     }
 
-    fn stream(channels: Mixer, error: Arc<Mutex<Option<String>>>) -> Result<(cpal::Stream, u32)> {
+    fn stream(
+        channels: Mixer,
+        error: Arc<Mutex<Option<String>>>,
+        enabled: Arc<AtomicBool>,
+    ) -> Result<(cpal::Stream, u32)> {
         let device = cpal::default_host()
             .default_output_device()
             .context("No output device")?;
@@ -46,9 +65,15 @@ impl Sound {
         let config: cpal::StreamConfig = supported.clone().into();
         let count = config.channels as usize;
         let stream = match supported.sample_format() {
-            cpal::SampleFormat::F32 => build::<f32>(&device, &config, count, channels, error)?,
-            cpal::SampleFormat::I16 => build::<i16>(&device, &config, count, channels, error)?,
-            cpal::SampleFormat::U16 => build::<u16>(&device, &config, count, channels, error)?,
+            cpal::SampleFormat::F32 => {
+                build::<f32>(&device, &config, count, channels, error, enabled)?
+            }
+            cpal::SampleFormat::I16 => {
+                build::<i16>(&device, &config, count, channels, error, enabled)?
+            }
+            cpal::SampleFormat::U16 => {
+                build::<u16>(&device, &config, count, channels, error, enabled)?
+            }
             format => anyhow::bail!("Unsupported audio format {format:?}"),
         };
         stream.play()?;
@@ -56,7 +81,10 @@ impl Sound {
     }
 
     pub fn add(&mut self, id: u64) -> Samples {
-        let queue = Samples::default();
+        let queue = Arc::new(Mutex::new(Channel {
+            prefill: self.rate as usize / 25,
+            ..Channel::default()
+        }));
         self.channels.lock().unwrap().insert(id, queue.clone());
         queue
     }
@@ -71,20 +99,42 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     count: usize,
     channels: Mixer,
     error: Arc<Mutex<Option<String>>>,
+    enabled: Arc<AtomicBool>,
 ) -> Result<cpal::Stream> {
+    let prefill = config.sample_rate as usize / 25;
     Ok(device.build_output_stream(
         config,
         move |output: &mut [T], _| {
+            let enabled = enabled.load(Ordering::Relaxed);
             let channels = channels.lock().unwrap();
             let mut sources: Vec<_> = channels.values().map(|q| q.lock().unwrap()).collect();
-            let audible = sources.iter().filter(|q| !q.is_empty()).count().max(1) as f32;
+            for source in &mut sources {
+                source.prefill = prefill.max(output.len() / count * 2);
+                if source.enabled && source.queue.len() >= source.prefill {
+                    source.primed = true;
+                }
+            }
             for frame in output.chunks_mut(count) {
                 let sum: f32 = sources
                     .iter_mut()
-                    .filter_map(|q| q.pop_front())
+                    .filter_map(|source| {
+                        if !source.enabled || !source.primed {
+                            return None;
+                        }
+                        let sample = source.queue.pop_front();
+                        if sample.is_none() {
+                            source.primed = false;
+                            source.underruns += 1;
+                        }
+                        sample
+                    })
                     .map(|s| f32::from(s) / 32768.)
                     .sum();
-                frame.fill(T::from_sample(sum / audible));
+                frame.fill(T::from_sample(if enabled {
+                    sum.clamp(-1., 1.)
+                } else {
+                    0.
+                }));
             }
         },
         move |failure| {
