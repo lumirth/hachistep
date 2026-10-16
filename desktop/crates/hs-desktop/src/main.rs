@@ -25,9 +25,6 @@ impl AssetSource for Assets {
             "wordmark.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
                 "../../../../assets/logo-two-tone.svg"
             )))),
-            "wordmark-dark.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
-                "../../../../assets/logo-two-tone-dark.svg"
-            )))),
             "icon.png" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
                 "../../../../assets/icons/macos/icon.png"
             )))),

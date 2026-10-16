@@ -1064,13 +1064,9 @@ impl PlayerView {
             content = content
                 .child(
                     svg()
-                        .path(if cx.theme().is_dark() {
-                            "wordmark-dark.svg"
-                        } else {
-                            "wordmark.svg"
-                        })
+                        .path("wordmark.svg")
                         .w_48()
-                        .h_12()
+                        .h_10()
                         .text_color(cx.theme().primary),
                 )
                 .child(
@@ -1122,13 +1118,9 @@ impl PlayerView {
             content = content
                 .child(
                     svg()
-                        .path(if cx.theme().is_dark() {
-                            "wordmark-dark.svg"
-                        } else {
-                            "wordmark.svg"
-                        })
+                        .path("wordmark.svg")
                         .w_48()
-                        .h_12()
+                        .h_10()
                         .text_color(cx.theme().primary),
                 )
                 .child(
