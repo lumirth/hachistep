@@ -1,0 +1,61 @@
+param([Parameter(Mandatory)][string]$Executable)
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
+$scope = [System.Windows.Automation.TreeScope]
+$element = [System.Windows.Automation.AutomationElement]
+$invoke = [System.Windows.Automation.InvokePattern]::Pattern
+
+function Find-Element($Root, $Name) {
+    $condition = [System.Windows.Automation.PropertyCondition]::new($element::NameProperty, $Name)
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $found = $Root.FindFirst($scope::Descendants, $condition)
+        if ($found) { return $found }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Menu item '$Name' is missing"
+}
+
+function Save-Window($Window) {
+    $bounds = $Window.Current.BoundingRectangle
+    $image = [System.Drawing.Bitmap]::new([int]$bounds.Width, [int]$bounds.Height)
+    $graphics = [System.Drawing.Graphics]::FromImage($image)
+    try {
+        $graphics.CopyFromScreen([int]$bounds.X, [int]$bounds.Y, 0, 0, $image.Size)
+        $image.Save("$PWD/out/windows-menu.png")
+    } finally {
+        $graphics.Dispose()
+        $image.Dispose()
+    }
+}
+
+$process = Start-Process (Resolve-Path $Executable) -PassThru -RedirectStandardError out/windows-startup.log
+try {
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        $process.Refresh()
+        if ($process.HasExited) { throw "hachistep exited with code $($process.ExitCode)" }
+        if ($process.MainWindowHandle -ne 0) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($process.MainWindowHandle -eq 0) { throw 'hachistep did not open a window' }
+    $window = $element::FromHandle($process.MainWindowHandle)
+    Save-Window $window
+    $file = Find-Element $window 'File'
+    $file.GetCurrentPattern($invoke).Invoke()
+    $new = Find-Element $window 'New Window'
+    Save-Window $window
+    $new.GetCurrentPattern($invoke).Invoke()
+    $condition = [System.Windows.Automation.PropertyCondition]::new($element::ProcessIdProperty, $process.Id)
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $windows = $element::RootElement.FindAll($scope::Children, $condition)
+        if ($windows.Count -ge 2) { break }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($windows.Count -lt 2) { throw 'File > New Window did not open a second player' }
+    Write-Output 'File menu opened and New Window created a second player'
+} finally {
+    if (!$process.HasExited) { $process.Kill($true) }
+}
