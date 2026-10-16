@@ -1,6 +1,7 @@
 param([Parameter(Mandatory)][string]$Executable)
 
 $ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force out | Out-Null
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
 Add-Type @'
 using System;

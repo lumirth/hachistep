@@ -5,6 +5,11 @@ guest programs and complete firmware sessions. `tools/hachiware_adapter.py` conn
 hachistep to it. Reuse existing coverage; add a check for a bug fix only when it
 exposes a genuine behavioral gap.
 
+CI runs the full diagnostic suite from a pinned hachiware revision when core or
+adapter code changes. Each run retains its results in the `hachiware` artifact.
+Desktop changes get native build and startup checks on macOS, Windows, and Linux;
+the Windows check also opens File → New Window.
+
 ## Check hardware behavior
 
 Build hachistep in release mode using the [build guide](build.md). From the parent of

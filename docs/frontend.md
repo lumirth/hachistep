@@ -59,4 +59,8 @@ python3 desktop/package.py --out out/desktop
 The versioned ZIP or Linux tarball contains the desktop application and
 `hachistep-cli`. Linux needs an X11 or Wayland session and a Vulkan driver.
 
+The Release workflow builds downloads for version tags. Run it manually to get
+review archives for one platform or all platforms. CI checks development builds
+on ordinary changes and packaged builds when packaging inputs change.
+
 The desktop pins an AccessKit 0.26.3 [KVO teardown backport](https://github.com/lumirth/accesskit/commit/e09cf84b8e0af7659423e5b91eed41c5ac2dd693) to prevent a macOS crash when closing a window after keyboard input. [Issue #10](https://github.com/lumirth/hachistep/issues/10) tracks returning to a published release.

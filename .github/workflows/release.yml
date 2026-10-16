@@ -1,0 +1,101 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Review build platform
+        type: choice
+        options: [macos-latest, windows-latest, ubuntu-24.04, all]
+        default: macos-latest
+permissions:
+  contents: read
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ (inputs.platform == '' || inputs.platform == 'all') && fromJSON('["macos-latest", "windows-latest", "ubuntu-24.04"]') || fromJSON(format('["{0}"]', inputs.platform)) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - if: runner.os == 'Linux'
+        run: bash .github/install-linux.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          workspaces: |
+            .
+            desktop
+      - uses: ./.github/actions/package
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ${{ matrix.os }}-startup
+          path: |
+            out/*startup.log
+            out/windows-menu.png
+          retention-days: 7
+          if-no-files-found: ignore
+  wasi:
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - run: rustup target add wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasi
+          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - run: cargo build --release --locked -p hs-cli --target wasm32-wasip1
+      - name: Package WASI CLI
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          mkdir -p out/package/hachistep
+          cp target/wasm32-wasip1/release/hachistep.wasm LICENSE out/package/hachistep/
+          tar -czf "out/package/hachistep-$version-wasm32-wasip1.tar.gz" -C out/package hachistep
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hachistep-wasi
+          path: out/package/*.tar.gz
+          retention-days: 7
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build, wasi]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hachistep-*
+          merge-multiple: true
+          path: out/release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          revision=$(git rev-parse HEAD)
+          run=$(gh run list --workflow ci.yml --branch main --commit "$revision" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          test -n "$run"
+          gh run watch "$run" --exit-status --interval 10
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          test "$TAG" = "v$version"
+          (cd out/release && sha256sum -- *.zip *.tar.gz > SHA256SUMS)
+          gh release create "$TAG" out/release/* --verify-tag --title "hachistep $version" --notes-file docs/release.md --latest

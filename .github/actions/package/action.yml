@@ -1,0 +1,31 @@
+name: Package desktop
+description: Build and exercise the native desktop and CLI archive.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: cargo build --release --locked -p hs-cli
+    - shell: bash
+      run: cargo build --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
+    - shell: bash
+      run: python desktop/package.py --out out/package
+    - name: Check Windows menus
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: ./desktop/check-windows.ps1 out/package/hachistep/hachistep.exe
+    - name: Check macOS startup
+      if: runner.os == 'macOS'
+      shell: bash
+      run: python3 desktop/check-startup.py out/package/hachistep/hachistep.app/Contents/MacOS/hachistep
+    - name: Check Linux startup
+      if: runner.os == 'Linux'
+      shell: bash
+      run: python3 desktop/check-startup.py out/package/hachistep/hachistep
+    - uses: actions/upload-artifact@v4
+      with:
+        name: hachistep-${{ runner.os }}-${{ runner.arch }}
+        path: |
+          out/package/*.zip
+          out/package/*.tar.gz
+        retention-days: 7
+        if-no-files-found: error
