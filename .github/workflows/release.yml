@@ -25,8 +25,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup show active-toolchain
+      - uses: actions/checkout@v7
+      - name: Prepare pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup toolchain uninstall stable
       - if: runner.os == 'Linux'
         run: bash .github/install-linux.sh
       - uses: Swatinem/rust-cache@v2
@@ -37,7 +40,7 @@ jobs:
             .
             desktop
       - uses: ./.github/actions/package
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: ${{ matrix.os }}-startup
@@ -51,8 +54,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup show active-toolchain
+      - uses: actions/checkout@v7
+      - name: Prepare pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup toolchain uninstall stable
       - run: rustup target add wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
         with:
@@ -65,7 +71,7 @@ jobs:
           mkdir -p out/package/hachistep
           cp target/wasm32-wasip1/release/hachistep.wasm LICENSE out/package/hachistep/
           tar -czf "out/package/hachistep-$version-wasm32-wasip1.tar.gz" -C out/package hachistep
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: hachistep-wasi
           path: out/package/*.tar.gz
@@ -79,8 +85,8 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: hachistep-*
           merge-multiple: true

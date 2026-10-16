@@ -23,8 +23,8 @@ jobs:
       desktop: ${{ steps.paths.outputs.desktop }}
       package: ${{ github.event_name != 'workflow_dispatch' && steps.paths.outputs.package || 'false' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: paths
         with:
           filters: |
@@ -57,16 +57,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup show active-toolchain
+      - uses: actions/checkout@v7
+      - name: Prepare pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup toolchain uninstall stable
       - run: rustup target add wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: core
+          cache-on-failure: true
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo check --workspace --all-features --target wasm32-wasip1 --locked
       - run: cargo build --release --locked -p hs-cli
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: lumirth/hachiware
           ref: 79213d8d84bbf4799c4c76792f9695d169d11f12
@@ -76,7 +80,7 @@ jobs:
         run: |
           python3 out/hachiware/build.py out/guests
           python3 out/hachiware/run.py --fixtures out/guests --adapter tools/hachiware_adapter.py --runner target/release/hachistep --out out/diagnostics
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: hachiware
@@ -93,13 +97,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - run: rustup show active-toolchain
+      - uses: actions/checkout@v7
+      - name: Prepare pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup toolchain uninstall stable
       - if: runner.os == 'Linux'
         run: bash .github/install-linux.sh
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ needs.changes.outputs.package == 'true' && 'build' || 'desktop' }}
+          cache-on-failure: true
           workspaces: |
             .
             desktop
@@ -117,7 +125,7 @@ jobs:
       - name: Check startup
         if: needs.changes.outputs.package != 'true' && runner.os != 'Windows'
         run: python3 desktop/check-startup.py desktop/target/debug/hs-desktop
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: ${{ matrix.os }}-startup
