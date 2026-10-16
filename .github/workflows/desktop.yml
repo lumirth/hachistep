@@ -1,0 +1,25 @@
+name: Desktop
+on: [push, pull_request]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/desktop
+      - run: cargo fmt --manifest-path examples/desktop/Cargo.toml --all -- --check
+      - run: cargo clippy --manifest-path examples/desktop/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo build --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --locked
+      - run: python examples/desktop/package.py --out out/package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hachistep-${{ matrix.os }}
+          path: out/package

@@ -1,0 +1,16 @@
+[package]
+name = "hs-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+hs-core = { path = "../../../../crates/hs-core" }
+borsh.workspace = true
+sha2.workspace = true
+anyhow = "1"
+fs2 = "0.4"
+tempfile = "3"
+cpal = "0.17"
+gilrs = "0.11"
