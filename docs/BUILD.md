@@ -12,17 +12,18 @@ after fetching the locked dependencies to build without network access.
 
 ## Development
 
-Install rustfmt and Clippy, then clone Hachiware alongside this checkout:
+Install rustfmt and Clippy, then check the workspace:
 
 ```sh
 rustup component add rustfmt clippy
-gh repo clone lumirth/hachiware ../hachiware
-uv run tools/check.py --out out/check-1
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
-This builds the release CLI, checks formatting and Clippy, and runs Hachiware's guest
-diagnostics. Pass `--hachiware PATH` for another checkout location. See
-[behavioral validation](TESTING.md) for firmware sessions and speed comparisons.
+See [behavioral validation](TESTING.md) to run Hachiware diagnostics and firmware sessions.
+Build with `--profile profiling` for symbols, then use `tools/profile.py` with your
+firmware and EEPROM to capture a macOS stack sample. `--input` selects a scripted
+session; `--out` selects a new directory for the sample and invocation details.
 
 ## Bus tracing
 
@@ -42,8 +43,6 @@ Install [Wasmtime](https://docs.wasmtime.dev/cli.html) and the WASI Rust target:
 ```sh
 rustup target add wasm32-wasip1
 cargo build -p hs-cli --release --locked --target wasm32-wasip1
-uv run tools/verify_retail.py --firmware firmware.bin --eeprom eeprom.bin \
-  --runner target/wasm32-wasip1/release/hachistep.wasm --quick --out out/wasm-1
 ```
 
 The Hachiware adapter and comparison tools also accept the `.wasm` CLI. They invoke

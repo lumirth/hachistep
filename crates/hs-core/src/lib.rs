@@ -9,7 +9,7 @@
 //! Import embedding types from the crate root. [`diagnostic`] exposes component
 //! interfaces for hardware experiments separately from this contract.
 //!
-//! See `examples/replay.rs` for a complete firmware caller.
+//! See the repository embedding guide for the calling contract.
 #![forbid(unsafe_code)]
 mod audio;
 mod cpu;

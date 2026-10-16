@@ -11,8 +11,7 @@ Run `hachistep run --help` for the full option list.
 | `--status VALUE` | Persistent M95512 status bits, decimal or `0x` hexadecimal. Defaults to zero. |
 | `--sensor-nv FILE` | Optional 19-byte BMA150 configuration and calibration image. |
 
-Store private images under ignored `inputs/` or pass paths directly. Tool defaults are
-`inputs/pokewalker.bin` and `inputs/eeprom.bin`. Input files remain unchanged.
+Store private images under ignored `inputs/` or pass paths directly.
 
 Use [a save state](SAVE_STATES.md) to resume a running session. Loading exported
 persistent images starts a new session.
@@ -62,15 +61,30 @@ record count; check `trace_complete` before using a trace as a complete history.
 `--bus-trace` additionally requires a build with the `trace` feature. Trace text is a
 development format and can change between revisions.
 
-Render buzzer events as WAV:
+Capture audio from the core renderer:
 
 ```sh
 ./target/release/hachistep run --firmware firmware.bin --eeprom eeprom.bin \
-  --input workloads/menu.csv --milliseconds 6500 --out out/menu \
-  --trace out/menu/events.txt
-uv run tools/render_audio.py --trace out/menu/events.txt \
-  --report out/menu/report.json --out out/menu.wav
+  --input inputs.csv --milliseconds 6500 --out out/menu --audio out/menu.wav
 ```
+
+The WAV contains mono 48 kHz signed PCM16. `--write-ram f78e:0064` edits RAM before
+execution; repeat the option for additional edits. Addresses and byte strings are
+hexadecimal. Edits use the same [debugging API](API.md#persistence-and-editing) as an
+embedding caller.
+
+## Linked devices
+
+```sh
+./target/release/hachistep link --firmware firmware.bin --eeprom first.bin \
+  --peer-eeprom second.bin --input first.csv --peer-input second.csv \
+  --delay-us 1 --milliseconds 12000 --out out/link
+```
+
+Both devices start at time zero with the same firmware and their respective EEPROM
+images and input timelines. Each optical emission reaches the other device after
+`--delay-us` microseconds. The channel delay also bounds run-ahead, preserving pulse
+ordering. The peer's exports are under `out/link/peer/`.
 
 `tools/preview.py` creates an HTML viewer for captured PGM frames. Frontends can use
 the [display and audio APIs](API.md) directly.

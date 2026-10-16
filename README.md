@@ -28,7 +28,7 @@ persistent images, a resumable `state.bin`, and `report.json` with execution res
 Use a new output directory for each run. Firmware and EEPROM images are supplied
 separately from this repository.
 
-Use `--input workloads/menu.csv` for a scripted session. See
+Use `--input inputs.csv` for a scripted session. See
 [CLI inputs and outputs](docs/INPUTS.md) for the timeline format and
 [save states](docs/SAVE_STATES.md) to resume a session.
 
@@ -38,12 +38,7 @@ Use `--input workloads/menu.csv` for a scripted session. See
 chooses how far to run and receives timestamped output events. It can render display
 pixels and stream PCM audio through the same API.
 
-The [embedding guide](docs/API.md) covers the calling contract. Run the complete
-[frontend example](crates/hs-core/examples/replay.rs) with your images:
-
-```sh
-cargo run -p hs-core --release --example replay -- firmware.bin eeprom.bin
-```
+The [embedding guide](docs/API.md) covers construction, execution, display, audio and save states.
 
 ## Develop and compare
 
