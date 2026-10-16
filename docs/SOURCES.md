@@ -1,5 +1,10 @@
 # Hardware references
 
+These are the sources behind the hardware model. Component manuals describe the
+parts, board reverse engineering shows how they connect, and the matching `pw`
+reconstruction shows how retail firmware uses them. When those descriptions disagree
+or leave a quantity open, the [hardware notes](HARDWARE.md) explain our interpretation.
+
 | Reference | Use |
 | --- | --- |
 | [H8/38602R hardware manual](https://www.renesas.com/en/document/mah/h838602r-group-hardware-manual), REJ09B0152-0300, rev. 3 | CPU restrictions, registers, clocks, peripheral timing, reset, and electrical limits. |
@@ -27,5 +32,3 @@
 The target addition and applicable errata take precedence over base-part descriptions.
 For the reviewed English manuals, add 34 to hardware printed page numbers and 16 to
 software printed page numbers to get PDF page ordinals.
-
-[Hardware notes](HARDWARE.md) record consequential interpretations and physical gaps.

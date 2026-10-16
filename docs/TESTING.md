@@ -1,38 +1,45 @@
-# Behavioral validation
+# Check hachistep with hachiware
 
-[Hachiware](https://github.com/lumirth/hachiware) owns hardware diagnostics, firmware
-sessions and emulator comparisons. HachiStep supplies its CLI and adapter.
+[hachiware](https://github.com/lumirth/hachiware) checks hardware behavior through
+guest programs and complete firmware sessions. `tools/hachiware_adapter.py` connects
+hachistep to it. Reuse existing coverage; add a check for a bug fix only when it
+exposes a genuine behavioral gap.
 
-Build and check HachiStep:
+## Check hardware behavior
 
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo build --workspace --release --locked
-```
-
-From a Hachiware checkout, run the guest diagnostics:
+Build hachistep in release mode using the [build guide](BUILD.md). From the parent of
+that checkout, clone hachiware beside it and run the diagnostics:
 
 ```sh
-uv run bench.py run --skip-workloads --out out/check-1 \
+git clone https://github.com/lumirth/hachiware.git
+cd hachiware
+uv run bench.py run --skip-workloads --out out/diagnostics \
   --target hachistep ../hachistep/tools/hachiware_adapter.py ../hachistep/target/release/hachistep
 ```
 
-Run supplied firmware through complete sessions, including save-state continuation
-and different host-call horizons:
+hachiware needs Python 3.10 or newer; `uv run` selects its configured version.
+The report groups results by hardware block. For a narrower investigation, the
+[diagnostic guide](https://github.com/lumirth/hachiware/blob/main/docs/diagnostics.md)
+shows how to select a case and inspect its observations.
+
+## Check a continuation
+
+A checkpoint taken during a save has to preserve the pending write as well as its
+current bytes. From the hachiware directory:
 
 ```sh
-uv run session.py --firmware firmware.bin --eeprom eeprom.bin --quick --chunk-us 1000 \
-  --out out/sessions-1 \
+uv run session.py --firmware /path/to/firmware.bin --eeprom /path/to/eeprom.bin \
+  --quick --chunk-us 1000 --out out/sessions \
   --target hachistep ../hachistep/tools/hachiware_adapter.py ../hachistep/target/release/hachistep
 ```
 
-The [session guide](https://github.com/lumirth/hachiware/blob/main/docs/sessions.md)
-covers gameplay, peer exchange and comparisons between builds. The
-[benchmark guide](https://github.com/lumirth/hachiware/blob/main/docs/benchmark.md)
-covers per-workload conformance and speed comparisons, including PocketWalker.
+The runner compares state and event history with uninterrupted execution. The
+[session guide](https://github.com/lumirth/hachiware/blob/main/docs/sessions.md)
+covers image requirements and gameplay checks.
 
-Choose checks for the affected behavior and reuse results until a change or unresolved
-failure warrants another run. Hardware expectations come from independent evidence;
-reproducibility checks establish agreement between executions. Keep individual results
-in the task, PR or issue.
+## Measure the affected work
+
+The [benchmark guide](https://github.com/lumirth/hachiware/blob/main/docs/benchmark.md)
+compares individual workload speeds with PocketWalker. Keep the whole table when
+reporting a result, so a gain in one workload doesn't hide a cost in another. The
+behavioral result stays beside each speed. Every command needs a new output directory.

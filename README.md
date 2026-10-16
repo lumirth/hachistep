@@ -1,53 +1,13 @@
-# HachiStep
+<p align="center">
+  <img src="docs/images/hachistep.svg" alt="hachistep" width="480">
+</p>
 
-HachiStep is a Pokéwalker emulator written in Rust, built for hardware accuracy and
-fast execution of retail and custom firmware. It provides an embeddable core and a
-headless CLI for firmware development, scripted sessions, and benchmarking.
+# hachistep
 
-The project aims to make custom firmware development practical before flashing a
-physical device. Hardware fidelity and speed share one implementation. The
-[design goals](docs/DESIGN.md) describe that commitment.
+hachistep is an alpha Pokéwalker emulator core written in Rust. It aims to be accurate enough to the retail hardware to facilitate custom firmware development, and performant/efficient enough for everyday use.
 
-## Run firmware
+A frontend for hachistep is in the works. Until then, if you're a developer feel free to play around with it.
 
-Install Rust 1.95 or newer, then build:
+There's also [hachiware](https://github.com/lumirth/hachiware), hachistep's sister project which exists for end to end benchmarking, testing, evaluation, etc.
 
-```sh
-cargo build -p hs-cli --release --locked
-```
-
-Supply a raw 48 KiB firmware image and a 64 KiB EEPROM image:
-
-```sh
-./target/release/hachistep run --firmware firmware.bin --eeprom eeprom.bin \
-  --milliseconds 10000 --out out/session
-```
-
-Open `out/session/frame.pgm` to see the final display. The directory also contains
-persistent images, a resumable `state.bin`, and `report.json` with execution results.
-Use a new output directory for each run. Firmware and EEPROM images are supplied
-separately from this repository.
-
-Use `--input inputs.csv` for a scripted session. See
-[CLI inputs and outputs](docs/INPUTS.md) for the timeline format and
-[save states](docs/SAVE_STATES.md) to resume a session.
-
-## Embed the core
-
-`hs_core::Machine` accepts firmware, EEPROM, and timestamped physical inputs. The host
-chooses how far to run and receives timestamped output events. It can render display
-pixels and stream PCM audio through the same API.
-
-The [embedding guide](docs/API.md) covers construction, execution, display, audio and save states.
-
-## Develop and compare
-
-[Build instructions](docs/BUILD.md) cover development tools, tracing, and WebAssembly.
-[Behavioral validation](docs/TESTING.md) runs independent hardware diagnostics and
-complete firmware sessions. [Hachiware](https://github.com/lumirth/hachiware) compares
-conformance and per-workload speed against other emulators, including PocketWalker.
-
-The [hardware notes](docs/HARDWARE.md) collect source conflicts, assumptions, and
-remaining fidelity work relevant to firmware authors.
-
-[MIT license](LICENSE).
+[Embed the core](docs/API.md) · [Build](docs/BUILD.md)
