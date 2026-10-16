@@ -1,7 +1,7 @@
 //! Fixed board composition and execution to an exclusive time horizon.
 //!
 //! Retains partial CPU and serial work across caller horizons. Component timing
-//! rules and their evidence are indexed in docs/SOURCES.md.
+//! rules and their evidence are indexed in docs/sources.md.
 mod execution;
 mod serial;
 mod state;

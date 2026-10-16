@@ -1,6 +1,6 @@
 //! RTC and its alternate free-running counter. Busy entry and exit occur
 //! separately from the second rollover. The busy interval lasts 62.5 ms at
-//! the selected phase in docs/HARDWARE.md#live-reconfiguration-and-infrared.
+//! the selected phase in docs/hardware.md#reconfiguration-and-infrared.
 use super::clocks::{Clocks, Tap};
 use crate::{error::Error, time::Time};
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]

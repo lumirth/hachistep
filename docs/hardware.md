@@ -3,7 +3,7 @@
 Sometimes two descriptions of a part disagree. Sometimes a manual gives a range
 where a running model needs a value. These notes keep the reasoning behind those
 choices, so an unexpected result gives us somewhere useful to start investigating.
-The [references](SOURCES.md) identify the source editions.
+The [references](sources.md) identify the source editions.
 
 ## CPU and register behavior
 
@@ -64,7 +64,7 @@ interruption a repeatable result. Those particular bytes are a nominal predictio
 successful programming still follows the documented completion and verification
 procedures.
 
-A [save state](API.md#save-and-resume) preserves progress through a pulse. Persistent
+A [save state](api.md#save-and-resume) preserves progress through a pulse. Persistent
 image exports preserve the bytes reached at the observation time.
 
 ## Sensor
@@ -116,4 +116,4 @@ only a software sequence. Their reasoning belongs beside each affected mechanism
 
 Infrared input represents incident optical levels at specified times. The host defines
 the channel between devices and delivers those levels through the
-[connection API](API.md#connect-devices).
+[connection API](api.md#connect-devices).

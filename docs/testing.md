@@ -7,7 +7,7 @@ exposes a genuine behavioral gap.
 
 ## Check hardware behavior
 
-Build hachistep in release mode using the [build guide](BUILD.md). From the parent of
+Build hachistep in release mode using the [build guide](build.md). From the parent of
 that checkout, clone hachiware beside it and run the diagnostics:
 
 ```sh

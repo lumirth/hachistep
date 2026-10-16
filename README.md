@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="docs/images/hachistep.svg" alt="hachistep" width="480">
-</p>
+<img src="docs/images/icon.svg" alt="hachistep" width="128">
 
 # hachistep
 
@@ -10,4 +8,4 @@ A frontend for hachistep is in the works. Until then, if you're a developer feel
 
 There's also [hachiware](https://github.com/lumirth/hachiware), hachistep's sister project which exists for end to end benchmarking, testing, evaluation, etc.
 
-[Embed the core](docs/API.md) · [Build](docs/BUILD.md)
+[Embed the core](docs/api.md) · [Build](docs/build.md)

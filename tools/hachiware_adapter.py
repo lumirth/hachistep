@@ -28,7 +28,7 @@ SCALARS = (
     "display_on",
     "display_start",
 )
-# Nominal board parameters, documented in docs/HARDWARE.md.
+# Nominal board parameters, documented in docs/hardware.md.
 CONDITIONS = {
     "reset_resistance_ohms": 100000,
     "reset_capacitance_nf": 100,

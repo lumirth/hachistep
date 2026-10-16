@@ -1,5 +1,5 @@
 //! The common rail, RES capacitor and volatile-cell retention. See
-//! docs/HARDWARE.md#supply-and-battery-sensing for nominal component values.
+//! docs/hardware.md#supply-and-battery-sensing for nominal component values.
 use crate::{
     error::Error,
     time::{Duration, Time, TimeError},

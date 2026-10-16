@@ -3,7 +3,7 @@
 These are the sources behind the hardware model. Component manuals describe the
 parts, board reverse engineering shows how they connect, and the matching `pw`
 reconstruction shows how retail firmware uses them. When those descriptions disagree
-or leave a quantity open, the [hardware notes](HARDWARE.md) explain our interpretation.
+or leave a quantity open, the [hardware notes](hardware.md) explain our interpretation.
 
 | Reference | Use |
 | --- | --- |

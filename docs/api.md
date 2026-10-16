@@ -105,7 +105,7 @@ before an edit. Your application handles firmware-specific save layouts and chec
 For infrared connections, schedule each emission as input to its peer before that
 peer advances past the delivery timestamp. Use exact output stops to regain control
 at an emission.
-The [CLI's link command](CLI.md#connect-two-devices) provides a working implementation.
+The [CLI's link command](cli.md#connect-two-devices) provides a working implementation.
 
 Run `cargo doc -p hs-core --no-deps --open` for the API reference, including event
 handling, audio rendering, and physical conditions.
