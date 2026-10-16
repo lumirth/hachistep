@@ -101,4 +101,4 @@ jobs:
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
           test "$TAG" = "v$version"
           (cd out/release && sha256sum *.zip *.tar.gz > SHA256SUMS)
-          gh release create "$TAG" out/release/* --verify-tag --title "hachistep $version" --notes-file docs/release.md --prerelease
+          gh release create "$TAG" out/release/* --verify-tag --title "hachistep $version" --notes-file docs/release.md --latest

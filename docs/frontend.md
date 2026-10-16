@@ -48,9 +48,8 @@ Launch firmware and an EEPROM directly:
 cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked -- --firmware firmware.bin --eeprom alice.bin
 ```
 
-Core, CLI, runtime, and desktop use one release version. GitHub releases are marked
-as pre-releases while the project is in alpha. Build the CLI too before packaging
-the desktop download. Packaging requires Python 3.11 or newer:
+Core, CLI, runtime, and desktop use one release version. Build the CLI too before
+packaging the desktop download. Packaging requires Python 3.11 or newer:
 
 ```sh
 cargo build --release --locked -p hs-cli

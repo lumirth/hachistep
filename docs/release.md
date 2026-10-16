@@ -1,4 +1,4 @@
-The first hachistep desktop release, built with GPUI Kit.
+The first desktop release of hachistep. The project is in alpha development.
 
 - LCD player with native menus, keyboard and gamepad controls, and configurable palettes and margins.
 - Walking simulation, local infrared linking, and TCP connections to compatible emulators.
