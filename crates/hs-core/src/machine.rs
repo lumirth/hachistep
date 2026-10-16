@@ -252,6 +252,9 @@ impl Machine {
             .sensor
             .set_supply(board.power.rail, board.now, &mut ())?;
         board.lcd.set_supply(board.power.rail, board.now)?;
+        board
+            .lcd
+            .set_temperature(conditions.temperature_millicelsius);
         board.resolve_board(&mut ())?;
         board.refresh_deadline()?;
         Ok(Self {
@@ -356,9 +359,8 @@ impl Machine {
     pub fn display_enabled(&self) -> bool {
         self.board.lcd.enabled()
     }
-    /// Digital scan selection and polarity at the current observation point.
-    /// Includes PWM/FRC and the output latch; excludes drive-voltage amplitudes
-    /// and regulator, follower or glass behavior. This does not advance execution.
+    /// Scan selection, PWM/FRC latch and nominal electrode voltages at the
+    /// current observation point. This does not advance execution.
     pub fn display_drive(&self) -> Result<crate::LcdDrive, Error> {
         self.board.lcd.drive(self.board.observation_time())
     }
@@ -1291,6 +1293,7 @@ impl Board {
                 Input::TemperatureMillicelsius(v) => {
                     self.conditions.temperature_millicelsius = v;
                     self.sensor.set_temperature(v);
+                    self.lcd.set_temperature(v);
                 }
                 Input::InfraredLevel(v) => ir = Some(v),
                 Input::ResetPin(high) => reset = Some(high),

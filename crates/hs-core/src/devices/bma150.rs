@@ -401,7 +401,7 @@ impl Bma150 {
             self.sample_phase(now)?;
             cycle_ended = self.sample_clock.ordinal().is_multiple_of(4);
             if self.sample_clock.ordinal().is_multiple_of(12)
-                && (!self.automatic() || usize::from(self.auto_cycles) >= 2 * self.window())
+                && (!self.automatic() || usize::from(self.auto_cycles) >= self.acquisition_cycles())
             {
                 self.interrupts.millisecond(&self.registers);
             }
@@ -471,7 +471,7 @@ impl Bma150 {
             self.data_ready = true;
         }
         self.auto_cycles = self.auto_cycles.saturating_add(1);
-        let acquired = 2 * self.window();
+        let acquired = self.acquisition_cycles();
         if !self.automatic() || usize::from(self.auto_cycles) >= acquired {
             let interval = if self.automatic() && usize::from(self.auto_cycles) == acquired {
                 1

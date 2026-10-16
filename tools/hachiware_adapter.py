@@ -16,6 +16,8 @@ STORAGE = {
     "lcd": "lcd-ram.bin",
     "icons": "lcd-icons.bin",
     "pixels": "frame.pgm",
+    "lcd_supply": "lcd-supply.bin",
+    "lcd_drive": "lcd-drive.bin",
 }
 SCALARS = (
     "er0",
