@@ -45,4 +45,4 @@ python3 examples/desktop/package.py --out out/desktop
 
 This creates `hachistep.app` and its ZIP on macOS, or `hachistep.exe` on Windows.
 
-The example carries AccessKit 0.26.3 with the [KVO teardown fix](https://github.com/AccessKit/accesskit/pull/822) to prevent a macOS crash when closing a window after keyboard input.
+The example pins an AccessKit 0.26.3 [KVO teardown backport](https://github.com/lumirth/accesskit/commit/e09cf84b8e0af7659423e5b91eed41c5ac2dd693) to prevent a macOS crash when closing a window after keyboard input. [Issue #10](https://github.com/lumirth/hachistep/issues/10) tracks returning to a published release.

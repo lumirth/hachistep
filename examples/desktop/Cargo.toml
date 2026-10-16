@@ -3,7 +3,8 @@ members = ["crates/hs-runtime", "crates/hs-desktop"]
 resolver = "2"
 
 [patch.crates-io]
-accesskit_macos = { path = "patches/accesskit_macos" }
+# Preserve AppKit KVO subclasses during window teardown. Retire in #10.
+accesskit_macos = { git = "https://github.com/lumirth/accesskit", rev = "e09cf84b8e0af7659423e5b91eed41c5ac2dd693" }
 
 [workspace.package]
 version = "0.2.0-alpha.1"

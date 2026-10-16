@@ -39,6 +39,7 @@ dependencies = [
 [[package]]
 name = "accesskit_macos"
 version = "0.26.3"
+source = "git+https://github.com/lumirth/accesskit?rev=e09cf84b8e0af7659423e5b91eed41c5ac2dd693#e09cf84b8e0af7659423e5b91eed41c5ac2dd693"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
