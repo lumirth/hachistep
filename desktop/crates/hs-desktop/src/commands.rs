@@ -195,6 +195,14 @@ impl MenuState {
         item(name, intent).disabled(!self.ready)
     }
 
+    pub fn speeds(&self) -> [MenuItem; 7] {
+        [50, 75, 100, 150, 200, 400, 800].map(|percent| {
+            item(&format!("{percent}%"), Intent::Speed(percent))
+                .checked(percent == self.speed_percent)
+                .disabled(!self.ready || (percent != 100 && self.connected))
+        })
+    }
+
     fn playback(&self) -> [MenuItem; 2] {
         [
             self.active(if self.paused { "Resume" } else { "Pause" }, Intent::Pause),
@@ -348,13 +356,7 @@ impl MenuState {
             Menu::new("Emulation").items(
                 self.playback().into_iter().chain([
                     MenuItem::separator(),
-                    MenuItem::submenu(Menu::new("Speed").items(
-                        [50, 75, 100, 150, 200, 400, 800].map(|percent| {
-                            item(&format!("{percent}%"), Intent::Speed(percent))
-                                .checked(percent == self.speed_percent)
-                                .disabled(!ready || (percent != 100 && connected))
-                        }),
-                    )),
+                    MenuItem::submenu(Menu::new("Speed").items(self.speeds())),
                     self.active("Fast-forward", Intent::ToggleTurbo)
                         .checked(self.turbo)
                         .disabled(!ready || connected),
@@ -375,11 +377,12 @@ impl MenuState {
             Menu::new("View").items([
                 self.scale_menu(),
                 self.palette_menu(),
-                item("Fit Window to Display", Intent::Fit),
+                self.active("Fit Window to Display", Intent::Fit),
                 item("Fullscreen", Intent::Fullscreen),
                 MenuItem::separator(),
-                item("Show Status Bar", Intent::Status).checked(status),
-                item("Raw Drive", Intent::Raw).checked(raw),
+                self.active("Show Status Bar", Intent::Status)
+                    .checked(status),
+                self.active("Raw Drive", Intent::Raw).checked(raw),
             ]),
             Menu::new("Tools").items(tools),
             Menu::new("Help").items([

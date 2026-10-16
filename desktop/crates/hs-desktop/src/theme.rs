@@ -6,7 +6,7 @@ use gpui_kit::{
 pub(crate) const FONT_SIZE: Pixels = px(14.);
 
 pub(crate) fn status_height(rem: Pixels) -> Pixels {
-    rem * 1.5
+    rem * 2.
 }
 
 pub(crate) fn menu_height(rem: Pixels) -> Pixels {

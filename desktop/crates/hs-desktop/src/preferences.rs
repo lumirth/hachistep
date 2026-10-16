@@ -17,6 +17,9 @@ use gpui_kit::{
     *,
 };
 
+const WIDTH: f32 = 460.;
+const HEIGHT: f32 = 420.;
+
 pub(crate) fn open(cx: &mut App) {
     cx.defer(|cx| open_section(None, cx));
 }
@@ -30,14 +33,6 @@ fn open_section(section: Option<Section>, cx: &mut App) {
                 let _ = view.update(cx, |view, cx| {
                     if let Some(section) = section {
                         view.section = section;
-                        window.resize(size(
-                            px(crate::palettes::WIDTH),
-                            px(if section == Section::Appearance {
-                                view.palettes.read(cx).height()
-                            } else {
-                                section.height()
-                            }),
-                        ));
                     }
                     view.capture = None;
                     cx.notify();
@@ -53,7 +48,7 @@ fn open_section(section: Option<Section>, cx: &mut App) {
         [Section::Appearance, Section::Controls, Section::Emulation]
             [cx.global::<Desktop>().preferences.settings_page.min(2)],
     );
-    let mut options = crate::options("Settings", crate::palettes::WIDTH, section.height());
+    let mut options = crate::options("Settings", WIDTH, HEIGHT);
     options.is_resizable = false;
     options.window_min_size = None;
     match gpui_kit::open_window(options, cx, |window, cx| {
@@ -73,13 +68,6 @@ enum Section {
     Emulation,
 }
 impl Section {
-    fn height(self) -> f32 {
-        match self {
-            Self::Emulation => 400.,
-            Self::Appearance => crate::palettes::HEIGHT,
-            Self::Controls => 420.,
-        }
-    }
     fn name(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
@@ -153,7 +141,21 @@ impl Settings {
         }
     }
     fn update(&mut self, change: impl FnOnce(&mut Preferences), cx: &mut Context<Self>) {
+        let previous = cx.global::<Desktop>().preferences.turbo;
         change(&mut cx.global_mut::<Desktop>().preferences);
+        let rate = cx.global::<Desktop>().preferences.turbo;
+        if previous != rate {
+            for view in cx
+                .global::<Desktop>()
+                .windows
+                .iter()
+                .filter_map(|window| window.view.upgrade())
+            {
+                view.read(cx)
+                    .player()
+                    .send(hs_runtime::Command::TurboRate(rate));
+            }
+        }
         crate::save_preferences(cx);
         cx.refresh_windows();
         cx.notify();
@@ -468,14 +470,8 @@ impl Render for Settings {
                     .unwrap_or(0),
             )
             .children(sections.map(|section| Tab::new().label(section.name()).flex_1()))
-            .on_click(cx.listener(move |view, ix: &usize, window, cx| {
+            .on_click(cx.listener(move |view, ix: &usize, _, cx| {
                 view.section = sections[*ix];
-                let height = if view.section == Section::Appearance {
-                    view.palettes.read(cx).height()
-                } else {
-                    view.section.height()
-                };
-                window.resize(size(px(crate::palettes::WIDTH), px(height)));
                 view.update(|preferences| preferences.settings_page = *ix, cx);
                 view.capture = None;
                 view.error = None;
@@ -506,12 +502,7 @@ impl Render for Settings {
             }))
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
-                    if view.capture.take().is_none()
-                        && !(view.section == Section::Appearance
-                            && view
-                                .palettes
-                                .update(cx, |palette, cx| palette.cancel(window, cx)))
-                    {
+                    if view.capture.take().is_none() {
                         window.remove_window();
                     }
                     cx.notify();

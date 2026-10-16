@@ -18,6 +18,11 @@ use player::PlayerView;
 use settings::Preferences;
 use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::Sender};
 
+gpui_kit::assets::icon_assets!(
+    DesktopIcons,
+    [Clock3, Save, Footprints, Radio, Network, Gauge]
+);
+
 struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
@@ -28,11 +33,16 @@ impl AssetSource for Assets {
             "icon.png" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
                 "../../../../assets/icons/macos/icon.png"
             )))),
-            _ => gpui_kit::assets::Assets.load(path),
+            _ => match DesktopIcons.load(path)? {
+                Some(icon) => Ok(Some(icon)),
+                None => gpui_kit::assets::Assets.load(path),
+            },
         }
     }
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        gpui_kit::assets::Assets.list(path)
+        let mut paths = gpui_kit::assets::Assets.list(path)?;
+        paths.extend(DesktopIcons.list(path)?);
+        Ok(paths)
     }
 }
 

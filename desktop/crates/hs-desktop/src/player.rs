@@ -6,11 +6,11 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        button::{Button, ButtonVariants},
+        button::{Button, ButtonRounded, ButtonVariants},
         checkbox::Checkbox,
         menu::AppMenuBar,
         status_bar::StatusBar,
-        v_flex, ActiveTheme, Sizable, WindowExt,
+        v_flex, ActiveTheme, Disableable, Sizable, WindowExt,
     },
     prelude::*,
     *,
@@ -69,6 +69,13 @@ pub(crate) struct PlayerView {
     menu_bar: Entity<AppMenuBar>,
     closing: Closing,
     _subscriptions: Vec<Subscription>,
+}
+
+fn status_button(id: &'static str) -> Button {
+    Button::new(id)
+        .xsmall()
+        .ghost()
+        .rounded(ButtonRounded::Small)
 }
 
 impl PlayerView {
@@ -256,7 +263,13 @@ impl PlayerView {
                     bounds.origin.x.into(),
                     bounds.origin.y.into(),
                     bounds.size.width.into(),
-                    bounds.size.height.into(),
+                    (bounds.size.height
+                        - if self.status {
+                            theme::status_height(window.rem_size())
+                        } else {
+                            px(0.)
+                        })
+                    .into(),
                 ]);
                 crate::save_preferences(cx);
             }
@@ -1130,22 +1143,19 @@ impl PlayerView {
                         .on_click(cx.listener(|view, _, window, cx| {
                             view.execute(Intent::OpenFirmware, window, cx)
                         })),
-                )
-                .when(
-                    !cx.global::<Desktop>().preferences.recent.is_empty()
-                        || !cx
-                            .global::<Desktop>()
-                            .preferences
-                            .recent_firmware
-                            .is_empty(),
-                    |root| {
-                        root.child(Button::new("recent").w_48().label("Open Recent…").on_click(
-                            cx.listener(|view, _, window, cx| {
-                                view.execute(Intent::Recents, window, cx)
-                            }),
-                        ))
-                    },
                 );
+        }
+        if self.pending.is_none()
+            && (!cx.global::<Desktop>().preferences.recent.is_empty()
+                || !cx
+                    .global::<Desktop>()
+                    .preferences
+                    .recent_firmware
+                    .is_empty())
+        {
+            content = content.child(Button::new("recent").w_48().label("Open Recent").on_click(
+                cx.listener(|view, _, window, cx| view.execute(Intent::Recents, window, cx)),
+            ));
         }
         content.into_any_element()
     }
@@ -1223,15 +1233,17 @@ impl Render for PlayerView {
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| view.focus.focus(window, cx)),
                     )
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(|view, event: &MouseDownEvent, window, cx| {
-                            view.release();
-                            view.focus.focus(window, cx);
-                            let items = view.menu(cx).context();
-                            commands::native(items).show(event.position, window, cx);
-                        }),
-                    )
+                    .when(loaded, |display| {
+                        display.on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(|view, event: &MouseDownEvent, window, cx| {
+                                view.release();
+                                view.focus.focus(window, cx);
+                                let items = view.menu(cx).context();
+                                commands::native(items).show(event.position, window, cx);
+                            }),
+                        )
+                    })
                     .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                         if !event.is_held
                             && !event.keystroke.modifiers.platform
@@ -1248,15 +1260,8 @@ impl Render for PlayerView {
             )
             .when(self.status, |root| {
                 let frame = &self.presentation;
-                let state = if !loaded {
-                    String::new()
-                } else if frame.paused {
-                    "Paused".into()
-                } else if frame.turbo {
-                    "Fast-forward".into()
-                } else {
-                    format!("{}%", frame.speed_percent)
-                };
+                let compact = window.viewport_size().width < window.rem_size() * 20.;
+                let indicators = window.viewport_size().width >= window.rem_size() * 12.;
                 let connection = frame
                     .peer
                     .and_then(|id| {
@@ -1288,14 +1293,138 @@ impl Render for PlayerView {
                 } else {
                     String::new()
                 };
+                let percent = if frame.turbo {
+                    cx.global::<Desktop>().preferences.turbo
+                } else {
+                    frame.speed_percent
+                };
+                let pause = if frame.paused { "Resume" } else { "Pause" };
+                let state = if frame.paused {
+                    "Paused"
+                } else if frame.turbo {
+                    "Fast-forward"
+                } else {
+                    ""
+                };
                 root.child(
                     StatusBar::new()
                         .h(theme::status_height(window.rem_size()))
                         .flex_shrink_0()
+                        .px_3()
                         .py_0()
-                        .left(state)
-                        .child(pace)
-                        .right(connection),
+                        .when(loaded, |bar| {
+                            bar.left(
+                                status_button("status-pause")
+                                    .icon(if frame.paused {
+                                        gpui_kit::assets::IconName::Play
+                                    } else {
+                                        gpui_kit::assets::IconName::Pause
+                                    })
+                                    .accessibility_label(pause)
+                                    .tooltip(pause)
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.execute(Intent::Pause, window, cx)
+                                    })),
+                            )
+                            .when(!compact, |bar| {
+                                bar.left(
+                                    component::h_flex()
+                                        .gap_1()
+                                        .id("emulated-time")
+                                        .role(Role::Label)
+                                        .aria_label(format!(
+                                            "Emulated time {}",
+                                            crate::tools::elapsed(frame.time.raw())
+                                        ))
+                                        .font_family("monospace")
+                                        .child(
+                                            component::Icon::new(
+                                                gpui_kit::assets::IconName::Clock3,
+                                            )
+                                            .xsmall(),
+                                        )
+                                        .child(crate::tools::elapsed(frame.time.raw())),
+                                )
+                            })
+                            .when(!compact && !state.is_empty(), |bar| bar.left(state))
+                            .when(indicators && frame.modified, |bar| {
+                                bar.right(
+                                    status_button("status-save")
+                                        .icon(gpui_kit::assets::IconName::Save)
+                                        .accessibility_label("Save EEPROM")
+                                        .tooltip("Unsaved EEPROM changes")
+                                        .disabled(frame.saving)
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.execute(Intent::SaveEeprom, window, cx)
+                                        })),
+                                )
+                            })
+                            .when(indicators && frame.walking, |bar| {
+                                bar.right(
+                                    status_button("status-walking")
+                                        .icon(gpui_kit::assets::IconName::Footprints)
+                                        .accessibility_label("Walking Simulation")
+                                        .tooltip(format!("Walking · {}/min", frame.cadence))
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            view.execute(
+                                                Intent::Tool(crate::tools::Kind::Motion),
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                            })
+                            .when(indicators && !connection.is_empty(), |bar| {
+                                bar.right(
+                                    status_button("status-connection")
+                                        .icon(if frame.peer.is_some() {
+                                            gpui_kit::assets::IconName::Radio
+                                        } else {
+                                            gpui_kit::assets::IconName::Network
+                                        })
+                                        .accessibility_label(connection.clone())
+                                        .when(
+                                            !compact
+                                                && frame.connection
+                                                    != hs_runtime::Connection::Connected
+                                                && frame.peer.is_none(),
+                                            |button| button.label(frame.connection_name()),
+                                        )
+                                        .tooltip(connection)
+                                        .on_click(cx.listener(|view, _, window, cx| {
+                                            let kind = if view.presentation.peer.is_some() {
+                                                crate::tools::Kind::Link
+                                            } else {
+                                                crate::tools::Kind::Tcp
+                                            };
+                                            view.execute(Intent::Tool(kind), window, cx)
+                                        })),
+                                )
+                            })
+                            .when(!compact && !pace.is_empty(), |bar| bar.right(pace))
+                            .right(
+                                status_button("status-speed")
+                                    .when(!compact, |button| {
+                                        button
+                                            .icon(gpui_kit::assets::IconName::Gauge)
+                                            .dropdown_caret(true)
+                                    })
+                                    .label(format!("{percent}%"))
+                                    .w(if compact { rems(3.5) } else { rems(5.) })
+                                    .font_family("monospace")
+                                    .accessibility_label("Emulation speed")
+                                    .tooltip("Speed")
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.release();
+                                        view.focus.focus(window, cx);
+                                        commands::native(view.menu(cx).speeds()).show(
+                                            window.mouse_position(),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        }),
                 )
             })
     }

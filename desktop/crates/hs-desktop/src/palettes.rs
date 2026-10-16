@@ -5,7 +5,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        button::{Button, ButtonVariants},
+        button::Button,
         color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
         dialog::DialogButtonProps,
         h_flex,
@@ -20,12 +20,7 @@ use gpui_kit::{
     *,
 };
 
-pub(crate) const WIDTH: f32 = 460.;
-pub(crate) const HEIGHT: f32 = 300.;
-const EDITOR_HEIGHT: f32 = 430.;
-
 pub(crate) struct Editor {
-    editing: bool,
     selection: Entity<SelectState<Choices>>,
     focus: FocusHandle,
     draft: Palette,
@@ -193,7 +188,6 @@ impl Editor {
             ));
         }
         Self {
-            editing: false,
             selection,
             focus: cx.focus_handle().tab_stop(true),
             draft,
@@ -204,23 +198,6 @@ impl Editor {
             margin,
             error: None,
             _subscriptions: subscriptions,
-        }
-    }
-    pub fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if !self.editing {
-            return false;
-        }
-        self.editing = false;
-        window.resize(size(px(WIDTH), px(HEIGHT)));
-        self.focus.focus(window, cx);
-        cx.notify();
-        true
-    }
-    pub fn height(&self) -> f32 {
-        if self.editing {
-            EDITOR_HEIGHT
-        } else {
-            HEIGHT
         }
     }
     fn changed(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -259,17 +236,31 @@ impl Editor {
         self.name
             .update(cx, |input, cx| input.set_value(name, window, cx));
         self.error = None;
-        self.editing = true;
         self.sync(window, cx);
-        window.resize(size(px(WIDTH), px(EDITOR_HEIGHT)));
+        self.focus.focus(window, cx);
+        let owner = cx.entity();
+        let form = cx.new(|cx| Form {
+            owner: owner.clone(),
+            _subscription: cx.observe(&owner, |_, _, cx| cx.notify()),
+        });
+        window.open_alert_dialog(cx, move |dialog, window, _| {
+            let owner = owner.clone();
+            dialog
+                .title("Edit Palette")
+                .width(window.rem_size() * 26.)
+                .child(form.clone())
+                .confirm()
+                .button_props(DialogButtonProps::default().ok_text("Save"))
+                .on_ok(move |_, window, cx| owner.update(cx, |view, cx| view.save(window, cx)))
+        });
         cx.notify();
     }
-    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let name = self.name.read(cx).value().trim().to_string();
         if name.contains(['|', '\n', '\r']) {
             self.error = Some("Choose a name without | or line breaks.".into());
             cx.notify();
-            return;
+            return false;
         }
         let p = &mut cx.global_mut::<Desktop>().preferences;
         if !name.is_empty()
@@ -279,7 +270,7 @@ impl Editor {
         {
             self.error = Some("A palette with this name already exists.".into());
             cx.notify();
-            return;
+            return false;
         }
         if name.is_empty() {
             p.edit_palette(self.draft);
@@ -305,10 +296,9 @@ impl Editor {
             }
             p.select_palette(&id);
         }
-        self.editing = false;
-        window.resize(size(px(WIDTH), px(HEIGHT)));
         self.focus.focus(window, cx);
         self.changed(window, cx);
+        true
     }
     fn import(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
@@ -390,7 +380,7 @@ impl Editor {
                 })
         });
     }
-    fn appearance(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn appearance(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = cx.global::<Desktop>().preferences.clone();
         let owner = cx.weak_entity();
         let saved = p.palettes.iter().any(|saved| saved.id == p.palette_id);
@@ -430,7 +420,11 @@ impl Editor {
                                 .small()
                                 .flex_1()
                                 .accessibility_label("Palette")
-                                .menu_max_h(rems(18.)),
+                                .menu_max_h(
+                                    (window.viewport_size().height - component::TITLE_BAR_HEIGHT)
+                                        / 2.
+                                        - window.rem_size() * 2.,
+                                ),
                         )
                         .child(
                             Button::new("edit-palette")
@@ -499,35 +493,13 @@ impl Editor {
             ("Foreground", 3),
         ];
         v_flex()
-            .gap_5()
+            .gap_4()
             .child(
                 h_flex()
-                    .justify_between()
-                    .gap_3()
-                    .child("Edit palette")
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("cancel-palette")
-                                    .small()
-                                    .label("Cancel")
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.cancel(window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("save-palette")
-                                    .small()
-                                    .primary()
-                                    .label("Save")
-                                    .on_click(
-                                        cx.listener(|view, _, window, cx| view.save(window, cx)),
-                                    ),
-                            ),
-                    ),
+                    .gap_4()
+                    .child("Name")
+                    .child(Input::new(&self.name).flex_1()),
             )
-            .child(v_flex().gap_2().child("Name").child(Input::new(&self.name)))
             .child(
                 TabBar::new("palette-color-mode")
                     .segmented()
@@ -554,7 +526,7 @@ impl Editor {
                         .into_iter()
                         .filter(|(_, ix)| four || *ix == 0 || *ix == 3)
                         .map(|(label, ix)| {
-                            v_flex().gap_2().child(label).child(
+                            v_flex().items_start().gap_2().child(label).child(
                                 ColorPicker::new(&self.colors[ix])
                                     .label(format!("#{:06X}", self.draft.shades()[ix]))
                                     .small()
@@ -574,14 +546,20 @@ impl Editor {
     }
 }
 impl Render for Editor {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("palette-editor")
             .track_focus(&self.focus)
-            .child(if self.editing {
-                self.form(cx)
-            } else {
-                self.appearance(cx)
-            })
+            .child(self.appearance(window, cx))
+    }
+}
+
+struct Form {
+    owner: Entity<Editor>,
+    _subscription: Subscription,
+}
+impl Render for Form {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.owner.update(cx, |view, cx| view.form(cx))
     }
 }
