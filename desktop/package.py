@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import plistlib
 import shutil
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
@@ -32,6 +33,7 @@ def main():
                 "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "1",
                 "NSHighResolutionCapable": True,
             }, file)
+        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(contents.parent)], check=True)
         shutil.make_archive(str(out / "hachistep-macos"), "zip", out, "hachistep.app")
     elif sys.platform == "win32":
         shutil.copy2(args.binary or ROOT / "target/release/hs-desktop.exe", out / "hachistep.exe")
