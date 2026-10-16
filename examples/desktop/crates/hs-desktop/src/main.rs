@@ -30,7 +30,6 @@ impl AssetSource for Assets {
 struct OpenWindow {
     handle: AnyWindowHandle,
     view: WeakEntity<PlayerView>,
-    name: String,
 }
 struct Desktop {
     runtime: Runtime,
@@ -72,7 +71,6 @@ fn create_window(cx: &mut App, pair: Option<settings::Recent>) {
             cx.global_mut::<Desktop>().windows.push(OpenWindow {
                 handle,
                 view: view.downgrade(),
-                name: "hachistep".into(),
             });
             if let Some(pair) = pair {
                 view.update(cx, |view, cx| view.open_pair(pair, false, cx));
@@ -109,14 +107,14 @@ fn close_players(cx: &mut App) {
 
 fn main() {
     let mut firmware = None;
-    let mut save = None;
+    let mut eeprom = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(argument) = args.next() {
         match argument.to_str() {
             Some("--firmware") => firmware = args.next().map(PathBuf::from),
-            Some("--save") => save = args.next().map(PathBuf::from),
+            Some("--eeprom") => eeprom = args.next().map(PathBuf::from),
             Some("--help") => {
-                println!("hachistep-desktop [--firmware FILE --save FILE]");
+                println!("hachistep [--firmware FILE --eeprom FILE]");
                 return;
             }
             _ => {
@@ -125,11 +123,11 @@ fn main() {
             }
         }
     }
-    let pair = match (firmware, save) {
-        (Some(firmware), Some(save)) => Some(settings::Recent { firmware, save }),
+    let pair = match (firmware, eeprom) {
+        (Some(firmware), Some(eeprom)) => Some(settings::Recent { firmware, eeprom }),
         (None, None) => None,
         _ => {
-            eprintln!("Use --firmware and --save together.");
+            eprintln!("Use --firmware and --eeprom together.");
             std::process::exit(2);
         }
     };
@@ -175,7 +173,7 @@ fn main() {
                 false,
                 4,
                 &cx.global::<Desktop>().preferences.recent,
-                &cx.global::<Desktop>().windows,
+                1,
             ));
             cx.on_action(|action: &commands::Invoke, cx| match action.intent {
                 commands::Intent::NewWindow => new_window(cx, None),

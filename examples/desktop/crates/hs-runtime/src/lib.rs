@@ -2,17 +2,20 @@ mod files;
 mod motion;
 mod optical;
 mod sound;
+mod state;
 mod storage;
 mod tcp;
 
 use anyhow::{ensure, Context, Result};
-use files::{Capture, Job, PendingSession, Reply, SavedSession};
+use files::{Job, Reply};
 pub use gilrs::Button as GamepadButton;
 pub use hs_core::Buttons;
-use hs_core::{Audio, Event, Input, Machine, Output, Snapshot, Time, TimedInput};
+use hs_core::{Audio, Event, Input, Machine, Output, Time, TimedInput};
 use motion::Motion;
 use optical::{Edge, Link};
 use sound::{Samples, Sound};
+pub use state::slot_path;
+use state::{PendingSession, RestorePoint};
 use std::{
     collections::{BTreeMap, VecDeque},
     ops::ControlFlow,
@@ -96,7 +99,7 @@ pub enum Command {
     Attach(Arc<Mutex<Presentation>>),
     Open {
         firmware: PathBuf,
-        save: PathBuf,
+        eeprom: PathBuf,
         create: bool,
     },
     Buttons(Buttons),
@@ -105,6 +108,7 @@ pub enum Command {
     Pause,
     Reset,
     Turbo(bool),
+    ToggleTurbo,
     Speed(u16),
     TurboRate(u16),
     Walking(bool),
@@ -112,10 +116,10 @@ pub enum Command {
     Mute(bool),
     RetryAudio,
     GamepadMapping([gilrs::Button; 3]),
-    SaveAs(PathBuf),
-    Export(PathBuf),
+    SaveEepromAs(PathBuf),
     SaveState(PathBuf),
     LoadState(PathBuf),
+    UndoLoadState,
     WriteFile {
         path: PathBuf,
         bytes: Vec<u8>,
@@ -140,6 +144,8 @@ pub struct Presentation {
     pub ready: bool,
     pub loading: bool,
     pub paused: bool,
+    pub can_undo: bool,
+    pub slots: [bool; 10],
     pub walking: bool,
     pub cadence: u16,
     pub muted: bool,
@@ -147,12 +153,12 @@ pub struct Presentation {
     pub speed_percent: u16,
     pub turbo: bool,
     pub time: Time,
-    pub save: Option<PathBuf>,
+    pub eeprom: Option<PathBuf>,
     pub firmware: String,
     pub peer: Option<Id>,
     pub connection: Connection,
     pub saving: bool,
-    pub save_error: Option<String>,
+    pub eeprom_error: Option<String>,
     pub error: Option<String>,
     pub audio_error: Option<String>,
     pub closing: bool,
@@ -167,6 +173,8 @@ impl Default for Presentation {
             ready: false,
             loading: false,
             paused: false,
+            can_undo: false,
+            slots: [false; 10],
             walking: false,
             cadence: 120,
             muted: false,
@@ -174,16 +182,26 @@ impl Default for Presentation {
             speed_percent: 100,
             turbo: false,
             time: Time::ZERO,
-            save: None,
+            eeprom: None,
             firmware: String::new(),
             peer: None,
             connection: Connection::Disconnected,
             saving: false,
-            save_error: None,
+            eeprom_error: None,
             error: None,
             audio_error: None,
             closing: false,
             closed: false,
+        }
+    }
+}
+
+impl Presentation {
+    pub fn connection_name(&self) -> String {
+        if self.peer.is_some() {
+            "Local link".into()
+        } else {
+            self.connection.to_string()
         }
     }
 }
@@ -200,6 +218,7 @@ struct Session {
     inputs: VecDeque<TimedInput>,
     paused: bool,
     fast: bool,
+    turbo_toggle: bool,
     speed_percent: u16,
     turbo_percent: u16,
     muted: bool,
@@ -234,6 +253,7 @@ impl Session {
             inputs: VecDeque::new(),
             paused: false,
             fast: false,
+            turbo_toggle: false,
             speed_percent: 100,
             turbo_percent: 400,
             muted: false,
@@ -366,7 +386,7 @@ impl Session {
         }
         Ok(sink.edges)
     }
-    fn save(&self) -> PendingSession {
+    fn capture_state(&self) -> PendingSession {
         PendingSession {
             firmware: storage::hash(&self.firmware),
             snapshot: self.machine.snapshot(),
@@ -375,13 +395,14 @@ impl Session {
             reset_release: self.reset_release,
         }
     }
-    fn restore(&mut self, saved: SavedSession, rate: u32, linked: bool) -> Result<()> {
-        self.machine = Machine::from_snapshot(&Snapshot::decode(&saved.machine)?);
+    fn restore(&mut self, saved: PendingSession, rate: u32, linked: bool) -> Result<()> {
+        self.machine = Machine::from_snapshot(&saved.snapshot);
         self.motion = saved.motion;
         self.next_motion = saved.next_motion;
         self.reset_release = saved.reset_release;
         self.paused = true;
         self.fast = false;
+        self.turbo_toggle = false;
         self.inputs.clear();
         self.keyboard = Buttons::RELEASED;
         self.gamepads.clear();
@@ -437,6 +458,7 @@ struct Worker {
     views: BTreeMap<Id, Arc<Mutex<Presentation>>>,
     sessions: BTreeMap<Id, Session>,
     links: Vec<Link>,
+    undos: BTreeMap<Id, RestorePoint>,
     jobs: files::Files,
     replies: Receiver<Reply>,
     sound: Sound,
@@ -455,6 +477,7 @@ impl Worker {
             views: BTreeMap::new(),
             sessions: BTreeMap::new(),
             links: Vec::new(),
+            undos: BTreeMap::new(),
             sound: Sound::new(),
             gamepads: gilrs::Gilrs::new().ok(),
             mapping: [
@@ -506,6 +529,7 @@ impl Worker {
                 for session in self.sessions.values_mut() {
                     session.release();
                     session.fast = false;
+                    session.turbo_toggle = false;
                     session.reanchor();
                     let _ = session.clear_audio(self.sound.rate);
                 }
@@ -540,12 +564,12 @@ impl Worker {
             }
             Command::Open {
                 firmware,
-                save,
+                eeprom,
                 create,
             } => {
                 ensure!(
                     !self.sessions.contains_key(&id),
-                    "Close the current save before opening another"
+                    "Close the current EEPROM before opening another"
                 );
                 self.view(id, |view| {
                     view.loading = true;
@@ -554,7 +578,7 @@ impl Worker {
                 self.jobs.send(Job::Open {
                     id,
                     firmware,
-                    save,
+                    eeprom,
                     create,
                 })?;
                 return Ok(());
@@ -586,30 +610,18 @@ impl Worker {
                 self.jobs.send(Job::Write { id, path, bytes })?;
                 return Ok(());
             }
+            Command::UndoLoadState => {
+                self.undo_load(id)?;
+                self.view(id, |view| view.error = None);
+                return Ok(());
+            }
             Command::SaveState(path) => {
-                let link = self
-                    .links
-                    .iter()
-                    .find(|link| link.ids.contains(&id))
-                    .cloned();
-                let ids = link
-                    .as_ref()
-                    .map(|l| l.ids.to_vec())
-                    .unwrap_or_else(|| vec![id]);
-                let sessions = ids
-                    .iter()
-                    .map(|id| {
-                        self.sessions
-                            .get(id)
-                            .context("Open firmware first")
-                            .map(Session::save)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let point = self.capture_point(id)?;
                 self.jobs.send(Job::Capture {
                     id,
                     path,
-                    sessions,
-                    link,
+                    sessions: point.sessions.into_iter().map(|(_, saved)| saved).collect(),
+                    link: point.link,
                 })?;
                 return Ok(());
             }
@@ -640,7 +652,11 @@ impl Worker {
                 }
                 return Ok(());
             }
-            Command::Pause | Command::Turbo(_) | Command::Speed(_) | Command::TurboRate(_) => {
+            Command::Pause
+            | Command::Turbo(_)
+            | Command::ToggleTurbo
+            | Command::Speed(_)
+            | Command::TurboRate(_) => {
                 let ids = self
                     .links
                     .iter()
@@ -658,6 +674,7 @@ impl Worker {
                             Command::Pause => {
                                 session.paused = !paused;
                                 session.fast = false;
+                                session.turbo_toggle = false;
                                 session.release();
                             }
                             Command::Turbo(fast) => {
@@ -666,7 +683,15 @@ impl Worker {
                                         || !session.tcp.as_ref().is_some_and(|tcp| tcp.connected()),
                                     "Turbo is unavailable during TCP connections"
                                 );
-                                session.fast = fast;
+                                session.fast = fast || session.turbo_toggle;
+                            }
+                            Command::ToggleTurbo => {
+                                ensure!(
+                                    !session.tcp.as_ref().is_some_and(|tcp| tcp.connected()),
+                                    "Fast-forward is unavailable during TCP connections"
+                                );
+                                session.turbo_toggle = !session.turbo_toggle;
+                                session.fast = session.turbo_toggle;
                             }
                             Command::Speed(percent) => {
                                 ensure!(
@@ -679,6 +704,8 @@ impl Worker {
                                     "TCP connections require 100% speed"
                                 );
                                 session.speed_percent = percent;
+                                session.fast = false;
+                                session.turbo_toggle = false;
                             }
                             Command::TurboRate(percent) => {
                                 ensure!(
@@ -695,7 +722,10 @@ impl Worker {
                 }
                 return Ok(());
             }
-            Command::Reset | Command::Tcp { .. } => self.disconnect(id)?,
+            Command::Reset | Command::Tcp { .. } => {
+                self.forget_undo(id);
+                self.disconnect(id)?;
+            }
             _ => (),
         }
         let session = self.sessions.get_mut(&id).context("Open firmware first")?;
@@ -713,6 +743,8 @@ impl Worker {
             }
             Command::Reset => {
                 session.release();
+                session.fast = false;
+                session.turbo_toggle = false;
                 let now = session.machine.now();
                 session.reset_release = None;
                 session.advance(
@@ -740,30 +772,23 @@ impl Worker {
                 session.muted = muted;
                 session.clear_audio(self.sound.rate)?;
             }
-            Command::SaveAs(path) => {
+            Command::SaveEepromAs(path) => {
                 ensure!(
                     !session.saving,
-                    "A save is in progress. Try Save Data As again when it finishes"
+                    "EEPROM programming is in progress. Try Save EEPROM As again when it finishes"
                 );
                 session.saving = true;
-                self.jobs.send(Job::SaveAs {
+                self.jobs.send(Job::SaveEepromAs {
                     id,
                     path,
                     image: session.image(),
                 })?;
                 session.dirty = false;
             }
-            Command::Export(path) => {
-                self.jobs.send(Job::Write {
-                    id,
-                    path,
-                    bytes: session.machine.eeprom().to_vec(),
-                })?;
-            }
             Command::RetrySave => {
                 session.dirty = true;
                 session.last_flush = Instant::now() - Duration::from_secs(2);
-                self.view(id, |view| view.save_error = None);
+                self.view(id, |view| view.eeprom_error = None);
             }
             Command::Tcp {
                 address,
@@ -771,6 +796,7 @@ impl Worker {
                 allow_remote,
             } => {
                 session.fast = false;
+                session.turbo_toggle = false;
                 session.speed_percent = 100;
                 session.reanchor();
                 session.clear_audio(self.sound.rate)?;
@@ -812,6 +838,7 @@ impl Worker {
             let session = self.sessions.get_mut(&id).unwrap();
             session.paused = paused;
             session.fast = false;
+            session.turbo_toggle = false;
             session.speed_percent = speed;
             session.turbo_percent = turbo;
             session.reanchor();
@@ -854,6 +881,7 @@ impl Worker {
                 machine,
                 firmware,
                 path,
+                slots,
             } => {
                 let identity = storage::hash(&firmware)
                     .iter()
@@ -865,7 +893,8 @@ impl Worker {
                         self.view(id, |view| {
                             view.ready = true;
                             view.loading = false;
-                            view.save = Some(path);
+                            view.eeprom = Some(path);
+                            view.slots = slots;
                             view.firmware = identity;
                         });
                     }
@@ -875,16 +904,21 @@ impl Worker {
                     }),
                 }
             }
-            Reply::Saved { id, path } => {
+            Reply::Saved { id, path, slots } => {
                 if let Some(session) = self.sessions.get_mut(&id) {
                     session.saving = false;
                     session.last_flush = Instant::now();
                 }
                 self.view(id, |view| {
-                    view.save = Some(path);
-                    view.save_error = None;
+                    view.eeprom = Some(path);
+                    view.slots = slots;
+                    view.eeprom_error = None;
                 });
             }
+            Reply::StateWritten { id, slots } => self.view(id, |view| {
+                view.slots = slots;
+                view.error = None;
+            }),
             Reply::Written(id) => self.view(id, |view| view.error = None),
             Reply::Failed {
                 id,
@@ -892,7 +926,7 @@ impl Worker {
                 error,
             } => {
                 if let Some(session) = self.sessions.get_mut(&id) {
-                    if operation == "Save data" {
+                    if operation == "EEPROM" {
                         session.saving = false;
                         session.dirty = true;
                         session.closing = false;
@@ -900,14 +934,15 @@ impl Worker {
                 }
                 self.view(id, |view| {
                     view.loading = false;
-                    if operation == "Save data" {
-                        view.save_error = Some(error);
+                    if operation == "EEPROM" {
+                        view.eeprom_error = Some(error);
                     } else {
                         view.error = Some(error);
                     }
                 });
             }
             Reply::Closed(id) => {
+                self.forget_undo(id);
                 self.sessions.remove(&id);
                 self.sound.remove(id);
                 self.view(id, |view| {
@@ -917,57 +952,13 @@ impl Worker {
                 self.views.remove(&id);
             }
             Reply::Loaded { id, capture } => {
-                if let Err(error) = self.restore(id, capture) {
-                    self.view(id, |view| view.error = Some(format!("{error:#}")));
-                }
+                let error = self
+                    .restore(id, capture)
+                    .err()
+                    .map(|error| format!("{error:#}"));
+                self.view(id, |view| view.error = error);
             }
         }
-    }
-    fn restore(&mut self, id: Id, mut capture: Capture) -> Result<()> {
-        let ids = if capture.sessions.len() == 2 {
-            self.links
-                .iter()
-                .find(|l| l.ids.contains(&id))
-                .context("Connect the two players before loading their linked state")?
-                .ids
-                .to_vec()
-        } else {
-            vec![id]
-        };
-        for (&id, saved) in ids.iter().zip(&capture.sessions) {
-            let session = self.sessions.get(&id).context("Player closed")?;
-            ensure!(
-                storage::hash(&session.firmware) == saved.firmware,
-                "Save state belongs to different firmware"
-            );
-        }
-        if let Some(link) = &mut capture.link {
-            for (side, saved) in capture.sessions.iter().enumerate() {
-                let machine = Machine::from_snapshot(&Snapshot::decode(&saved.machine)?);
-                ensure!(
-                    Some(machine.now().raw())
-                        == link.origins[side].raw().checked_add(link.elapsed.raw()),
-                    "Invalid linked clock"
-                );
-                ensure!(
-                    link.incoming[side].iter().all(|e| e.at >= link.elapsed),
-                    "Invalid pending optical input"
-                );
-            }
-            link.ids = [ids[0], ids[1]];
-        }
-        self.disconnect(id)?;
-        let linked = capture.link.is_some();
-        for (id, saved) in ids.into_iter().zip(capture.sessions) {
-            self.sessions
-                .get_mut(&id)
-                .unwrap()
-                .restore(saved, self.sound.rate, linked)?;
-        }
-        if let Some(link) = capture.link {
-            self.links.push(link);
-        }
-        Ok(())
     }
     fn advance(&mut self) {
         let linked: Vec<_> = self.links.iter().flat_map(|l| l.ids).collect();
@@ -986,6 +977,7 @@ impl Worker {
                 && session.tcp.as_ref().is_some_and(|tcp| tcp.connected())
             {
                 session.fast = false;
+                session.turbo_toggle = false;
                 session.speed_percent = 100;
                 session.reanchor();
                 let _ = session.clear_audio(self.sound.rate);
@@ -1048,12 +1040,12 @@ impl Worker {
             if session.saving || session.machine.eeprom_busy() {
                 continue;
             }
-            let save_error = self
+            let eeprom_error = self
                 .views
                 .get(&id)
-                .is_some_and(|v| v.lock().unwrap().save_error.is_some());
+                .is_some_and(|v| v.lock().unwrap().eeprom_error.is_some());
             if session.dirty
-                && !save_error
+                && !eeprom_error
                 && (session.closing || session.last_flush.elapsed() >= Duration::from_millis(500))
             {
                 if self
@@ -1098,6 +1090,7 @@ impl Worker {
                 view.pixels = Arc::new(pixels);
                 view.contrast = session.machine.display_contrast();
                 view.paused = session.paused;
+                view.can_undo = self.undos.values().any(|point| point.contains(id));
                 view.walking = session.motion.walking;
                 view.cadence = session.motion.cadence;
                 view.muted = session.muted;

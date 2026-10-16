@@ -38,7 +38,7 @@ pub(crate) fn open(
 
 fn open_tool(player: Player, owner: WeakEntity<PlayerView>, kind: Kind, cx: &mut App) {
     let name = match kind {
-        Kind::Motion => "Motion",
+        Kind::Motion => "Walking Simulation",
         Kind::Diagnostics => "Diagnostics",
         Kind::Link => "Local Link",
         Kind::Recent => "Open Recent",
@@ -47,7 +47,7 @@ fn open_tool(player: Player, owner: WeakEntity<PlayerView>, kind: Kind, cx: &mut
     };
     let filename = player
         .presentation()
-        .save
+        .eeprom
         .as_deref()
         .map(settings::filename)
         .unwrap_or_else(|| "hachistep".into());
@@ -192,13 +192,13 @@ impl Tool {
                     div()
                         .font_family("monospace")
                         .text_xs()
-                        .child(frame.firmware),
+                        .child(frame.firmware.clone()),
                 ),
             )
             .child(
-                Field::new().label("Save data").child(
+                Field::new().label("EEPROM").child(
                     frame
-                        .save
+                        .eeprom
                         .as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_default(),
@@ -212,7 +212,7 @@ impl Tool {
             .child(
                 Field::new()
                     .label("Infrared")
-                    .child(frame.connection.to_string()),
+                    .child(frame.connection_name()),
             );
         if let Some(error) = frame.audio_error {
             form =
@@ -288,7 +288,7 @@ impl Tool {
             .gap_2()
             .children(recent.into_iter().enumerate().map(|(ix, pair)| {
                 Button::new(("recent", ix))
-                    .label(settings::filename(&pair.save))
+                    .label(settings::filename(&pair.eeprom))
                     .on_click(cx.listener(move |view, _, window, cx| {
                         view.invoke(Intent::Recent(pair.clone()), window, cx);
                         window.remove_window();
@@ -322,7 +322,7 @@ impl Tool {
             .child(
                 Field::new()
                     .label("Connection")
-                    .child(frame.connection.to_string()),
+                    .child(frame.connection_name()),
             )
             .child(
                 Field::new().label_indent(false).child(

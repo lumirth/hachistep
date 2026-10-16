@@ -34,7 +34,7 @@ impl Persistent {
     pub fn machine(&self, firmware: &[u8]) -> Result<Machine> {
         ensure!(
             self.firmware_origin == hash(firmware),
-            "Save companion belongs to different firmware"
+            "EEPROM companion belongs to different firmware"
         );
         Ok(Machine::new(Images {
             firmware: &self.flash,
@@ -119,9 +119,9 @@ impl Binding {
         let path = if create {
             let parent = path
                 .parent()
-                .context("Save has no parent folder")?
+                .context("EEPROM has no parent folder")?
                 .canonicalize()?;
-            parent.join(path.file_name().context("Choose a save filename")?)
+            parent.join(path.file_name().context("Choose an EEPROM filename")?)
         } else {
             path.canonicalize()?
         };
@@ -132,7 +132,7 @@ impl Binding {
             .truncate(false)
             .open(adjacent(&path, ".hachistep.lock"))?;
         lock.try_lock_exclusive()
-            .context("Save data is already open in another player")?;
+            .context("EEPROM is already open in another player")?;
         if create {
             let mut file = OpenOptions::new()
                 .write(true)
@@ -142,10 +142,7 @@ impl Binding {
             file.sync_all()?;
         }
         let eeprom = read(&path)?;
-        ensure!(
-            eeprom.len() == 65_536,
-            "Save data must contain 65,536 bytes"
-        );
+        ensure!(eeprom.len() == 65_536, "EEPROM must contain 65,536 bytes");
         let companion_path = adjacent(&path, ".hachistep");
         let companion = optional(&companion_path)?;
         let mut binding = Self {
@@ -160,10 +157,7 @@ impl Binding {
         let machine = match optional(&companion_path)? {
             Some(bytes) => {
                 let mut saved: Persistent = unpack(b"HSTEPnv1", &bytes)?;
-                ensure!(
-                    saved.eeprom == eeprom,
-                    "Save data and companion do not match"
-                );
+                ensure!(saved.eeprom == eeprom, "EEPROM and companion do not match");
                 saved.eeprom = eeprom;
                 saved.machine(firmware)?
             }
@@ -188,12 +182,12 @@ impl Binding {
                 .map(hash);
             ensure!(
                 current == transaction.previous_eeprom || current == hash(&transaction.next.eeprom),
-                "Save data changed outside hachistep during a pending save"
+                "EEPROM changed outside hachistep during a pending write"
             );
             ensure!(
                 companion == transaction.previous_companion
                     || companion == Some(hash(&next_companion)),
-                "Save companion changed outside hachistep during a pending save"
+                "EEPROM companion changed outside hachistep during a pending write"
             );
             atomic(&self.path, &transaction.next.eeprom)?;
             atomic(&adjacent(&self.path, ".hachistep"), &next_companion)?;
@@ -211,14 +205,14 @@ impl Binding {
         let companion = optional(&adjacent(&self.path, ".hachistep"))?;
         ensure!(
             hash(&current) == self.expected && companion.as_deref().map(hash) == self.companion,
-            "Save data changed outside hachistep. Use Save Data As to keep this session"
+            "EEPROM changed outside hachistep. Use Save EEPROM As to keep this session"
         );
         let previous = match companion {
             Some(bytes) => bytes,
             None => self
                 .previous
                 .as_ref()
-                .context("Missing previous save image")?
+                .context("Missing previous EEPROM image")?
                 .companion()?,
         };
         atomic(&adjacent(&self.path, ".hachistep.backup"), &previous)?;

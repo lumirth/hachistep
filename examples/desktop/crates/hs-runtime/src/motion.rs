@@ -19,6 +19,10 @@ impl Default for Motion {
 }
 
 impl Motion {
+    pub fn valid(&self) -> bool {
+        (30..=240).contains(&self.cadence) && self.phase < 120_000
+    }
+
     pub fn sample(&mut self) -> Acceleration {
         let mut acceleration = Acceleration::STILL;
         if self.walking {

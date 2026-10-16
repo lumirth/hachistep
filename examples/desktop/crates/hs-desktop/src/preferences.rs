@@ -110,30 +110,7 @@ impl Settings {
                 .child("Gamepad"),
         );
         for (ix, label) in ["Left", "Center", "Right"].into_iter().enumerate() {
-            keyboard = keyboard.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child(label)
-                    .child(
-                        Button::new(("key", ix))
-                            .small()
-                            .w_32()
-                            .label(if self.capture == Some(ix) {
-                                "Press a key".into()
-                            } else {
-                                preferences.keys[ix].to_uppercase()
-                            })
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.capture = Some(ix);
-                                view.error = None;
-                                view.focus.focus(window, cx);
-                                cx.notify();
-                            })),
-                    ),
-            );
+            keyboard = keyboard.child(self.key_row(label, ix, &preferences.keys[ix], cx));
             let owner = cx.weak_entity();
             gamepad = gamepad.child(
                 div()
@@ -178,6 +155,7 @@ impl Settings {
                     ),
             );
         }
+        keyboard = keyboard.child(self.key_row("Fast-forward", 3, &preferences.turbo_key, cx));
         div()
             .flex()
             .flex_col()
@@ -186,6 +164,34 @@ impl Settings {
             .child(gamepad)
             .into_any_element()
     }
+    fn key_row(&self, label: &str, index: usize, binding: &str, cx: &Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_4()
+            .child(label.to_owned())
+            .child(
+                Button::new(("key", index))
+                    .small()
+                    .w_32()
+                    .label(if self.capture == Some(index) {
+                        "Press a key".into()
+                    } else if binding == "space" {
+                        "Space".into()
+                    } else {
+                        binding.to_uppercase()
+                    })
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.capture = Some(index);
+                        view.error = None;
+                        view.focus.focus(window, cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn audio(&self, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
@@ -219,7 +225,13 @@ impl Settings {
                 false,
                 cx,
             ))
-            .child(self.speed_choice("turbo-speed", "Turbo speed", preferences.turbo, true, cx))
+            .child(self.speed_choice(
+                "turbo-speed",
+                "Fast-forward speed",
+                preferences.turbo,
+                true,
+                cx,
+            ))
             .child(
                 div()
                     .text_sm()
@@ -333,11 +345,15 @@ impl Render for Settings {
                     cx.stop_propagation();
                     let key = &event.keystroke.key;
                     let preferences = &cx.global::<Desktop>().preferences;
-                    if key.len() == 1
-                        && key != " "
+                    if ((key.len() == 1 && key != " ")
+                        || matches!(
+                            key.as_str(),
+                            "space" | "left" | "right" | "up" | "down" | "enter"
+                        ))
                         && !event.keystroke.modifiers.platform
                         && !event.keystroke.modifiers.control
                         && !event.keystroke.modifiers.alt
+                        && (ix == 3 || key != &preferences.turbo_key)
                         && !preferences
                             .keys
                             .iter()
@@ -345,7 +361,16 @@ impl Render for Settings {
                             .any(|(other, binding)| other != ix && binding == key)
                     {
                         let key = key.clone();
-                        view.update(|p| p.keys[ix] = key, cx);
+                        view.update(
+                            |p| {
+                                if ix == 3 {
+                                    p.turbo_key = key;
+                                } else {
+                                    p.keys[ix] = key;
+                                }
+                            },
+                            cx,
+                        );
                         let players: Vec<_> = cx
                             .global::<Desktop>()
                             .windows

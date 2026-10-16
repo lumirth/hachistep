@@ -1,11 +1,10 @@
 use crate::{
-    motion::Motion,
+    state::{self, Capture, PendingSession},
     storage::{self, Binding, Persistent},
     Id,
 };
 use anyhow::{ensure, Result};
-use borsh::{BorshDeserialize, BorshSerialize};
-use hs_core::{Machine, Snapshot};
+use hs_core::Machine;
 use std::{
     path::PathBuf,
     sync::{
@@ -15,80 +14,18 @@ use std::{
     thread,
 };
 
-#[derive(BorshSerialize, BorshDeserialize)]
-pub(crate) struct Capture {
-    pub revision: String,
-    pub sessions: Vec<SavedSession>,
-    pub link: Option<crate::optical::Link>,
-}
-
-#[derive(BorshSerialize, BorshDeserialize)]
-pub(crate) struct SavedSession {
-    pub firmware: [u8; 32],
-    pub machine: Vec<u8>,
-    pub motion: Motion,
-    pub next_motion: hs_core::Time,
-    pub reset_release: Option<hs_core::Time>,
-}
-
-pub(crate) struct PendingSession {
-    pub firmware: [u8; 32],
-    pub snapshot: Snapshot,
-    pub motion: Motion,
-    pub next_motion: hs_core::Time,
-    pub reset_release: Option<hs_core::Time>,
-}
-
-impl PendingSession {
-    fn encode(self) -> Result<SavedSession> {
-        Ok(SavedSession {
-            firmware: self.firmware,
-            machine: self.snapshot.encode()?,
-            motion: self.motion,
-            next_motion: self.next_motion,
-            reset_release: self.reset_release,
-        })
-    }
-}
-
-impl Capture {
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let capture: Self = storage::unpack(b"HSTEPst1", bytes)?;
-        ensure!(
-            capture.revision == crate::CORE_REVISION,
-            "Save state uses a different core revision"
-        );
-        ensure!(
-            (1..=2).contains(&capture.sessions.len()),
-            "Invalid player count"
-        );
-        ensure!(
-            capture.link.is_some() == (capture.sessions.len() == 2),
-            "Invalid linked state"
-        );
-        for session in &capture.sessions {
-            Snapshot::decode(&session.machine)?;
-            ensure!(
-                (30..=240).contains(&session.motion.cadence),
-                "Invalid walking cadence"
-            );
-        }
-        Ok(capture)
-    }
-}
-
 pub(crate) enum Job {
     Open {
         id: Id,
         firmware: PathBuf,
-        save: PathBuf,
+        eeprom: PathBuf,
         create: bool,
     },
     Commit {
         id: Id,
         image: Persistent,
     },
-    SaveAs {
+    SaveEepromAs {
         id: Id,
         path: PathBuf,
         image: Persistent,
@@ -117,12 +54,18 @@ pub(crate) enum Reply {
         machine: Box<Machine>,
         firmware: Arc<Vec<u8>>,
         path: PathBuf,
+        slots: [bool; 10],
     },
     Saved {
         id: Id,
         path: PathBuf,
+        slots: [bool; 10],
     },
     Written(Id),
+    StateWritten {
+        id: Id,
+        slots: [bool; 10],
+    },
     Loaded {
         id: Id,
         capture: Capture,
@@ -157,7 +100,7 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                     Job::Open {
                         id,
                         firmware,
-                        save,
+                        eeprom,
                         create,
                     } => (
                         id,
@@ -168,20 +111,21 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                                 firmware.len() == 49_152,
                                 "Firmware must contain 49,152 bytes"
                             );
-                            let (binding, machine) = Binding::open(&save, create, &firmware)?;
+                            let (binding, machine) = Binding::open(&eeprom, create, &firmware)?;
                             let path = binding.path.clone();
                             bindings.insert(id, (binding, firmware.clone()));
                             Ok(Reply::Opened {
                                 id,
                                 machine: Box::new(machine),
                                 firmware,
+                                slots: state::slots(&path),
                                 path,
                             })
                         })(),
                     ),
                     Job::Commit { id, image } => (
                         id,
-                        "Save data",
+                        "EEPROM",
                         (|| {
                             let (binding, _) = bindings
                                 .get_mut(&id)
@@ -190,12 +134,13 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                             Ok(Reply::Saved {
                                 id,
                                 path: binding.path.clone(),
+                                slots: state::slots(&binding.path),
                             })
                         })(),
                     ),
-                    Job::SaveAs { id, path, image } => (
+                    Job::SaveEepromAs { id, path, image } => (
                         id,
-                        "Save data",
+                        "EEPROM",
                         (|| {
                             let (binding, firmware) = bindings
                                 .get_mut(&id)
@@ -204,6 +149,7 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                             Ok(Reply::Saved {
                                 id,
                                 path: binding.path.clone(),
+                                slots: state::slots(&binding.path),
                             })
                         })(),
                     ),
@@ -237,8 +183,15 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                                 sessions,
                                 link,
                             };
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
                             storage::atomic(&path, &storage::pack(b"HSTEPst1", &capture)?)?;
-                            Ok(Reply::Written(id))
+                            let slots = bindings
+                                .get(&id)
+                                .map(|(binding, _)| state::slots(&binding.path))
+                                .unwrap_or([false; 10]);
+                            Ok(Reply::StateWritten { id, slots })
                         })(),
                     ),
                     Job::Close(id) => {

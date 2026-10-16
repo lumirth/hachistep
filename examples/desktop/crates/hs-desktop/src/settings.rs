@@ -2,6 +2,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::mpsc::{self, Sender},
@@ -11,7 +12,8 @@ use std::{
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Recent {
     pub firmware: PathBuf,
-    pub save: PathBuf,
+    #[serde(alias = "save")]
+    pub eeprom: PathBuf,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -23,6 +25,8 @@ pub(crate) struct Preferences {
     pub mute: bool,
     pub speed: u16,
     pub turbo: u16,
+    pub turbo_key: String,
+    pub slots: BTreeMap<PathBuf, u8>,
     pub recent: Vec<Recent>,
 }
 
@@ -35,6 +39,8 @@ impl Default for Preferences {
             mute: false,
             speed: 100,
             turbo: 400,
+            turbo_key: "space".into(),
+            slots: BTreeMap::new(),
             recent: Vec::new(),
         }
     }
@@ -51,6 +57,13 @@ impl Preferences {
             .unwrap_or_default();
         if settings.keys.iter().any(String::is_empty) {
             settings.keys = ["a".into(), "s".into(), "d".into()];
+        }
+        settings
+            .slots
+            .values_mut()
+            .for_each(|slot| *slot = (*slot).clamp(1, 10));
+        if settings.turbo_key.is_empty() {
+            settings.turbo_key = "space".into();
         }
         settings.appearance = settings.appearance.min(2);
         if !(25..=800).contains(&settings.speed) {

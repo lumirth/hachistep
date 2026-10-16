@@ -9,24 +9,23 @@ installed, including the Windows SDK on Windows:
 cargo run --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --locked
 ```
 
-Choose Open Firmware, then open or create save data. Firmware must be a raw
-49,152-byte image; save data must contain 65,536 bytes. The application writes
-completed guest saves back to the selected EEPROM file. Hardware calibration,
+Firmware must be a raw
+49,152-byte image; EEPROM images must contain 65,536 bytes. The application writes
+completed guest writes back to the selected EEPROM file. Hardware calibration,
 status, and programmed flash live in its adjacent `.hachistep` companion.
-Keep that companion with the save. `.hachistep.backup` retains the previous
+Keep that companion with the EEPROM. `.hachistep.backup` retains the previous
 committed hardware image, and `.hachistep.pending` allows recovery after an
 interrupted commit.
 
-A, S, and D operate the physical buttons. Choose Speed in the Emulation menu. Hold Space for temporary turbo. Change
-bindings and appearance in Settings. Motion Controls supplies walking;
-the guest firmware counts steps. Save states use `.hstepstate` and open paused.
-Save State captures both players when locally linked. To restore a linked state,
-connect the same two save files in the same order first.
+State slots 1–10 live in `<eeprom>.states/`. The selected slot is remembered per
+EEPROM. State loads open paused and can be undone. Locally linked captures include
+both machines and their optical queues. Connect the same two EEPROMs in the same
+order before loading a linked state.
 
-Launch an existing pair of files directly:
+Launch firmware and an EEPROM directly:
 
 ```sh
-cargo run --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --locked -- --firmware firmware.bin --save alice.sav
+cargo run --manifest-path examples/desktop/Cargo.toml -p hs-desktop --release --locked -- --firmware firmware.bin --eeprom alice.bin
 ```
 
 After a release build, package the application and its supplied platform icon:

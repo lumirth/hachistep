@@ -4,16 +4,21 @@ use serde::Deserialize;
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub(crate) enum Intent {
     NewWindow,
-    FocusWindow(u64),
     OpenFirmware,
-    OpenSave,
-    NewSave,
+    OpenEeprom,
+    NewEeprom,
     Recent(crate::settings::Recent),
     Recents,
-    SaveAs,
-    Export,
+    SaveEepromAs,
     SaveState,
     LoadState,
+    SaveSelectedState,
+    LoadSelectedState,
+    SaveSlot(u8),
+    LoadSlot(u8),
+    SelectSlot(u8),
+    UndoLoadState,
+    ToggleTurbo,
     Screenshot,
     Close,
     Quit,
@@ -62,9 +67,11 @@ pub(crate) fn bind(cx: &mut App) {
     for (key, intent) in [
         ("n", Intent::NewWindow),
         ("o", Intent::OpenFirmware),
-        ("shift-o", Intent::OpenSave),
-        ("s", Intent::SaveState),
-        ("l", Intent::LoadState),
+        ("shift-o", Intent::OpenEeprom),
+        ("s", Intent::SaveSelectedState),
+        ("l", Intent::LoadSelectedState),
+        ("shift-s", Intent::SaveState),
+        ("shift-l", Intent::LoadState),
         ("p", Intent::Pause),
         (",", Intent::Settings),
         ("w", Intent::Close),
@@ -76,6 +83,25 @@ pub(crate) fn bind(cx: &mut App) {
             None,
         )]);
     }
+    for slot in 1..=10 {
+        cx.bind_keys([
+            KeyBinding::new(
+                &format!("f{slot}"),
+                Invoke::new(Intent::LoadSlot(slot)),
+                None,
+            ),
+            KeyBinding::new(
+                &format!("shift-f{slot}"),
+                Invoke::new(Intent::SaveSlot(slot)),
+                None,
+            ),
+        ]);
+    }
+    cx.bind_keys([KeyBinding::new(
+        "f12",
+        Invoke::new(Intent::UndoLoadState),
+        None,
+    )]);
 }
 
 fn item(name: &str, intent: Intent) -> MenuItem {
@@ -88,41 +114,36 @@ pub(crate) fn menus(
     status: bool,
     scale: u8,
     recent: &[crate::settings::Recent],
-    windows: &[crate::OpenWindow],
+    selected_slot: u8,
 ) -> Vec<Menu> {
     let ready = frame.ready;
     let paused = frame.paused;
-    let walking = frame.walking;
     let active = |name: &str, intent: Intent| item(name, intent).disabled(!ready);
     let mut files = vec![
         item("New Window", Intent::NewWindow),
         item("Open Firmware…", Intent::OpenFirmware),
-        item("Open Save Data…", Intent::OpenSave),
-        item("New Save Data…", Intent::NewSave),
+        item("Open EEPROM…", Intent::OpenEeprom),
+        item("New EEPROM…", Intent::NewEeprom),
         MenuItem::submenu(Menu::new("Open Recent").items(recent.iter().map(|pair| {
             item(
-                &crate::settings::filename(&pair.save),
+                &crate::settings::filename(&pair.eeprom),
                 Intent::Recent(pair.clone()),
             )
         }))),
         MenuItem::separator(),
-        active("Save Data As…", Intent::SaveAs),
-        active("Export EEPROM…", Intent::Export),
-        active(
-            if frame.peer.is_some() {
-                "Save Linked State…"
-            } else {
-                "Save State…"
-            },
-            Intent::SaveState,
-        ),
-        active("Load State…", Intent::LoadState),
+        active("Save EEPROM As…", Intent::SaveEepromAs),
         active("Save Screenshot…", Intent::Screenshot),
         MenuItem::separator(),
         item("Close Window", Intent::Close),
     ];
     let mut tools = vec![
-        active("Motion Controls…", Intent::Motion),
+        active("Walking Simulation…", Intent::Motion),
+        MenuItem::submenu(Menu::new("Infrared").items([
+            active("Connect to Local Window…", Intent::LocalLink),
+            active("Connect over TCP…", Intent::TcpConnect),
+            active("Listen over TCP…", Intent::TcpListen),
+            active("Disconnect", Intent::Disconnect),
+        ])),
         active("Diagnostics…", Intent::Diagnostics),
     ];
     if !cfg!(target_os = "macos") {
@@ -134,14 +155,6 @@ pub(crate) fn menus(
         Menu::new("Emulation").items([
             active(if paused { "Resume" } else { "Pause" }, Intent::Pause),
             active("Reset", Intent::Reset),
-            active(
-                if walking {
-                    "Stop Walking"
-                } else {
-                    "Start Walking"
-                },
-                Intent::Walking,
-            ),
             MenuItem::submenu(
                 Menu::new("Speed").items([50, 75, 100, 150, 200, 400, 800].map(|percent| {
                     item(&format!("{percent}%"), Intent::Speed(percent))
@@ -153,6 +166,46 @@ pub(crate) fn menus(
                         )
                 })),
             ),
+            active("Fast-forward", Intent::ToggleTurbo)
+                .checked(frame.turbo)
+                .disabled(!ready || frame.connection == hs_runtime::Connection::Connected),
+            MenuItem::separator(),
+            MenuItem::submenu(
+                Menu::new("Load State").items(
+                    std::iter::once(
+                        active("Selected Slot", Intent::LoadSelectedState)
+                            .disabled(!ready || !frame.slots[usize::from(selected_slot - 1)]),
+                    )
+                    .chain((1..=10).map(|slot| {
+                        item(&format!("Slot {slot}"), Intent::LoadSlot(slot))
+                            .checked(slot == selected_slot)
+                            .disabled(!ready || !frame.slots[usize::from(slot - 1)])
+                    }))
+                    .chain([
+                        MenuItem::separator(),
+                        active("Load from File…", Intent::LoadState),
+                    ]),
+                ),
+            ),
+            MenuItem::submenu(
+                Menu::new("Save State").items(
+                    std::iter::once(active("Selected Slot", Intent::SaveSelectedState))
+                        .chain((1..=10).map(|slot| {
+                            active(&format!("Slot {slot}"), Intent::SaveSlot(slot))
+                                .checked(slot == selected_slot)
+                        }))
+                        .chain([
+                            MenuItem::separator(),
+                            active("Save to File…", Intent::SaveState),
+                        ]),
+                ),
+            ),
+            MenuItem::submenu(Menu::new("Select State Slot").items((1..=10).map(|slot| {
+                active(&format!("Slot {slot}"), Intent::SelectSlot(slot))
+                    .checked(slot == selected_slot)
+            }))),
+            item("Undo Load State", Intent::UndoLoadState).disabled(!ready || !frame.can_undo),
+            MenuItem::separator(),
             active("Mute Audio", Intent::Mute).checked(frame.muted),
         ]),
         Menu::new("View").items([
@@ -163,12 +216,6 @@ pub(crate) fn menus(
             item("Fullscreen", Intent::Fullscreen),
             item("Show Status Bar", Intent::Status).checked(status),
             item("Raw Drive", Intent::Raw).checked(raw),
-        ]),
-        Menu::new("Link").items([
-            active("Connect to Local Window…", Intent::LocalLink),
-            active("Connect over TCP…", Intent::TcpConnect),
-            active("Listen over TCP…", Intent::TcpListen),
-            active("Disconnect", Intent::Disconnect),
         ]),
         Menu::new("Tools").items(tools),
         Menu::new("Help").items([
@@ -190,16 +237,7 @@ pub(crate) fn menus(
         );
         menus.insert(
             menus.len() - 1,
-            Menu::new("Window").items(
-                std::iter::once(item("New Window", Intent::NewWindow)).chain(windows.iter().map(
-                    |window| {
-                        item(
-                            &window.name,
-                            Intent::FocusWindow(window.view.entity_id().as_u64()),
-                        )
-                    },
-                )),
-            ),
+            Menu::new("Window").items([item("New Window", Intent::NewWindow)]),
         );
     } else {
         menus
