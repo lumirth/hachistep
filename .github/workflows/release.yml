@@ -53,7 +53,7 @@ jobs:
       - run: rustup target add wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: wasi
+          shared-key: core
           save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - run: cargo build --release --locked -p hs-cli --target wasm32-wasip1
       - name: Package WASI CLI
