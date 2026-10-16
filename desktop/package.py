@@ -16,13 +16,13 @@ def main():
     args = parser.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
-    assets = ROOT / "crates/hs-desktop/assets"
+    assets = ROOT.parent / "assets/icons"
     if sys.platform == "darwin":
         contents = out / "hachistep.app/Contents"
         (contents / "MacOS").mkdir(parents=True)
         (contents / "Resources").mkdir()
         shutil.copy2(args.binary or ROOT / "target/release/hs-desktop", contents / "MacOS/hachistep")
-        shutil.copy2(assets / "Hachistep.icns", contents / "Resources/Hachistep.icns")
+        shutil.copy2(assets / "macOS/Hachistep.icns", contents / "Resources/Hachistep.icns")
         shutil.copy2(ROOT.parent / "LICENSE", contents / "Resources/LICENSE")
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump({

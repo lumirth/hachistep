@@ -19,7 +19,7 @@ impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
         match path {
             "icon.png" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
-                "../assets/icon.png"
+                "../../../../assets/icons/macOS/AppIcon.iconset/icon_256x256.png"
             )))),
             _ => gpui_kit::assets::Assets.load(path),
         }
