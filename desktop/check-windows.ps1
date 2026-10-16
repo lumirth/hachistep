@@ -41,20 +41,21 @@ try {
     } while ([DateTime]::UtcNow -lt $deadline)
     if ($process.MainWindowHandle -eq 0) { throw 'hachistep did not open a window' }
     $window = $element::FromHandle($process.MainWindowHandle)
+    $condition = [System.Windows.Automation.PropertyCondition]::new($element::ProcessIdProperty, $process.Id)
+    $before = $element::RootElement.FindAll($scope::Children, $condition).Count
     Save-Window $window
     $file = Find-Element $window 'File'
     $file.GetCurrentPattern($invoke).Invoke()
     $new = Find-Element $window 'New Window'
     Save-Window $window
     $new.GetCurrentPattern($invoke).Invoke()
-    $condition = [System.Windows.Automation.PropertyCondition]::new($element::ProcessIdProperty, $process.Id)
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     do {
         $windows = $element::RootElement.FindAll($scope::Children, $condition)
-        if ($windows.Count -ge 2) { break }
+        if ($windows.Count -gt $before) { break }
         Start-Sleep -Milliseconds 100
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($windows.Count -lt 2) { throw 'File > New Window did not open a second player' }
+    if ($windows.Count -le $before) { throw 'File > New Window did not open a second player' }
     Write-Output 'File menu opened and New Window created a second player'
 } finally {
     if (!$process.HasExited) { $process.Kill($true) }
