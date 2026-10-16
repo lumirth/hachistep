@@ -67,6 +67,7 @@ pub(crate) struct PlayerView {
     error: Option<String>,
     last_error: Option<String>,
     menu_bar: Entity<AppMenuBar>,
+    menu_state: Option<commands::MenuState>,
     closing: Closing,
     _subscriptions: Vec<Subscription>,
 }
@@ -198,6 +199,7 @@ impl PlayerView {
             error: None,
             last_error: None,
             menu_bar: AppMenuBar::new(cx),
+            menu_state: None,
             closing: Closing::Open,
             _subscriptions: vec![activated, lost, focused, release, appearance, bounds],
         }
@@ -482,7 +484,7 @@ impl PlayerView {
             .unwrap_or(1)
     }
 
-    fn select_slot(&self, slot: u8, cx: &mut App) {
+    fn select_slot(&mut self, slot: u8, cx: &mut App) {
         if let Some(path) = &self.presentation.eeprom {
             cx.global_mut::<Desktop>()
                 .preferences
@@ -493,10 +495,10 @@ impl PlayerView {
         }
     }
 
-    fn slot(&self, slot: u8, load: bool, cx: &mut App) {
+    fn slot(&mut self, slot: u8, load: bool, cx: &mut App) {
         if let Some(eeprom) = &self.presentation.eeprom {
-            self.select_slot(slot, cx);
             let path = hs_runtime::slot_path(eeprom, slot);
+            self.select_slot(slot, cx);
             self.player.send(if load {
                 Command::LoadState(path)
             } else {
@@ -505,8 +507,13 @@ impl PlayerView {
         }
     }
 
-    pub(crate) fn install_menu(&self, cx: &mut App) {
-        self.menu(cx).install(cx);
+    pub(crate) fn install_menu(&mut self, cx: &mut App) {
+        let menu = self.menu(cx);
+        menu.install(cx);
+        if self.menu_state.as_ref() != Some(&menu) {
+            self.menu_bar.update(cx, |bar, cx| bar.reload(cx));
+            self.menu_state = Some(menu);
+        }
     }
     pub fn begin_close(&mut self) {
         if let Some((pending, _, _)) = self.pending.take() {
