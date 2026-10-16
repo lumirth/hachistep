@@ -1299,19 +1299,15 @@ impl Render for PlayerView {
                     frame.speed_percent
                 };
                 let pause = if frame.paused { "Resume" } else { "Pause" };
-                let state = if frame.paused {
-                    "Paused"
-                } else if frame.turbo {
-                    "Fast-forward"
-                } else {
-                    ""
-                };
+                let numerals = FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]));
                 root.child(
                     StatusBar::new()
                         .h(theme::status_height(window.rem_size()))
                         .flex_shrink_0()
                         .px_3()
                         .py_0()
+                        .font_features(numerals)
+                        .line_height(relative(1.25))
                         .when(loaded, |bar| {
                             bar.left(
                                 status_button("status-pause")
@@ -1321,7 +1317,7 @@ impl Render for PlayerView {
                                         gpui_kit::assets::IconName::Pause
                                     })
                                     .accessibility_label(pause)
-                                    .tooltip(pause)
+                                    .tooltip_with_action(pause, &Intent::Pause, None)
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         view.execute(Intent::Pause, window, cx)
                                     })),
@@ -1336,7 +1332,6 @@ impl Render for PlayerView {
                                             "Emulated time {}",
                                             crate::tools::elapsed(frame.time.raw())
                                         ))
-                                        .font_family("monospace")
                                         .child(
                                             component::Icon::new(
                                                 gpui_kit::assets::IconName::Clock3,
@@ -1346,13 +1341,16 @@ impl Render for PlayerView {
                                         .child(crate::tools::elapsed(frame.time.raw())),
                                 )
                             })
-                            .when(!compact && !state.is_empty(), |bar| bar.left(state))
                             .when(indicators && frame.modified, |bar| {
                                 bar.right(
                                     status_button("status-save")
                                         .icon(gpui_kit::assets::IconName::Save)
                                         .accessibility_label("Save EEPROM")
-                                        .tooltip("Unsaved EEPROM changes")
+                                        .tooltip_with_action(
+                                            "Save EEPROM",
+                                            &Intent::SaveEeprom,
+                                            None,
+                                        )
                                         .disabled(frame.saving)
                                         .on_click(cx.listener(|view, _, window, cx| {
                                             view.execute(Intent::SaveEeprom, window, cx)
@@ -1411,7 +1409,6 @@ impl Render for PlayerView {
                                     })
                                     .label(format!("{percent}%"))
                                     .w(if compact { rems(3.5) } else { rems(5.) })
-                                    .font_family("monospace")
                                     .accessibility_label("Emulation speed")
                                     .tooltip("Speed")
                                     .on_click(cx.listener(|view, _, window, cx| {
