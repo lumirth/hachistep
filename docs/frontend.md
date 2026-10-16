@@ -2,8 +2,14 @@
 
 A GPUI Kit frontend for `hs-core`.
 
-On macOS or Windows, build with Rust and the platform's native development tools
-installed, including the Windows SDK on Windows:
+Build with Rust and the platform's native development tools, including the
+Windows SDK on Windows. On Ubuntu 24.04, install the native libraries first:
+
+```sh
+sudo apt install clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libudev-dev libvulkan1
+```
+
+Then build:
 
 ```sh
 cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
@@ -42,12 +48,16 @@ Launch firmware and an EEPROM directly:
 cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked -- --firmware firmware.bin --eeprom alice.bin
 ```
 
-After a release build, package the application and its supplied platform icon:
+Core, CLI, runtime, and desktop use one release version. GitHub releases are marked
+as pre-releases while the project is in alpha. Build the CLI too before packaging
+the desktop download. Packaging requires Python 3.11 or newer:
 
 ```sh
+cargo build --release --locked -p hs-cli
 python3 desktop/package.py --out out/desktop
 ```
 
-This creates `hachistep.app` and its ZIP on macOS, or `hachistep.exe` on Windows.
+The versioned ZIP or Linux tarball contains the desktop application and
+`hachistep-cli`. Linux needs an X11 or Wayland session and a Vulkan driver.
 
 The desktop pins an AccessKit 0.26.3 [KVO teardown backport](https://github.com/lumirth/accesskit/commit/e09cf84b8e0af7659423e5b91eed41c5ac2dd693) to prevent a macOS crash when closing a window after keyboard input. [Issue #10](https://github.com/lumirth/hachistep/issues/10) tracks returning to a published release.
