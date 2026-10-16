@@ -6,7 +6,7 @@ The CLI runs a firmware image against a timeline of physical inputs. The capture
 let you inspect where the device ended up, then resume it or repeat the experiment
 with a change to the firmware.
 
-Build the [release CLI](BUILD.md) first. The commands below run from the hachistep
+Build the [release CLI](build.md) first. The commands below run from the hachistep
 checkout; `hachistep run --help` gives the full option list.
 
 ## Start a session
@@ -89,7 +89,7 @@ Add `--audio` to write mono 48 kHz signed PCM16 audio:
 
 For timestamped device events, add `--trace NEW_FILE`. Set `--trace-limit` to bound
 the record count and check `trace_complete` in the report to see whether the history
-fit. CPU bus accesses also need a [trace build](BUILD.md#trace-bus-accesses) and
+fit. CPU bus accesses also need a [trace build](build.md#trace-bus-accesses) and
 `--bus-trace`. The text format can change between revisions.
 
 ## Continue a saved session
@@ -142,5 +142,5 @@ Store private images in ignored `inputs/` or pass paths directly.
 
 Reports preserve exact time as raw unsigned 64.64 seconds. The microsecond display
 truncates that value. Before using RAM edits, see the
-[debugging contract](API.md#debugging) for how they interact
+[debugging contract](api.md#debugging) for how they interact
 with instructions and writes already in progress.

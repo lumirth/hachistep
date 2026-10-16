@@ -9,8 +9,8 @@ cargo build --workspace --release --locked
 ```
 
 The build produces `target/release/hachistep`, or `hachistep.exe` on Windows.
-The [CLI guide](CLI.md) starts a firmware session. For an application using the
-library, the [embedding guide](API.md) shows how to depend on `crates/hs-core`
+The [CLI guide](cli.md) starts a firmware session. For an application using the
+library, the [embedding guide](api.md) shows how to depend on `crates/hs-core`
 and run a device.
 
 The Python tools require Python 3.10 or newer and use the standard library.
@@ -63,6 +63,9 @@ Choose a new output directory for each profile.
 
 ## Check a change
 
+For core changes, read the [guiding principles](design.md) and relevant
+[hardware notes](hardware.md).
+
 ```sh
 rustup component add rustfmt clippy
 cargo fmt --all -- --check
@@ -70,6 +73,6 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 ```
 
 `cargo doc -p hs-core --no-deps --open` opens the generated method reference.
-Use [hachiware](TESTING.md) to check the hardware behavior affected by a change,
+Use [hachiware](testing.md) to check the hardware behavior affected by a change,
 then the relevant firmware sessions. Completed checks remain useful until a change
 or a failure gives us a reason to repeat them.

@@ -6,7 +6,7 @@ from pathlib import Path
 def binary(name: str) -> str:
     value = shutil.which(name)
     if not value:
-        raise RuntimeError(f"{name} is required on PATH; see docs/BUILD.md")
+        raise RuntimeError(f"{name} is required on PATH; see docs/build.md")
     return value
 
 

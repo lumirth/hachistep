@@ -1,5 +1,5 @@
 //! H8/38606F flash: software-controlled pulses, persistent cell exposure and
-//! a four-byte verify sense latch. See docs/HARDWARE.md#nonvolatile-programming.
+//! a four-byte verify sense latch. See docs/hardware.md#nonvolatile-programming.
 use super::{control::Mode, FLASH_SIZE};
 use crate::{
     cpu::Width,

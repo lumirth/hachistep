@@ -4,12 +4,12 @@ Treat HachiStep as a fresh implementation. Never consult past HachiStep implemen
 their documentation, or project memories. Ground decisions in this repository, agreed
 requirements, hardware documentation, observations, and the `pw` decompilation.
 
-Before hardware, architecture, interface, or performance work, read `docs/DESIGN.md`.
+Before hardware, architecture, interface, or performance work, read `docs/design.md`.
 Revise a design choice when concrete consequences justify it. Keep source interpretations
-and unresolved physical assumptions in `docs/HARDWARE.md` or beside the mechanism.
+and unresolved physical assumptions in `docs/hardware.md` or beside the mechanism.
 
 Demonstrate behavior through Hachiware guest programs and complete firmware sessions.
-Use `docs/TESTING.md`. Do not add unit, integration, tautological, or change-detector
+Use `docs/testing.md`. Do not add unit, integration, tautological, or change-detector
 tests. Add a bug regression check only for a genuine behavioral coverage gap.
 Reuse completed checks unless a change, failure, or open concern warrants another run.
 
