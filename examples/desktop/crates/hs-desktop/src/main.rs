@@ -41,6 +41,7 @@ struct Desktop {
     active_player: Option<WeakEntity<PlayerView>>,
     quitting: bool,
     disabled_commands: Vec<commands::Intent>,
+    menu: Option<commands::MenuState>,
     preferences_window: Option<(AnyWindowHandle, WeakEntity<preferences::Settings>)>,
     tools: BTreeMap<(hs_runtime::Id, tools::Kind), AnyWindowHandle>,
     tool_bounds: BTreeMap<(hs_runtime::Id, tools::Kind), (Bounds<Pixels>, bool)>,
@@ -154,16 +155,8 @@ fn invoke_player(owner: &WeakEntity<PlayerView>, intent: commands::Intent, cx: &
     }
 }
 
-fn player_menu(owner: &WeakEntity<PlayerView>, previous: &mut String, cx: &mut App) {
-    if let Ok(state) = owner.update(cx, |owner, cx| {
-        let state = owner.menu_signature(cx);
-        if state != *previous {
-            owner.install_menu(cx);
-        }
-        state
-    }) {
-        *previous = state;
-    }
+fn player_menu(owner: &WeakEntity<PlayerView>, cx: &mut App) {
+    let _ = owner.update(cx, |owner, cx| owner.install_menu(cx));
 }
 
 fn save_preferences(cx: &mut App) {
@@ -235,6 +228,7 @@ fn main() {
                 active_player: None,
                 quitting: false,
                 disabled_commands: Vec::new(),
+                menu: None,
                 preferences_window: None,
                 tools: BTreeMap::new(),
                 tool_bounds: BTreeMap::new(),
@@ -257,28 +251,24 @@ fn main() {
             let validation_context = cx.to_async();
             platform.on_validate_app_menu_command(Box::new(move |action| {
                 validation_context.update(|cx| {
-                    if let Some(action) = action.as_any().downcast_ref::<commands::Invoke>() {
-                        !cx.global::<Desktop>()
-                            .disabled_commands
-                            .contains(&action.intent)
+                    if let Some(action) = action.as_any().downcast_ref::<commands::Intent>() {
+                        !cx.global::<Desktop>().disabled_commands.contains(action)
                     } else {
                         cx.is_action_available(action)
                     }
                 })
             }));
             commands::bind(cx);
-            commands::install(
-                commands::menus(
-                    &hs_runtime::Presentation::default(),
-                    false,
-                    false,
-                    4,
-                    &cx.global::<Desktop>().preferences.recent,
-                    1,
-                ),
-                cx,
-            );
-            cx.on_action(|action: &commands::Invoke, cx| match action.intent {
+            commands::MenuState::new(
+                &hs_runtime::Presentation::default(),
+                false,
+                false,
+                4,
+                &cx.global::<Desktop>().preferences.recent,
+                1,
+            )
+            .install(cx);
+            cx.on_action(|action: &commands::Intent, cx| match *action {
                 commands::Intent::NewWindow => new_window(cx, None),
                 commands::Intent::Quit => quit(cx),
                 commands::Intent::Settings => preferences::open(cx),

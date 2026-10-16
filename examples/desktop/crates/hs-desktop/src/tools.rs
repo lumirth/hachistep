@@ -1,18 +1,14 @@
-use crate::{
-    commands::{Intent, Invoke},
-    instruments, lcd,
-    player::PlayerView,
-    settings, theme, Desktop,
-};
+use crate::{commands::Intent, instruments, lcd, player::PlayerView, settings, theme, Desktop};
 use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
         description_list::DescriptionList,
+        h_flex,
         input::{Input, InputEvent, InputState, NumberInput},
         radio::RadioGroup,
         slider::{Slider, SliderEvent, SliderState},
-        ActiveTheme, Disableable, Sizable,
+        v_flex, ActiveTheme, Disableable, Sizable,
     },
     prelude::*,
     *,
@@ -20,12 +16,23 @@ use gpui_kit::{
 use hs_runtime::{Command, Player, Presentation};
 use std::time::Duration;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     Motion,
     Diagnostics,
     Link,
     Tcp,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Motion => "Walking",
+            Self::Diagnostics => "Diagnostics",
+            Self::Link => "Local Link",
+            Self::Tcp => "TCP Connection",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -68,12 +75,7 @@ pub(crate) fn open(
         }) {
             return;
         }
-        let name = match kind {
-            Kind::Motion => "Walking",
-            Kind::Diagnostics => "Diagnostics",
-            Kind::Link => "Local Link",
-            Kind::Tcp => "TCP Connection",
-        };
+        let name = kind.name();
         let filename = player
             .presentation()
             .eeprom
@@ -147,7 +149,6 @@ struct Tool {
     error: Option<String>,
     focus: FocusHandle,
     automatic_size: Option<Size<Pixels>>,
-    menu_state: String,
     _subscriptions: Vec<Subscription>,
 }
 impl Tool {
@@ -224,8 +225,7 @@ impl Tool {
         let activation = cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
                 cx.global_mut::<Desktop>().active_player = Some(view.owner.clone());
-                view.menu_state.clear();
-                crate::player_menu(&view.owner, &mut view.menu_state, cx);
+                crate::player_menu(&view.owner, cx);
             }
         });
         let focus = cx.focus_handle().tab_stop(true);
@@ -247,7 +247,7 @@ impl Tool {
                         } else {
                             view.layout(window, cx);
                             if window.is_window_active() {
-                                crate::player_menu(&view.owner, &mut view.menu_state, cx);
+                                crate::player_menu(&view.owner, cx);
                             }
                             cx.notify();
                         }
@@ -270,7 +270,6 @@ impl Tool {
             error: None,
             focus,
             automatic_size: automatic.then_some(window.bounds().size),
-            menu_state: String::new(),
             _subscriptions: vec![
                 cadence_changed,
                 slider_changed,
@@ -319,14 +318,10 @@ impl Tool {
     }
     fn motion(&self, cx: &mut Context<Self>) -> AnyElement {
         let frame = self.player.presentation();
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_5()
             .child(
-                div()
-                    .flex()
-                    .items_center()
+                h_flex()
                     .justify_between()
                     .text_sm()
                     .child("Acceleration")
@@ -343,19 +338,13 @@ impl Tool {
             )
             .child(div().h_24().child(instruments::motion(&frame, cx)))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child("Cadence")
-                    .child(
-                        div().w_32().child(
-                            NumberInput::new(&self.cadence)
-                                .small()
-                                .suffix(div().text_xs().child("/min")),
-                        ),
+                h_flex().justify_between().gap_4().child("Cadence").child(
+                    div().w_32().child(
+                        NumberInput::new(&self.cadence)
+                            .small()
+                            .suffix(div().text_xs().child("/min")),
                     ),
+                ),
             )
             .child(div().px_2().child(Slider::new(&self.slider)))
             .child(
@@ -374,9 +363,7 @@ impl Tool {
     fn diagnostics(&self, cx: &mut Context<Self>) -> AnyElement {
         let frame = self.player.presentation();
         let firmware = frame.firmware.clone();
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_5()
             .child(
                 DescriptionList::horizontal()
@@ -473,9 +460,7 @@ impl Tool {
     }
     fn thumbnail(&self, player: &Player, name: String, cx: &App) -> AnyElement {
         let frame = player.presentation();
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .items_center()
             .gap_2()
             .child(div().w(rems(9.)).h_24().child(lcd::display(
@@ -488,14 +473,10 @@ impl Tool {
             .into_any_element()
     }
     fn activity(&self, frame: &Presentation, cx: &App) -> AnyElement {
-        div()
-            .flex()
-            .items_center()
+        h_flex()
             .gap_3()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
+                v_flex()
                     .justify_between()
                     .h_12()
                     .text_xs()
@@ -514,14 +495,10 @@ impl Tool {
     fn link(&self, cx: &mut Context<Self>) -> AnyElement {
         let frame = self.player.presentation();
         if let Some(peer) = frame.peer.and_then(|id| self.peer(id, cx)) {
-            return div()
-                .flex()
-                .flex_col()
+            return v_flex()
                 .gap_5()
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
+                    h_flex()
                         .justify_between()
                         .gap_3()
                         .child(
@@ -540,9 +517,7 @@ impl Tool {
                 )
                 .child(self.activity(&frame, cx))
                 .child(
-                    div()
-                        .flex()
-                        .items_center()
+                    h_flex()
                         .justify_between()
                         .child(div().text_sm().child("Linked"))
                         .child(Button::new("disconnect").label("Disconnect").on_click(
@@ -564,9 +539,7 @@ impl Tool {
             })
             .collect();
         let available = frame.connection == hs_runtime::Connection::Disconnected;
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_3()
             .when(!available, |root| {
                 root.child(
@@ -589,9 +562,7 @@ impl Tool {
                 let busy = other.peer.is_some()
                     || other.connection != hs_runtime::Connection::Disconnected;
                 let id = player.id();
-                div()
-                    .flex()
-                    .items_center()
+                h_flex()
                     .gap_4()
                     .py_2()
                     .child(div().w_24().h_16().child(lcd::display(
@@ -637,9 +608,7 @@ impl Tool {
         let frame = self.player.presentation();
         let busy = frame.connection.is_active();
         let local = frame.peer.is_some();
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_5()
             .child(
                 RadioGroup::horizontal("tcp-role")
@@ -653,9 +622,7 @@ impl Tool {
                     })),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
+                v_flex()
                     .gap_2()
                     .child(if self.tcp.listen {
                         "Listen address"
@@ -679,9 +646,7 @@ impl Tool {
             })
             .child(self.activity(&frame, cx))
             .child(
-                div()
-                    .flex()
-                    .items_center()
+                h_flex()
                     .justify_between()
                     .gap_4()
                     .child(
@@ -741,31 +706,24 @@ impl Render for Tool {
             Kind::Link => self.link(cx),
             Kind::Tcp => self.tcp(cx),
         };
-        let name = match self.kind {
-            Kind::Motion => "Walking",
-            Kind::Diagnostics => "Diagnostics",
-            Kind::Link => "Local Link",
-            Kind::Tcp => "TCP Connection",
-        };
+        let name = self.kind.name();
         let frame = self.player.presentation();
         let filename = frame
             .eeprom
             .as_deref()
             .map(settings::filename)
             .unwrap_or_default();
-        div()
+        v_flex()
             .id("tool")
-            .flex()
-            .flex_col()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .track_focus(&self.focus)
-            .on_action(cx.listener(|view, action: &Invoke, window, cx| {
-                if action.intent == Intent::Close {
+            .on_action(cx.listener(|view, action: &Intent, window, cx| {
+                if *action == Intent::Close {
                     window.remove_window();
                 } else {
-                    view.invoke(action.intent.clone(), cx);
+                    view.invoke(action.clone(), cx);
                 }
             }))
             .on_key_down(cx.listener(|_, event: &KeyDownEvent, window, _| {
@@ -781,9 +739,7 @@ impl Render for Tool {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
+                        v_flex()
                             .p_5()
                             .gap_4()
                             .child(content)

@@ -1,5 +1,5 @@
 use crate::{
-    commands::{self, Intent, Invoke},
+    commands::{self, Intent},
     lcd,
     settings::{self, Recent},
     theme, Desktop,
@@ -9,7 +9,7 @@ use gpui_kit::{
         button::{Button, ButtonVariants},
         menu::AppMenuBar,
         status_bar::StatusBar,
-        ActiveTheme, WindowExt,
+        v_flex, ActiveTheme, WindowExt,
     },
     prelude::*,
     *,
@@ -61,7 +61,6 @@ pub(crate) struct PlayerView {
     error: Option<String>,
     last_error: Option<String>,
     menu_bar: Entity<AppMenuBar>,
-    menu_state: String,
     closing: Closing,
     _subscriptions: Vec<Subscription>,
 }
@@ -156,7 +155,6 @@ impl PlayerView {
             error: None,
             last_error: None,
             menu_bar: AppMenuBar::new(cx),
-            menu_state: String::new(),
             closing: Closing::Open,
             _subscriptions: vec![activated, lost, focused, release, appearance],
         }
@@ -374,35 +372,18 @@ impl PlayerView {
             cx.notify();
         }
         if window.is_window_active() {
-            let state = self.menu_signature(cx);
-            if state != self.menu_state {
-                self.menu_state = state;
-                self.install_menu(cx);
-            }
+            self.install_menu(cx);
         }
     }
 
-    pub(crate) fn menu_signature(&self, cx: &App) -> String {
-        format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{:?}:{}:{:?}:{}:{}:{:?}:{:?}:{}:{}:{:?}",
-            self.presentation.ready,
-            self.presentation.paused,
-            self.presentation.walking,
+    fn menu(&self, cx: &App) -> commands::MenuState {
+        commands::MenuState::new(
+            &self.presentation,
             self.raw,
             self.status,
             self.scale,
-            self.presentation.speed_percent,
-            self.presentation.muted,
-            cx.global::<Desktop>().preferences.recent,
-            self.presentation.can_undo,
-            self.presentation.slots,
+            &cx.global::<Desktop>().preferences.recent,
             self.selected_slot(cx),
-            self.presentation.turbo,
-            self.presentation.peer,
-            self.presentation.connection,
-            self.presentation.modified,
-            self.presentation.saving,
-            self.presentation.eeprom
         )
     }
 
@@ -439,17 +420,7 @@ impl PlayerView {
     }
 
     pub(crate) fn install_menu(&self, cx: &mut App) {
-        commands::install(
-            commands::menus(
-                &self.presentation,
-                self.raw,
-                self.status,
-                self.scale,
-                &cx.global::<Desktop>().preferences.recent,
-                self.selected_slot(cx),
-            ),
-            cx,
-        );
+        self.menu(cx).install(cx);
     }
     pub fn begin_close(&mut self) {
         if let Some((pending, _, _)) = self.pending.take() {
@@ -580,9 +551,6 @@ impl PlayerView {
             Intent::Close => self.request_close(window, cx),
             Intent::Pause => self.player.send(Command::Pause),
             Intent::Reset => self.player.send(Command::Reset),
-            Intent::Walking => self
-                .player
-                .send(Command::Walking(!self.presentation.walking)),
             Intent::Mute => self.player.send(Command::Mute(!self.presentation.muted)),
             Intent::Speed(percent) => self.player.send(Command::Speed(percent)),
             Intent::Scale(scale) => {
@@ -601,8 +569,6 @@ impl PlayerView {
                 }
             }
             Intent::Raw => self.raw = !self.raw,
-            Intent::Connect(peer) => self.player.send(Command::Link(peer)),
-            Intent::Disconnect => self.player.send(Command::Disconnect),
             Intent::Recent(pair) => self.open_pair(pair, cx),
             Intent::Recents => {
                 let recent = &cx.global::<Desktop>().preferences.recent;
@@ -611,42 +577,17 @@ impl PlayerView {
                     .map(|pair| {
                         MenuItem::action(
                             settings::filename(&pair.eeprom),
-                            Invoke::new(Intent::Recent(pair.clone())),
+                            Intent::Recent(pair.clone()),
                         )
                     })
                     .collect();
                 commands::native(items).show(window.mouse_position(), window, cx);
             }
-            Intent::LocalLink => crate::tools::open(
-                self.player.clone(),
-                cx.weak_entity(),
-                crate::tools::Kind::Link,
-                window,
-                cx,
-            ),
-            Intent::TcpConnection => crate::tools::open(
-                self.player.clone(),
-                cx.weak_entity(),
-                crate::tools::Kind::Tcp,
-                window,
-                cx,
-            ),
-            Intent::Motion => crate::tools::open(
-                self.player.clone(),
-                cx.weak_entity(),
-                crate::tools::Kind::Motion,
-                window,
-                cx,
-            ),
+            Intent::Tool(kind) => {
+                crate::tools::open(self.player.clone(), cx.weak_entity(), kind, window, cx)
+            }
             Intent::Settings => crate::preferences::open(cx),
             Intent::DiagnosticsExport => self.choose(FileCommand::Diagnostics, window, cx),
-            Intent::Diagnostics => crate::tools::open(
-                self.player.clone(),
-                cx.weak_entity(),
-                crate::tools::Kind::Diagnostics,
-                window,
-                cx,
-            ),
             Intent::Controls => crate::preferences::open_controls(cx),
             Intent::About => window.open_dialog(cx, |dialog, _, _| {
                 dialog
@@ -679,73 +620,61 @@ impl PlayerView {
             operation,
             FileCommand::Firmware | FileCommand::Eeprom | FileCommand::LoadState
         );
-        if open {
-            let prompt = match operation {
-                FileCommand::Firmware => "Open Firmware",
-                FileCommand::Eeprom => "Open EEPROM",
-                _ => "Load State",
+        let directory = self
+            .presentation
+            .eeprom
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        cx.spawn_in(window, async move |view, cx| {
+            let receiver = if open {
+                let prompt = match operation {
+                    FileCommand::Firmware => "Open Firmware",
+                    FileCommand::Eeprom => "Open EEPROM",
+                    _ => "Load State",
+                };
+                let receiver = cx.update(|_, cx| {
+                    cx.prompt_for_paths(PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: false,
+                        prompt: Some(prompt.into()),
+                    })
+                });
+                match receiver {
+                    Ok(receiver) => receiver.await.map(|result| {
+                        result.map(|paths| paths.and_then(|paths| paths.into_iter().next()))
+                    }),
+                    Err(_) => return,
+                }
+            } else {
+                let name = match operation {
+                    FileCommand::SaveEepromAs => "walker.bin",
+                    FileCommand::SaveState => "walker.hstepstate",
+                    FileCommand::Screenshot => "screen.png",
+                    FileCommand::Diagnostics => "hachistep-diagnostics.json",
+                    _ => unreachable!(),
+                };
+                let receiver = cx.update(|_, cx| cx.prompt_for_new_path(&directory, Some(name)));
+                match receiver {
+                    Ok(receiver) => receiver.await,
+                    Err(_) => return,
+                }
             };
-            let receiver = cx.prompt_for_paths(PathPromptOptions {
-                files: true,
-                directories: false,
-                multiple: false,
-                prompt: Some(prompt.into()),
-            });
-            cx.spawn_in(window, async move |view, cx| match receiver.await {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(path) = paths.into_iter().next() {
-                        let _ = cx.update(|window, cx| {
-                            view.update(cx, |view, cx| view.selected(operation, path, window, cx))
-                        });
+            let _ = cx.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    match receiver {
+                        Ok(Ok(Some(path))) => view.selected(operation, path, window, cx),
+                        Ok(Err(error)) => view.error = Some(error.to_string()),
+                        _ if view.closing.pending() => view.cancel_close(cx),
+                        _ => (),
                     }
-                }
-                Ok(Err(error)) => {
-                    let _ = view.update(cx, |view, cx| {
-                        view.error = Some(error.to_string());
-                        cx.notify();
-                    });
-                }
-                _ => (),
-            })
-            .detach();
-        } else {
-            let name = match operation {
-                FileCommand::SaveEepromAs => "walker.bin",
-                FileCommand::SaveState => "walker.hstepstate",
-                FileCommand::Screenshot => "screen.png",
-                FileCommand::Diagnostics => "hachistep-diagnostics.json",
-                _ => unreachable!(),
-            };
-            let directory = self
-                .presentation
-                .eeprom
-                .as_ref()
-                .and_then(|p| p.parent())
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            let receiver = cx.prompt_for_new_path(&directory, Some(name));
-            cx.spawn_in(window, async move |view, cx| match receiver.await {
-                Ok(Ok(Some(path))) => {
-                    let _ = cx.update(|window, cx| {
-                        view.update(cx, |view, cx| view.selected(operation, path, window, cx))
-                    });
-                }
-                Ok(Err(error)) => {
-                    let _ = view.update(cx, |view, cx| {
-                        view.error = Some(error.to_string());
-                        cx.notify();
-                    });
-                }
-                _ => {
-                    let _ = view.update(cx, |view, cx| {
-                        if view.closing.pending() {
-                            view.cancel_close(cx);
-                        }
-                    });
-                }
-            })
-            .detach();
-        }
+                    cx.notify();
+                })
+            });
+        })
+        .detach();
     }
     fn selected(
         &mut self,
@@ -819,9 +748,7 @@ impl PlayerView {
         self.player.send(Command::Buttons(self.buttons));
     }
     fn empty(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = div()
-            .flex()
-            .flex_col()
+        let mut content = v_flex()
             .size_full()
             .items_center()
             .justify_center()
@@ -880,14 +807,12 @@ impl Render for PlayerView {
         } else {
             self.empty(cx)
         };
-        div()
+        v_flex()
             .size_full()
-            .flex()
-            .flex_col()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .on_action(cx.listener(|view, action: &Invoke, window, cx| {
-                view.execute(action.intent.clone(), window, cx)
+            .on_action(cx.listener(|view, action: &Intent, window, cx| {
+                view.execute(action.clone(), window, cx)
             }))
             .child(theme::title(
                 if loaded {
@@ -937,13 +862,7 @@ impl Render for PlayerView {
                         cx.listener(|view, event: &MouseDownEvent, window, cx| {
                             view.release();
                             view.focus.focus(window, cx);
-                            let items = commands::context(
-                                &view.presentation,
-                                view.raw,
-                                view.status,
-                                view.scale,
-                                view.selected_slot(cx),
-                            );
+                            let items = view.menu(cx).context();
                             commands::native(items).show(event.position, window, cx);
                         }),
                     )

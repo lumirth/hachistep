@@ -1,7 +1,7 @@
 use gpui_kit::*;
-use serde::Deserialize;
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = hachistep, no_json)]
 pub(crate) enum Intent {
     NewWindow,
     OpenFirmware,
@@ -25,7 +25,6 @@ pub(crate) enum Intent {
     Quit,
     Pause,
     Reset,
-    Walking,
     Speed(u16),
     Mute,
     Scale(u8),
@@ -33,30 +32,13 @@ pub(crate) enum Intent {
     Fullscreen,
     Status,
     Raw,
-    LocalLink,
-    Connect(u64),
-    TcpConnection,
-    Disconnect,
-    Motion,
+    Tool(crate::tools::Kind),
     Settings,
-    Diagnostics,
     DiagnosticsExport,
     Controls,
     Documentation,
     Report,
     About,
-}
-
-#[derive(Clone, Debug, PartialEq, Deserialize, Action)]
-#[action(namespace = hachistep, no_json)]
-pub(crate) struct Invoke {
-    pub(crate) intent: Intent,
-}
-
-impl Invoke {
-    pub fn new(intent: Intent) -> Self {
-        Self { intent }
-    }
 }
 
 pub(crate) fn bind(cx: &mut App) {
@@ -78,255 +60,304 @@ pub(crate) fn bind(cx: &mut App) {
         ("w", Intent::Close),
         ("q", Intent::Quit),
     ] {
-        cx.bind_keys([KeyBinding::new(
-            &format!("{modifier}-{key}"),
-            Invoke::new(intent),
-            None,
-        )]);
+        cx.bind_keys([KeyBinding::new(&format!("{modifier}-{key}"), intent, None)]);
     }
     for slot in 1..=10 {
         cx.bind_keys([
-            KeyBinding::new(
-                &format!("f{slot}"),
-                Invoke::new(Intent::LoadSlot(slot)),
-                None,
-            ),
-            KeyBinding::new(
-                &format!("shift-f{slot}"),
-                Invoke::new(Intent::SaveSlot(slot)),
-                None,
-            ),
+            KeyBinding::new(&format!("f{slot}"), Intent::LoadSlot(slot), None),
+            KeyBinding::new(&format!("shift-f{slot}"), Intent::SaveSlot(slot), None),
         ]);
     }
-    cx.bind_keys([KeyBinding::new(
-        "f12",
-        Invoke::new(Intent::UndoLoadState),
-        None,
-    )]);
+    cx.bind_keys([KeyBinding::new("f12", Intent::UndoLoadState, None)]);
 }
 
 fn item(name: &str, intent: Intent) -> MenuItem {
-    MenuItem::action(name.to_owned(), Invoke::new(intent))
+    MenuItem::action(name.to_owned(), intent)
 }
 
-pub(crate) fn install(menus: Vec<Menu>, cx: &mut App) {
-    fn collect(items: &[MenuItem], inherited: bool, disabled: &mut Vec<Intent>) {
-        for item in items {
-            match item {
-                MenuItem::Action {
-                    action,
-                    disabled: item_disabled,
-                    ..
-                } if inherited || *item_disabled => {
-                    if let Some(action) = action.as_any().downcast_ref::<Invoke>() {
-                        disabled.push(action.intent.clone());
-                    }
-                }
-                MenuItem::Submenu(menu) => {
-                    collect(&menu.items, inherited || menu.disabled, disabled)
-                }
-                _ => (),
-            }
+#[derive(PartialEq)]
+pub(crate) struct MenuState {
+    ready: bool,
+    paused: bool,
+    connected: bool,
+    speed_percent: u16,
+    turbo: bool,
+    muted: bool,
+    modified: bool,
+    saving: bool,
+    can_undo: bool,
+    slots: [bool; 10],
+    has_eeprom: bool,
+    raw: bool,
+    status: bool,
+    scale: u8,
+    recent: Vec<crate::settings::Recent>,
+    selected_slot: u8,
+}
+
+impl MenuState {
+    pub fn new(
+        frame: &hs_runtime::Presentation,
+        raw: bool,
+        status: bool,
+        scale: u8,
+        recent: &[crate::settings::Recent],
+        selected_slot: u8,
+    ) -> Self {
+        Self {
+            ready: frame.ready,
+            paused: frame.paused,
+            connected: frame.is_connection_active(),
+            speed_percent: frame.speed_percent,
+            turbo: frame.turbo,
+            muted: frame.muted,
+            modified: frame.modified,
+            saving: frame.saving,
+            can_undo: frame.can_undo,
+            slots: frame.slots,
+            has_eeprom: frame.eeprom.is_some(),
+            raw,
+            status,
+            scale,
+            recent: recent.to_vec(),
+            selected_slot,
         }
     }
-    let mut disabled = Vec::new();
-    for menu in &menus {
-        collect(&menu.items, menu.disabled, &mut disabled);
-    }
-    cx.global_mut::<crate::Desktop>().disabled_commands = disabled;
-    cx.set_menus(menus);
-}
 
-pub(crate) fn menus(
-    frame: &hs_runtime::Presentation,
-    raw: bool,
-    status: bool,
-    scale: u8,
-    recent: &[crate::settings::Recent],
-    selected_slot: u8,
-) -> Vec<Menu> {
-    let ready = frame.ready;
-    let paused = frame.paused;
-    let connected = frame.is_connection_active();
-    let active = |name: &str, intent: Intent| item(name, intent).disabled(!ready);
-    let mut files = vec![
-        item("New Window", Intent::NewWindow),
-        item("Open Firmware…", Intent::OpenFirmware),
-        item("Open EEPROM…", Intent::OpenEeprom),
-        MenuItem::submenu(Menu::new("Open Recent").items(recent.iter().map(|pair| {
-            item(
-                &crate::settings::filename(&pair.eeprom),
-                Intent::Recent(pair.clone()),
-            )
-        }))),
-        MenuItem::separator(),
-        active("Save EEPROM", Intent::SaveEeprom)
-            .disabled(!ready || !frame.modified || frame.saving),
-        active("Save EEPROM As…", Intent::SaveEepromAs).disabled(!ready || frame.saving),
-        active("Save Screenshot…", Intent::Screenshot),
-        MenuItem::separator(),
-        item("Close Window", Intent::Close),
-    ];
-    let mut tools = vec![
-        active("Walking Simulation…", Intent::Motion),
-        MenuItem::submenu(Menu::new("Infrared").items([
-            active("Local Link…", Intent::LocalLink),
-            active("TCP Connection…", Intent::TcpConnection),
-        ])),
-        MenuItem::separator(),
-        active("Diagnostics…", Intent::Diagnostics),
-    ];
-    if !cfg!(target_os = "macos") {
-        tools.push(item("Settings…", Intent::Settings));
-        files.push(item("Exit", Intent::Quit));
-    }
-    let mut menus = vec![
-        Menu::new("File").items(files),
-        Menu::new("Emulation").items([
-            active(if paused { "Resume" } else { "Pause" }, Intent::Pause),
-            active("Reset", Intent::Reset),
-            MenuItem::separator(),
-            MenuItem::submenu(
-                Menu::new("Speed").items([50, 75, 100, 150, 200, 400, 800].map(|percent| {
-                    item(&format!("{percent}%"), Intent::Speed(percent))
-                        .checked(percent == frame.speed_percent)
-                        .disabled(!ready || (percent != 100 && connected))
-                })),
-            ),
-            active("Fast-forward", Intent::ToggleTurbo)
-                .checked(frame.turbo)
-                .disabled(!ready || connected),
-            MenuItem::separator(),
-            MenuItem::submenu(
-                Menu::new("Load State").items(
-                    std::iter::once(
-                        active("Load from Selected Slot", Intent::LoadSelectedState)
-                            .disabled(!ready || !frame.slots[usize::from(selected_slot - 1)]),
-                    )
-                    .chain([MenuItem::separator()])
-                    .chain((1..=10).map(|slot| {
-                        item(&format!("Slot {slot}"), Intent::LoadSlot(slot))
-                            .checked(slot == selected_slot)
-                            .disabled(!ready || !frame.slots[usize::from(slot - 1)])
-                    }))
-                    .chain([
-                        MenuItem::separator(),
-                        active("Load from File…", Intent::LoadState),
-                    ]),
-                ),
-            ),
-            MenuItem::submenu(
-                Menu::new("Save State").items(
-                    std::iter::once(
-                        active("Save to Selected Slot", Intent::SaveSelectedState)
-                            .disabled(frame.eeprom.is_none()),
-                    )
-                    .chain([MenuItem::separator()])
-                    .chain((1..=10).map(|slot| {
-                        active(&format!("Slot {slot}"), Intent::SaveSlot(slot))
-                            .disabled(frame.eeprom.is_none())
-                            .checked(slot == selected_slot)
-                    }))
-                    .chain([
-                        MenuItem::separator(),
-                        active("Save to File…", Intent::SaveState),
-                    ]),
-                ),
-            ),
-            MenuItem::submenu(Menu::new("Select State Slot").items((1..=10).map(|slot| {
-                active(&format!("Slot {slot}"), Intent::SelectSlot(slot))
-                    .disabled(frame.eeprom.is_none())
-                    .checked(slot == selected_slot)
-            }))),
-            item("Undo Load State", Intent::UndoLoadState).disabled(!ready || !frame.can_undo),
-            MenuItem::separator(),
-            active("Mute Audio", Intent::Mute).checked(frame.muted),
-        ]),
-        Menu::new("View").items([
-            MenuItem::submenu(Menu::new("Display Scale").items([4, 5, 6, 8].map(|value| {
-                item(&format!("{value}×"), Intent::Scale(value)).checked(value == scale)
-            }))),
-            item("Fit Window to Display", Intent::Fit),
-            item("Fullscreen", Intent::Fullscreen),
-            MenuItem::separator(),
-            item("Show Status Bar", Intent::Status).checked(status),
-            item("Raw Drive", Intent::Raw).checked(raw),
-        ]),
-        Menu::new("Tools").items(tools),
-        Menu::new("Help").items([
-            item("Controls…", Intent::Controls),
-            item("Documentation", Intent::Documentation),
-            MenuItem::separator(),
-            item("Report a Problem…", Intent::Report),
-        ]),
-    ];
-    if cfg!(target_os = "macos") {
-        menus.insert(
-            0,
-            Menu::new("hachistep").items([
-                item("About hachistep…", Intent::About),
-                MenuItem::separator(),
-                item("Settings…", Intent::Settings),
-                MenuItem::separator(),
-                MenuItem::os_submenu("Services", SystemMenuType::Services),
-                MenuItem::separator(),
-                item("Quit hachistep", Intent::Quit),
-            ]),
-        );
-        menus.insert(
-            menus.len() - 1,
-            Menu::new("Window").items([item("New Window", Intent::NewWindow)]),
-        );
-    } else {
-        menus
-            .last_mut()
-            .unwrap()
-            .items
-            .push(item("About hachistep…", Intent::About));
-    }
-    menus
-}
-
-pub(crate) fn context(
-    frame: &hs_runtime::Presentation,
-    raw: bool,
-    status: bool,
-    scale: u8,
-    selected_slot: u8,
-) -> Vec<MenuItem> {
-    let mut items = Vec::new();
-    for menu in menus(frame, raw, status, scale, &[], selected_slot) {
-        match menu.name.as_ref() {
-            "Emulation" => {
-                items.extend(menu.items.into_iter().filter(|item| match item {
-                    MenuItem::Action { name, .. } => {
-                        matches!(name.as_ref(), "Pause" | "Resume" | "Reset")
+    pub fn install(self, cx: &mut App) {
+        if cx.global::<crate::Desktop>().menu.as_ref() == Some(&self) {
+            return;
+        }
+        let menus = self.menus();
+        fn collect(items: &[MenuItem], inherited: bool, disabled: &mut Vec<Intent>) {
+            for item in items {
+                match item {
+                    MenuItem::Action {
+                        action,
+                        disabled: item_disabled,
+                        ..
+                    } if inherited || *item_disabled => {
+                        if let Some(action) = action.as_any().downcast_ref::<Intent>() {
+                            disabled.push(action.clone());
+                        }
                     }
                     MenuItem::Submenu(menu) => {
-                        matches!(menu.name.as_ref(), "Save State" | "Load State")
+                        collect(&menu.items, inherited || menu.disabled, disabled)
                     }
-                    _ => false,
-                }));
-                items.push(MenuItem::separator());
+                    _ => (),
+                }
             }
-            "View" => {
-                items.extend(
-                    menu.items
-                        .into_iter()
-                        .filter(|item| matches!(item, MenuItem::Submenu(_))),
-                );
-                items.push(item("Save Screenshot…", Intent::Screenshot).disabled(!frame.ready));
-                items.push(MenuItem::separator());
-            }
-            "Tools" => items.extend(menu.items.into_iter().filter(|item| match item {
-                MenuItem::Action { name, .. } => name.as_ref() == "Walking Simulation…",
-                MenuItem::Submenu(menu) => menu.name.as_ref() == "Infrared",
-                _ => false,
-            })),
-            _ => (),
         }
+        let mut disabled = Vec::new();
+        for menu in &menus {
+            collect(&menu.items, menu.disabled, &mut disabled);
+        }
+        cx.global_mut::<crate::Desktop>().disabled_commands = disabled;
+        cx.global_mut::<crate::Desktop>().menu = Some(self);
+        cx.set_menus(menus);
     }
-    items
+
+    fn active(&self, name: &str, intent: Intent) -> MenuItem {
+        item(name, intent).disabled(!self.ready)
+    }
+
+    fn playback(&self) -> [MenuItem; 2] {
+        [
+            self.active(if self.paused { "Resume" } else { "Pause" }, Intent::Pause),
+            self.active("Reset", Intent::Reset),
+        ]
+    }
+
+    fn load_menu(&self) -> MenuItem {
+        MenuItem::submenu(
+            Menu::new("Load State").items(
+                std::iter::once(
+                    self.active("Load from Selected Slot", Intent::LoadSelectedState)
+                        .disabled(!self.ready || !self.slots[usize::from(self.selected_slot - 1)]),
+                )
+                .chain([MenuItem::separator()])
+                .chain((1..=10).map(|slot| {
+                    item(&format!("Slot {slot}"), Intent::LoadSlot(slot))
+                        .checked(slot == self.selected_slot)
+                        .disabled(!self.ready || !self.slots[usize::from(slot - 1)])
+                }))
+                .chain([
+                    MenuItem::separator(),
+                    self.active("Load from File…", Intent::LoadState),
+                ]),
+            ),
+        )
+    }
+
+    fn save_menu(&self) -> MenuItem {
+        MenuItem::submenu(
+            Menu::new("Save State").items(
+                std::iter::once(
+                    self.active("Save to Selected Slot", Intent::SaveSelectedState)
+                        .disabled(!self.has_eeprom),
+                )
+                .chain([MenuItem::separator()])
+                .chain((1..=10).map(|slot| {
+                    self.active(&format!("Slot {slot}"), Intent::SaveSlot(slot))
+                        .disabled(!self.has_eeprom)
+                        .checked(slot == self.selected_slot)
+                }))
+                .chain([
+                    MenuItem::separator(),
+                    self.active("Save to File…", Intent::SaveState),
+                ]),
+            ),
+        )
+    }
+
+    fn scale_menu(&self) -> MenuItem {
+        MenuItem::submenu(Menu::new("Display Scale").items([4, 5, 6, 8].map(|value| {
+            item(&format!("{value}×"), Intent::Scale(value)).checked(value == self.scale)
+        })))
+    }
+
+    fn infrared_menu(&self) -> MenuItem {
+        MenuItem::submenu(Menu::new("Infrared").items([
+            self.active("Local Link…", Intent::Tool(crate::tools::Kind::Link)),
+            self.active("TCP Connection…", Intent::Tool(crate::tools::Kind::Tcp)),
+        ]))
+    }
+
+    fn menus(&self) -> Vec<Menu> {
+        let Self {
+            ready,
+            connected,
+            raw,
+            status,
+            selected_slot,
+            ..
+        } = *self;
+        let recent = &self.recent;
+        let mut files = vec![
+            item("New Window", Intent::NewWindow),
+            item("Open Firmware…", Intent::OpenFirmware),
+            item("Open EEPROM…", Intent::OpenEeprom),
+            MenuItem::submenu(Menu::new("Open Recent").items(recent.iter().map(|pair| {
+                item(
+                    &crate::settings::filename(&pair.eeprom),
+                    Intent::Recent(pair.clone()),
+                )
+            }))),
+            MenuItem::separator(),
+            self.active("Save EEPROM", Intent::SaveEeprom)
+                .disabled(!ready || !self.modified || self.saving),
+            self.active("Save EEPROM As…", Intent::SaveEepromAs)
+                .disabled(!ready || self.saving),
+            self.active("Save Screenshot…", Intent::Screenshot),
+            MenuItem::separator(),
+            item("Close Window", Intent::Close),
+        ];
+        let mut tools = vec![
+            self.active(
+                "Walking Simulation…",
+                Intent::Tool(crate::tools::Kind::Motion),
+            ),
+            self.infrared_menu(),
+            MenuItem::separator(),
+            self.active(
+                "Diagnostics…",
+                Intent::Tool(crate::tools::Kind::Diagnostics),
+            ),
+        ];
+        if !cfg!(target_os = "macos") {
+            tools.push(item("Settings…", Intent::Settings));
+            files.push(item("Exit", Intent::Quit));
+        }
+        let mut menus = vec![
+            Menu::new("File").items(files),
+            Menu::new("Emulation").items(
+                self.playback().into_iter().chain([
+                    MenuItem::separator(),
+                    MenuItem::submenu(Menu::new("Speed").items(
+                        [50, 75, 100, 150, 200, 400, 800].map(|percent| {
+                            item(&format!("{percent}%"), Intent::Speed(percent))
+                                .checked(percent == self.speed_percent)
+                                .disabled(!ready || (percent != 100 && connected))
+                        }),
+                    )),
+                    self.active("Fast-forward", Intent::ToggleTurbo)
+                        .checked(self.turbo)
+                        .disabled(!ready || connected),
+                    MenuItem::separator(),
+                    self.load_menu(),
+                    self.save_menu(),
+                    MenuItem::submenu(Menu::new("Select State Slot").items((1..=10).map(|slot| {
+                        self.active(&format!("Slot {slot}"), Intent::SelectSlot(slot))
+                            .disabled(!self.has_eeprom)
+                            .checked(slot == selected_slot)
+                    }))),
+                    item("Undo Load State", Intent::UndoLoadState)
+                        .disabled(!ready || !self.can_undo),
+                    MenuItem::separator(),
+                    self.active("Mute Audio", Intent::Mute).checked(self.muted),
+                ]),
+            ),
+            Menu::new("View").items([
+                self.scale_menu(),
+                item("Fit Window to Display", Intent::Fit),
+                item("Fullscreen", Intent::Fullscreen),
+                MenuItem::separator(),
+                item("Show Status Bar", Intent::Status).checked(status),
+                item("Raw Drive", Intent::Raw).checked(raw),
+            ]),
+            Menu::new("Tools").items(tools),
+            Menu::new("Help").items([
+                item("Controls…", Intent::Controls),
+                item("Documentation", Intent::Documentation),
+                MenuItem::separator(),
+                item("Report a Problem…", Intent::Report),
+            ]),
+        ];
+        if cfg!(target_os = "macos") {
+            menus.insert(
+                0,
+                Menu::new("hachistep").items([
+                    item("About hachistep…", Intent::About),
+                    MenuItem::separator(),
+                    item("Settings…", Intent::Settings),
+                    MenuItem::separator(),
+                    MenuItem::os_submenu("Services", SystemMenuType::Services),
+                    MenuItem::separator(),
+                    item("Quit hachistep", Intent::Quit),
+                ]),
+            );
+            menus.insert(
+                menus.len() - 1,
+                Menu::new("Window").items([item("New Window", Intent::NewWindow)]),
+            );
+        } else {
+            menus
+                .last_mut()
+                .unwrap()
+                .items
+                .push(item("About hachistep…", Intent::About));
+        }
+        menus
+    }
+
+    pub fn context(&self) -> Vec<MenuItem> {
+        self.playback()
+            .into_iter()
+            .chain([
+                self.load_menu(),
+                self.save_menu(),
+                MenuItem::separator(),
+                self.scale_menu(),
+                self.active("Save Screenshot…", Intent::Screenshot),
+                MenuItem::separator(),
+                self.active(
+                    "Walking Simulation…",
+                    Intent::Tool(crate::tools::Kind::Motion),
+                ),
+                self.infrared_menu(),
+            ])
+            .collect()
+    }
 }
 
 pub(crate) fn native(

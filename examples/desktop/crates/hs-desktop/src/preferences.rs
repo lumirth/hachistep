@@ -1,5 +1,5 @@
 use crate::{
-    commands::{Intent, Invoke},
+    commands::Intent,
     lcd,
     settings::{self, Preferences},
     theme, Desktop,
@@ -8,13 +8,14 @@ use gpui_kit::{
     component::{
         button::Button,
         color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
+        h_flex,
         input::{Input, InputEvent, InputState},
         kbd::Kbd,
         menu::{DropdownMenu, PopupMenuItem},
         radio::RadioGroup,
         sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
         switch::Switch,
-        ActiveTheme, Sizable,
+        v_flex, ActiveTheme, Sizable,
     },
     prelude::*,
     *,
@@ -91,7 +92,6 @@ pub(crate) struct Settings {
     hex: [Entity<InputState>; 2],
     preview: Option<hs_runtime::Player>,
     target: Option<WeakEntity<crate::player::PlayerView>>,
-    menu_state: String,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -157,9 +157,8 @@ impl Settings {
         subscriptions.push(cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
                 view.target = cx.global::<Desktop>().active_player.clone();
-                view.menu_state.clear();
                 if let Some(target) = &view.target {
-                    crate::player_menu(target, &mut view.menu_state, cx);
+                    crate::player_menu(target, cx);
                 }
             }
         }));
@@ -182,7 +181,7 @@ impl Settings {
                     view.update(cx, |view, cx| {
                         if window.is_window_active() {
                             if let Some(target) = &view.target {
-                                crate::player_menu(target, &mut view.menu_state, cx);
+                                crate::player_menu(target, cx);
                             }
                         }
                         if view.section == Section::Appearance && view.preview.is_some() {
@@ -205,7 +204,6 @@ impl Settings {
             hex,
             preview,
             target,
-            menu_state: String::new(),
             _subscriptions: subscriptions,
         }
     }
@@ -249,65 +247,48 @@ impl Settings {
             .unwrap_or("Custom");
         let owner = cx.weak_entity();
         let frame = self.preview.as_ref().map(hs_runtime::Player::presentation);
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_6()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child("Theme")
-                    .child(
-                        RadioGroup::horizontal("appearance")
-                            .children(["System", "Light", "Dark"])
-                            .selected_index(Some(cx.global::<Desktop>().preferences.appearance))
-                            .on_change(cx.listener(|view, value, _, cx| {
-                                view.update(|p| p.appearance = *value, cx);
-                                theme::apply(*value, cx);
-                            })),
-                    ),
+                h_flex().justify_between().gap_4().child("Theme").child(
+                    RadioGroup::horizontal("appearance")
+                        .children(["System", "Light", "Dark"])
+                        .selected_index(Some(cx.global::<Desktop>().preferences.appearance))
+                        .on_change(cx.listener(|view, value, _, cx| {
+                            view.update(|p| p.appearance = *value, cx);
+                            theme::apply(*value, cx);
+                        })),
+                ),
             )
             .child(
-                div()
-                    .flex()
-                    .flex_col()
+                v_flex()
                     .gap_4()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child("LCD colors")
-                            .child(Button::new("palette").small().label(name).dropdown_menu(
-                                move |mut menu, _, _| {
-                                    for (preset, palette) in lcd::PRESETS {
-                                        let owner = owner.clone();
-                                        menu = menu.item(
-                                            PopupMenuItem::new(preset)
-                                                .checked(preset == name)
-                                                .on_click(move |_, window, cx| {
-                                                    let _ = owner.update(cx, |view, cx| {
-                                                        view.update(|p| p.palette = palette, cx);
-                                                        for (index, color) in
-                                                            [palette.panel, palette.ink]
-                                                                .into_iter()
-                                                                .enumerate()
-                                                        {
-                                                            view.set_color(
-                                                                index, color, window, cx,
-                                                            );
-                                                        }
-                                                    });
-                                                }),
-                                        );
-                                    }
-                                    menu
-                                },
-                            )),
-                    )
+                    .child(h_flex().justify_between().child("LCD colors").child(
+                        Button::new("palette").small().label(name).dropdown_menu(
+                            move |mut menu, _, _| {
+                                for (preset, palette) in lcd::PRESETS {
+                                    let owner = owner.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(preset)
+                                            .checked(preset == name)
+                                            .on_click(move |_, window, cx| {
+                                                let _ = owner.update(cx, |view, cx| {
+                                                    view.update(|p| p.palette = palette, cx);
+                                                    for (index, color) in
+                                                        [palette.panel, palette.ink]
+                                                            .into_iter()
+                                                            .enumerate()
+                                                    {
+                                                        view.set_color(index, color, window, cx);
+                                                    }
+                                                });
+                                            }),
+                                    );
+                                }
+                                menu
+                            },
+                        ),
+                    ))
                     .when_some(frame, |root, frame| {
                         root.child(div().flex().justify_center().py_2().child(
                             div().w_48().h_32().child(lcd::display(
@@ -331,9 +312,7 @@ impl Settings {
                                         .gap_2()
                                         .child(div().text_sm().child(label))
                                         .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
+                                            h_flex()
                                                 .gap_2()
                                                 .child(
                                                     ColorPicker::new(&self.colors[index])
@@ -375,13 +354,13 @@ impl Settings {
     }
     fn controls(&self, cx: &mut Context<Self>) -> AnyElement {
         let preferences = cx.global::<Desktop>().preferences.clone();
-        let mut keyboard = div().flex().flex_col().gap_2().child(
+        let mut keyboard = v_flex().gap_2().child(
             div()
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("Keyboard"),
         );
-        let mut gamepad = div().flex().flex_col().gap_2().child(
+        let mut gamepad = v_flex().gap_2().child(
             div()
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
@@ -391,52 +370,42 @@ impl Settings {
             keyboard = keyboard.child(self.key_row(label, ix, &preferences.keys[ix], cx));
             let owner = cx.weak_entity();
             gamepad = gamepad.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
-                    .child(label)
-                    .child(
-                        Button::new(("gamepad", ix))
-                            .small()
-                            .w_40()
-                            .label(
-                                settings::GAMEPAD
-                                    [preferences.gamepad[ix].min(settings::GAMEPAD.len() - 1)]
-                                .1,
-                            )
-                            .dropdown_menu(move |mut menu, _, _| {
-                                for (choice, (_, name)) in settings::GAMEPAD.iter().enumerate() {
-                                    let owner = owner.clone();
-                                    menu = menu.item(PopupMenuItem::new(*name).on_click(
-                                        move |_, _, cx| {
-                                            let _ = owner.update(cx, |view, cx| {
-                                                view.update(|p| p.gamepad[ix] = choice, cx);
-                                                let mapping =
-                                                    cx.global::<Desktop>().preferences.gamepad.map(
-                                                        |ix| {
-                                                            settings::GAMEPAD[ix
-                                                                .min(settings::GAMEPAD.len() - 1)]
-                                                            .0
-                                                        },
-                                                    );
-                                                cx.global::<Desktop>()
-                                                    .runtime
-                                                    .gamepad_mapping(mapping);
-                                            });
-                                        },
-                                    ));
-                                }
-                                menu
-                            }),
-                    ),
+                h_flex().justify_between().gap_4().child(label).child(
+                    Button::new(("gamepad", ix))
+                        .small()
+                        .w_40()
+                        .label(
+                            settings::GAMEPAD
+                                [preferences.gamepad[ix].min(settings::GAMEPAD.len() - 1)]
+                            .1,
+                        )
+                        .dropdown_menu(move |mut menu, _, _| {
+                            for (choice, (_, name)) in settings::GAMEPAD.iter().enumerate() {
+                                let owner = owner.clone();
+                                menu = menu.item(PopupMenuItem::new(*name).on_click(
+                                    move |_, _, cx| {
+                                        let _ = owner.update(cx, |view, cx| {
+                                            view.update(|p| p.gamepad[ix] = choice, cx);
+                                            let mapping =
+                                                cx.global::<Desktop>().preferences.gamepad.map(
+                                                    |ix| {
+                                                        settings::GAMEPAD
+                                                            [ix.min(settings::GAMEPAD.len() - 1)]
+                                                        .0
+                                                    },
+                                                );
+                                            cx.global::<Desktop>().runtime.gamepad_mapping(mapping);
+                                        });
+                                    },
+                                ));
+                            }
+                            menu
+                        }),
+                ),
             );
         }
         keyboard = keyboard.child(self.key_row("Fast-forward", 3, &preferences.turbo_key, cx));
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_6()
             .child(keyboard)
             .child(gamepad)
@@ -444,9 +413,7 @@ impl Settings {
     }
     fn key_row(&self, label: &str, index: usize, binding: &str, cx: &Context<Self>) -> AnyElement {
         let capture = self.capture == Some(index);
-        div()
-            .flex()
-            .items_center()
+        h_flex()
             .justify_between()
             .gap_4()
             .child(label.to_owned())
@@ -473,9 +440,7 @@ impl Settings {
     }
 
     fn audio(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_5()
             .child(
                 Switch::new("sound")
@@ -495,9 +460,7 @@ impl Settings {
     }
     fn emulation(&self, cx: &mut Context<Self>) -> AnyElement {
         let preferences = &cx.global::<Desktop>().preferences;
-        div()
-            .flex()
-            .flex_col()
+        v_flex()
             .gap_4()
             .child(self.speed_choice(
                 "default-speed",
@@ -524,9 +487,7 @@ impl Settings {
         cx: &Context<Self>,
     ) -> AnyElement {
         let owner = cx.weak_entity();
-        div()
-            .flex()
-            .items_center()
+        h_flex()
             .justify_between()
             .gap_4()
             .child(label)
@@ -597,22 +558,20 @@ impl Render for Settings {
                     }))
             }),
         );
-        div()
+        v_flex()
             .size_full()
-            .flex()
-            .flex_col()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .track_focus(&self.focus)
             .on_action(
-                cx.listener(|view, action: &Invoke, window, cx| match action.intent {
+                cx.listener(|view, action: &Intent, window, cx| match *action {
                     Intent::Close => window.remove_window(),
                     Intent::Quit => crate::quit(cx),
                     Intent::NewWindow => crate::new_window(cx, None),
                     Intent::Settings => (),
                     _ => {
                         if let Some(target) = &view.target {
-                            crate::invoke_player(target, action.intent.clone(), cx);
+                            crate::invoke_player(target, action.clone(), cx);
                         }
                     }
                 }),
@@ -692,9 +651,7 @@ impl Render for Settings {
                             .h_full()
                             .overflow_y_scroll()
                             .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
+                                v_flex()
                                     .p_6()
                                     .gap_5()
                                     .child(

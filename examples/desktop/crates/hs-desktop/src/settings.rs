@@ -12,7 +12,6 @@ use std::{
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub(crate) struct Recent {
     pub firmware: PathBuf,
-    #[serde(alias = "save")]
     pub eeprom: PathBuf,
 }
 
