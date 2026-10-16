@@ -48,7 +48,7 @@ jobs:
               - 'LICENSE'
       - if: steps.paths.outputs.core == 'true' || steps.paths.outputs.desktop == 'true' || github.event_name == 'workflow_dispatch'
         run: |
-          rustup show active-toolchain
+          rustup toolchain install --no-self-update
           cargo fmt --all -- --check
           cargo fmt --manifest-path desktop/Cargo.toml --all -- --check
   core:
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Prepare pinned Rust toolchain
         run: |
-          rustup show active-toolchain
+          rustup toolchain install --no-self-update
           rustup toolchain uninstall stable
       - run: rustup target add wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@v7
       - name: Prepare pinned Rust toolchain
         run: |
-          rustup show active-toolchain
+          rustup toolchain install --no-self-update
           rustup toolchain uninstall stable
       - if: runner.os == 'Linux'
         run: bash .github/install-linux.sh
