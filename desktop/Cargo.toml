@@ -1,0 +1,25 @@
+[workspace]
+members = ["crates/hs-runtime", "crates/hs-desktop"]
+resolver = "2"
+
+[patch.crates-io]
+# Preserve AppKit KVO subclasses during window teardown. Retire in #10.
+accesskit_macos = { git = "https://github.com/lumirth/accesskit", rev = "e09cf84b8e0af7659423e5b91eed41c5ac2dd693" }
+
+[workspace.package]
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+
+[workspace.dependencies]
+borsh = { version = "1.8.1", default-features = false, features = ["std", "derive"] }
+sha2 = { version = "0.10.9", default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+overflow-checks = true
+
+[profile.dev]
+overflow-checks = true
