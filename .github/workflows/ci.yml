@@ -27,6 +27,7 @@ jobs:
       - uses: dorny/paths-filter@v4
         id: paths
         with:
+          base: ${{ github.event.before || 'main' }}
           filters: |
             core:
               - '{crates,tools,.github,.cargo}/**/!(*.md)'
