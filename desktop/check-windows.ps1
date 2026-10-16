@@ -2,6 +2,14 @@ param([Parameter(Mandatory)][string]$Executable)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class Pointer {
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+}
+'@
 $scope = [System.Windows.Automation.TreeScope]
 $element = [System.Windows.Automation.AutomationElement]
 $invoke = [System.Windows.Automation.InvokePattern]::Pattern
@@ -48,7 +56,10 @@ try {
     $file.GetCurrentPattern($invoke).Invoke()
     $new = Find-Element $window 'New Window'
     Save-Window $window
-    $new.GetCurrentPattern($invoke).Invoke()
+    $point = $new.GetClickablePoint()
+    [Pointer]::SetCursorPos([int]$point.X, [int]$point.Y) | Out-Null
+    [Pointer]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    [Pointer]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     do {
         $windows = $element::RootElement.FindAll($scope::Children, $condition)
