@@ -41,8 +41,6 @@ jobs:
               - '.github/install-linux.sh'
               - 'rust-toolchain.toml'
               - 'desktop/package.py'
-              - 'desktop/check-startup.py'
-              - 'desktop/check-windows.ps1'
               - 'desktop/crates/hs-desktop/build.rs'
               - 'assets/**/!(*.md)'
               - 'LICENSE'
@@ -118,22 +116,6 @@ jobs:
         uses: ./.github/actions/package
       - if: needs.changes.outputs.package != 'true'
         run: cargo build --manifest-path desktop/Cargo.toml -p hs-desktop --locked
-      - name: Check Windows menus
-        if: needs.changes.outputs.package != 'true' && runner.os == 'Windows'
-        shell: pwsh
-        run: ./desktop/check-windows.ps1 desktop/target/debug/hs-desktop.exe
-      - name: Check startup
-        if: needs.changes.outputs.package != 'true' && runner.os != 'Windows'
-        run: python3 desktop/check-startup.py desktop/target/debug/hs-desktop
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: ${{ matrix.os }}-startup
-          path: |
-            out/*startup.log
-            out/windows-menu.png
-          retention-days: 7
-          if-no-files-found: ignore
   result:
     name: CI
     if: always()

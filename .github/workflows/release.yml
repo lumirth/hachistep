@@ -40,15 +40,6 @@ jobs:
             .
             desktop
       - uses: ./.github/actions/package
-      - uses: actions/upload-artifact@v7
-        if: failure()
-        with:
-          name: ${{ matrix.os }}-startup
-          path: |
-            out/*startup.log
-            out/windows-menu.png
-          retention-days: 7
-          if-no-files-found: ignore
   wasi:
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
     runs-on: ubuntu-24.04

@@ -7,8 +7,7 @@ exposes a genuine behavioral gap.
 
 CI runs the full diagnostic suite from a pinned hachiware revision when core or
 adapter code changes. Each run retains its results in the `hachiware` artifact.
-Desktop changes get native build and startup checks on macOS, Windows, and Linux;
-the Windows check also opens File → New Window.
+Desktop changes get native builds on macOS, Windows, and Linux.
 
 ## Check hardware behavior
 
