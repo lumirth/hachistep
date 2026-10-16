@@ -188,5 +188,18 @@ pub fn export(m: &Machine, dir: &Path, report: &str) -> io::Result<()> {
     let saved = m.snapshot().encode().map_err(io::Error::other)?;
     write_new(&dir.join("state.bin"), &saved)?;
     write_new(&dir.join("frame.pgm"), &frame(m))?;
+    let drive = m.display_drive().map_err(io::Error::other)?;
+    let supply = [Some(drive.voltages.target), drive.voltages.pump]
+        .into_iter()
+        .chain(drive.voltages.levels)
+        .flat_map(|v| v.unwrap_or(u32::MAX).to_le_bytes())
+        .collect::<Vec<_>>();
+    let electrodes = (0..=128)
+        .map(|n| drive.common_microvolts(n))
+        .chain((0..128).map(|n| drive.segment_microvolts(n)))
+        .flat_map(|v| v.unwrap_or(u32::MAX).to_le_bytes())
+        .collect::<Vec<_>>();
+    write_new(&dir.join("lcd-supply.bin"), &supply)?;
+    write_new(&dir.join("lcd-drive.bin"), &electrodes)?;
     write_new(&dir.join("report.json"), report.as_bytes())
 }

@@ -10,6 +10,15 @@ impl Bma150 {
     pub(super) fn automatic(&self) -> bool {
         self.registers[0x15] & 1 != 0
     }
+    pub(super) fn acquisition_cycles(&self) -> usize {
+        // Bosch Rev.1.6 §7.3 p.47 omits filter fill at 1500 Hz. The first
+        // complete scan is already included in the 1 ms wake-up interval.
+        if self.window() == 1 {
+            1
+        } else {
+            2 * self.window()
+        }
+    }
     pub(super) fn start_acquisition(&mut self, now: Time, ready: Duration) -> Result<(), Error> {
         for axis in &mut self.analog {
             axis.resume(now);
@@ -75,7 +84,7 @@ impl Bma150 {
             && self.test_phases.is_none()
             && self.image_deadline.is_none()
             && self.nv_operation.is_none()
-            && usize::from(self.auto_cycles) >= 2 * self.window()
+            && usize::from(self.auto_cycles) >= self.acquisition_cycles()
             && !self.interrupt()
             && !self.interrupts.verifying(&self.registers)
         {

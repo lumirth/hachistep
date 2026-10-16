@@ -22,7 +22,7 @@ mod state;
 mod time;
 pub use audio::Audio;
 pub use cpu::Registers;
-pub use devices::nt7508::LcdDrive;
+pub use devices::nt7508::{LcdDrive, LcdVoltages};
 pub use error::Error;
 pub use mcu::clocks::Frequencies;
 pub use signals::{

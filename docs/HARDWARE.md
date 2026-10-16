@@ -87,9 +87,16 @@ separate command and parameter writes.
 nominal 122 kHz oscillator, the frame rate is about 70.602 Hz. Palette widths describe
 drive duty, not perceived brightness.
 
-Pixels and COM/SEG outputs represent digital drive. Regulator/follower voltage behavior,
-the actual glass's response, and calibrated contrast remain fidelity work. A frontend
-chooses its visual response to the exported duty and electronic-volume setting.
+Pixels represent normalized PWM/FRC duty. `display_drive` also supplies nominal V0-V4
+and electrode voltages in microvolts, from the NT7508 equations and tables on pp.10,
+25-28 and 42-50. The board rail feeds VCI and VDDA. Temperature compensation uses
+1.4 V at 25 C; OTP test mode applies the signed contrast offset in EV steps.
+The board has no external LCD supplies or OTP programming voltage.
+
+Voltage outputs are steady-state values. Disabled stages and insufficient pump headroom
+produce unavailable levels rather than a guessed capacitor discharge or regulator
+dropout curve. The pump must exceed temperature-compensated V0 by 3 V. A frontend
+can use electrode voltages for its panel response; glass response is separate.
 
 ## Live reconfiguration and infrared
 

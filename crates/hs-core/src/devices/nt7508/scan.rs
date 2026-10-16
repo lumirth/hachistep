@@ -2,7 +2,7 @@
 //! only its last quantum's output latch needs to be materialized. Geometry is
 //! latched per frame, PWM per row, and pixel/palette data per quantum. The
 //! latch itself is materialized only before a change to what it latched.
-use super::{Nt7508, LCD_HEIGHT, LCD_WIDTH};
+use super::{LcdVoltages, Nt7508, LCD_HEIGHT, LCD_WIDTH};
 use crate::{
     error::Error,
     time::{Clock, Time},
@@ -16,13 +16,53 @@ pub struct LcdDrive {
     pub common: Option<u8>,
     pub segments: [u64; 2],
     pub inverted: bool,
+    pub voltages: LcdVoltages,
+    /// Power-save mode drives every electrode to VSS2 (NT7508 p.45).
+    pub grounded: bool,
 }
 impl LcdDrive {
     pub const OFF: Self = Self {
         common: None,
         segments: [0; 2],
         inverted: false,
+        voltages: LcdVoltages::OFF,
+        grounded: false,
     };
+    /// Electrode voltage relative to VSS2, in microvolts. NT7508 p.10.
+    pub fn common_microvolts(&self, common: u8) -> Option<u32> {
+        if common > 128 {
+            return None;
+        }
+        if self.grounded {
+            return Some(0);
+        }
+        self.common?;
+        if self.common == Some(common) {
+            if self.inverted {
+                Some(0)
+            } else {
+                self.voltages.levels[0]
+            }
+        } else {
+            self.voltages.levels[if self.inverted { 1 } else { 4 }]
+        }
+    }
+    pub fn segment_microvolts(&self, segment: u8) -> Option<u32> {
+        if segment >= 128 {
+            return None;
+        }
+        if self.grounded {
+            return Some(0);
+        }
+        self.common?;
+        let active = self.segments[usize::from(segment / 64)] & (1u64 << (segment % 64)) != 0;
+        match (active, self.inverted) {
+            (true, true) => self.voltages.levels[0],
+            (true, false) => Some(0),
+            (false, true) => self.voltages.levels[2],
+            (false, false) => self.voltages.levels[3],
+        }
+    }
 }
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -314,7 +354,11 @@ impl Nt7508 {
     /// retained state. Firmware can change RAM inside the current scan row.
     pub fn drive(&self, now: Time) -> Result<LcdDrive, Error> {
         if !self.enabled() || !self.oscillator_enabled {
-            return Ok(LcdDrive::OFF);
+            return Ok(LcdDrive {
+                voltages: self.voltages(),
+                grounded: self.power_save && self.supplied && self.ready.is_none(),
+                ..LcdDrive::OFF
+            });
         }
         let scan = self.project_scan(now)?;
         let common = if scan.row == scan.duty {
@@ -331,6 +375,8 @@ impl Nt7508 {
             common: Some(common),
             segments: self.segments(scan),
             inverted: scan.inverted,
+            voltages: self.voltages(),
+            grounded: false,
         })
     }
 }

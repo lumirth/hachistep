@@ -52,6 +52,8 @@ OBSERVATION_FILES = (
     "sensor-nv.bin",
     "lcd-ram.bin",
     "lcd-icons.bin",
+    "lcd-supply.bin",
+    "lcd-drive.bin",
     "frame.pgm",
 )
 EXPORTS = ("state.bin", *OBSERVATION_FILES)

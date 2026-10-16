@@ -7,7 +7,9 @@ use crate::{
     time::{Duration, Time, TimeError},
 };
 mod scan;
+mod voltage;
 pub use scan::LcdDrive;
+pub use voltage::LcdVoltages;
 pub const LCD_WIDTH: usize = 96;
 pub const LCD_HEIGHT: usize = 64;
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, Clone, Debug, PartialEq, Eq)]
@@ -48,7 +50,8 @@ pub struct Nt7508 {
     oscillator_enabled: bool,
     scan: scan::Scan,
     supplied: bool,
-    analog: bool,
+    supply_millivolts: u16,
+    temperature_millicelsius: i32,
     cold: bool,
     ready: Option<Time>,
 }
@@ -104,7 +107,8 @@ impl Nt7508 {
             oscillator_enabled: false,
             scan: scan::Scan::default(),
             supplied: true,
-            analog: true,
+            supply_millivolts: 3000,
+            temperature_millicelsius: 20_000,
             cold: false,
             ready: None,
         }
@@ -122,8 +126,10 @@ impl Nt7508 {
         }
         if supplied && !self.supplied {
             if self.cold {
-                let (ram, icons) = (self.ram, self.icons);
+                let (ram, icons, temperature) =
+                    (self.ram, self.icons, self.temperature_millicelsius);
                 *self = Self::new();
+                self.temperature_millicelsius = temperature;
                 self.ram = ram;
                 self.icons = icons;
                 self.cold = true;
@@ -136,8 +142,11 @@ impl Nt7508 {
             }
         }
         self.supplied = supplied;
-        self.analog = rail >= 2400;
+        self.supply_millivolts = rail;
         Ok(())
+    }
+    pub(crate) fn set_temperature(&mut self, millicelsius: i32) {
+        self.temperature_millicelsius = millicelsius;
     }
     pub(crate) fn lose_volatile(&mut self) {
         self.ram.fill(0);
@@ -228,7 +237,11 @@ impl Nt7508 {
         self.start_line
     }
     pub fn enabled(&self) -> bool {
-        self.supplied && self.analog && self.ready.is_none() && self.display_on && !self.power_save
+        self.supplied
+            && self.supply_millivolts >= 2400
+            && self.ready.is_none()
+            && self.display_on
+            && !self.power_save
     }
     pub fn write_counted_fixture(
         &mut self,
@@ -398,6 +411,14 @@ impl Nt7508 {
                 && self.oscillator_frequency <= 31
                 && self.gray_mode <= 7
                 && self.contrast <= 63
+                && self.regulator <= 7
+                && self.power_control <= 7
+                && self.booster & !11 == 0
+                && self.bias <= 7
+                && self.temperature_slope <= 1
+                && self.contrast_trim <= 15
+                && self.otp_control <= 3
+                && self.supplied == (self.supply_millivolts >= 1650)
                 && self.oscillator_control <= 3,
             "invalid LCD controller",
         )?;
