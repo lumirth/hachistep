@@ -83,10 +83,14 @@ See Bosch section 4.1 and `pw_accel_bma150.c` in the matching reconstruction.
 
 ## Display
 
-NT7508 p. 33's command-specific column-wrap rule governs the conflicting generic
-column-lock sentence on p. 15. E2 follows its explicit reset list on p. 29 and retains
-RAM. Pending command parameters survive chip-select transitions, consistent with the
-`pw` firmware's separate command and parameter writes.
+The column counter locks at byte `FFH`, following NT7508 p. 15's register
+description and p. 16's paired-byte map. The wrap sentence on p. 33 differs from
+that description. Wrapping also corrupts column zero when retail firmware draws
+sprites beyond the panel's right edge.
+
+E2 follows its explicit reset list on p. 29 and retains RAM. Pending command parameters
+survive chip-select transitions, consistent with the `pw` firmware's separate command
+and parameter writes.
 
 The firmware initializes 64 rows, 3-frame FRC, 9-step PWM, and a clock divisor of 3.
 With the nominal 122 kHz oscillator, that gives about 70.602 Hz. Palette widths

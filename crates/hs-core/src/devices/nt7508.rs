@@ -271,9 +271,8 @@ impl Nt7508 {
             column_byte: self.column_byte,
             value: byte,
         });
-        // The serial-interface and column-command descriptions specify wrap
-        // at the 256-byte page boundary; a generic paragraph contradicts them.
-        self.column_byte = (self.column_byte + 1) & 255;
+        // NT7508 p.15 locks the column counter at the end of RAM.
+        self.column_byte = (self.column_byte + 1).min(255);
     }
     fn command(&mut self, byte: u8, now: Time, output: &mut dyn Output) -> Result<(), Error> {
         if let Some(command) = self.pending.take() {
