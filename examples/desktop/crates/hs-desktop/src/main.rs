@@ -58,22 +58,35 @@ fn options(title: &str, width: f32, height: f32) -> WindowOptions {
     }
 }
 
-fn new_window(cx: &mut App, pair: Option<settings::Recent>) {
-    cx.defer(move |cx| create_window(cx, pair));
+enum Launch {
+    Firmware(PathBuf),
+    Files {
+        pair: settings::Recent,
+        create: bool,
+    },
 }
 
-fn create_window(cx: &mut App, pair: Option<settings::Recent>) {
+fn new_window(cx: &mut App, launch: Option<Launch>) {
+    cx.defer(move |cx| create_window(cx, launch));
+}
+
+fn create_window(cx: &mut App, launch: Option<Launch>) {
+    let (firmware, files) = match launch {
+        Some(Launch::Firmware(firmware)) => (Some(firmware), None),
+        Some(Launch::Files { pair, create }) => (None, Some((pair, create))),
+        None => (None, None),
+    };
     let runtime = cx.global::<Desktop>().runtime.clone();
     match gpui_kit::open_window(options("hachistep", 384., 256.), cx, |window, cx| {
-        cx.new(|cx| PlayerView::new(runtime.player(), window, cx))
+        cx.new(|cx| PlayerView::new(runtime.player(), firmware, window, cx))
     }) {
         Ok((handle, view)) => {
             cx.global_mut::<Desktop>().windows.push(OpenWindow {
                 handle,
                 view: view.downgrade(),
             });
-            if let Some(pair) = pair {
-                view.update(cx, |view, cx| view.open_pair(pair, false, cx));
+            if let Some((pair, create)) = files {
+                view.update(cx, |view, cx| view.open_pair(pair, create, cx));
             }
         }
         Err(error) => eprintln!("Could not open player: {error:#}"),
@@ -181,7 +194,13 @@ fn main() {
                 commands::Intent::Settings => preferences::open(cx),
                 _ => (),
             });
-            create_window(cx, pair.clone());
+            create_window(
+                cx,
+                pair.clone().map(|pair| Launch::Files {
+                    pair,
+                    create: false,
+                }),
+            );
             cx.activate(true);
         });
 }

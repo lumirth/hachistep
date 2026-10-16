@@ -332,7 +332,7 @@ impl Session {
         if let Some(at) = self.reset_release.filter(|&at| at < end) {
             inputs.push(TimedInput {
                 at: at.max(now),
-                input: Input::ResetPin(false),
+                input: Input::ResetPin(true),
             });
             self.reset_release = None;
         }
@@ -751,7 +751,7 @@ impl Worker {
                     Time::from_raw(now.raw() + 1),
                     vec![TimedInput {
                         at: now,
-                        input: Input::ResetPin(true),
+                        input: Input::ResetPin(false),
                     }],
                 )?;
                 session.reset_release = Some(Time::from_raw(

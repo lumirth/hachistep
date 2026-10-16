@@ -8,7 +8,7 @@ use gpui_kit::{
         button::Button,
         checkbox::Checkbox,
         form::{Field, Form},
-        input::{Input, InputState},
+        input::{Input, InputEvent, InputState},
         ActiveTheme,
     },
     prelude::*,
@@ -51,12 +51,17 @@ fn open_tool(player: Player, owner: WeakEntity<PlayerView>, kind: Kind, cx: &mut
         .as_deref()
         .map(settings::filename)
         .unwrap_or_else(|| "hachistep".into());
-    let height = 300.;
-    if let Err(error) = gpui_kit::open_window(
-        crate::options(&format!("{name} — {filename}"), 460., height),
-        cx,
-        |window, cx| cx.new(|cx| Tool::new(player, owner, kind, window, cx)),
-    ) {
+    let (width, height) = match kind {
+        Kind::Motion => (360., 160.),
+        Kind::Diagnostics => (460., 400.),
+        Kind::Link | Kind::Recent => (360., 240.),
+        Kind::Tcp(_) => (460., 260.),
+    };
+    let mut options = crate::options(&format!("{name} — {filename}"), width, height);
+    options.window_min_size = Some(size(px(320.), px(150.)));
+    if let Err(error) = gpui_kit::open_window(options, cx, |window, cx| {
+        cx.new(|cx| Tool::new(player, owner, kind, window, cx))
+    }) {
         eprintln!("Could not open {name}: {error:#}");
     }
 }
@@ -70,6 +75,7 @@ struct Tool {
     remote: bool,
     error: Option<String>,
     focus: FocusHandle,
+    _cadence: Subscription,
 }
 
 impl Tool {
@@ -82,6 +88,17 @@ impl Tool {
     ) -> Self {
         let cadence = cx.new(|cx| {
             InputState::new(window, cx).default_value(player.presentation().cadence.to_string())
+        });
+        let cadence_changed = cx.subscribe(&cadence, |view, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                if let Ok(cadence) = view.cadence.read(cx).value().parse::<u16>() {
+                    if (30..=240).contains(&cadence) {
+                        view.player.send(Command::Cadence(cadence));
+                        view.error = None;
+                        cx.notify();
+                    }
+                }
+            }
         });
         let address = cx.new(|cx| {
             InputState::new(window, cx).default_value(if matches!(kind, Kind::Tcp(true)) {
@@ -121,6 +138,7 @@ impl Tool {
             remote: false,
             error: None,
             focus,
+            _cadence: cadence_changed,
         }
     }
     fn invoke(&self, intent: Intent, _window: &mut Window, cx: &mut App) {
@@ -138,6 +156,12 @@ impl Tool {
         }
     }
     fn walking(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.player.presentation().walking {
+            self.invoke(Intent::Walking, window, cx);
+            self.error = None;
+            cx.notify();
+            return;
+        }
         match self.cadence.read(cx).value().parse::<u16>() {
             Ok(cadence) if (30..=240).contains(&cadence) => {
                 self.player.send(Command::Cadence(cadence));
@@ -156,11 +180,6 @@ impl Tool {
                     .label("Cadence · steps/min")
                     .child(Input::new(&self.cadence)),
             )
-            .child(Field::new().label("Motion").child(if frame.walking {
-                "Walking"
-            } else {
-                "Still"
-            }))
             .footer(
                 div().flex().gap_2().child(
                     Button::new("walking")
@@ -308,33 +327,23 @@ impl Tool {
                     })
                     .child(Input::new(&self.address)),
             )
-            .child(
-                Field::new().label_indent(false).child(
-                    Checkbox::new("remote")
-                        .label("Allow remote connections")
-                        .checked(self.remote)
-                        .on_change(cx.listener(|view, value, _, cx| {
-                            view.remote = *value;
-                            cx.notify();
-                        })),
-                ),
-            )
+            .when(listen, |form| {
+                form.child(
+                    Field::new().label_indent(false).child(
+                        Checkbox::new("remote")
+                            .label("Allow remote connections")
+                            .checked(self.remote)
+                            .on_change(cx.listener(|view, value, _, cx| {
+                                view.remote = *value;
+                                cx.notify();
+                            })),
+                    ),
+                )
+            })
             .child(
                 Field::new()
                     .label("Connection")
                     .child(frame.connection_name()),
-            )
-            .child(
-                Field::new().label_indent(false).child(
-                    Checkbox::new("mute-session")
-                        .label("Mute this player")
-                        .checked(frame.muted)
-                        .on_change(
-                            cx.listener(|view, value, _, _| {
-                                view.player.send(Command::Mute(*value))
-                            }),
-                        ),
-                ),
             )
             .footer(
                 div()

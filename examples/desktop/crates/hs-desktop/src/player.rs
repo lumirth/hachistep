@@ -60,7 +60,12 @@ impl PlayerView {
     pub fn presentation(&self) -> &Presentation {
         &self.presentation
     }
-    pub fn new(player: Player, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        player: Player,
+        firmware: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
         focus.focus(window, cx);
         let activated = cx.observe_window_activation(window, |view, window, cx| {
@@ -79,12 +84,11 @@ impl PlayerView {
         let focused = cx.on_focus(&focus, window, |view, _, _| {
             view.player.send(Command::Focus(true))
         });
-        let release = cx.on_release(|view, _| view.player.send(Command::Close));
+        let release = cx.on_release(|view, _| view.begin_close());
         let weak = cx.weak_entity();
         window.on_window_should_close(cx, move |_, cx| {
             weak.update(cx, |view, _| {
-                view.player.send(Command::Close);
-                view.closing = true;
+                view.begin_close();
             })
             .ok();
             false
@@ -104,7 +108,7 @@ impl PlayerView {
         Self {
             player,
             presentation: Presentation::default(),
-            firmware: None,
+            firmware,
             pending: None,
             focus,
             buttons: Buttons::RELEASED,
@@ -293,6 +297,9 @@ impl PlayerView {
         ));
     }
     pub fn begin_close(&mut self) {
+        if let Some((pending, _)) = self.pending.take() {
+            pending.send(Command::Close);
+        }
         self.closing = true;
         self.player.send(Command::Close);
     }
@@ -326,7 +333,7 @@ impl PlayerView {
             return;
         }
         if self.presentation.ready {
-            crate::new_window(cx, Some(pair));
+            crate::new_window(cx, Some(crate::Launch::Files { pair, create }));
             return;
         }
         let candidate = cx.global::<Desktop>().runtime.player();
@@ -359,10 +366,7 @@ impl PlayerView {
             Intent::UndoLoadState => self.player.send(Command::UndoLoadState),
             Intent::ToggleTurbo => self.player.send(Command::ToggleTurbo),
             Intent::Screenshot => self.choose(FileCommand::Screenshot, window, cx),
-            Intent::Close => {
-                self.closing = true;
-                self.player.send(Command::Close);
-            }
+            Intent::Close => self.begin_close(),
             Intent::Pause => self.player.send(Command::Pause),
             Intent::Reset => self.player.send(Command::Reset),
             Intent::Walking => self
@@ -554,7 +558,11 @@ impl PlayerView {
     ) {
         match operation {
             FileCommand::Firmware => {
-                self.firmware = Some(path);
+                if self.presentation.ready {
+                    crate::new_window(cx, Some(crate::Launch::Firmware(path)));
+                } else {
+                    self.firmware = Some(path);
+                }
             }
             FileCommand::Eeprom | FileCommand::NewEeprom => {
                 if let Some(firmware) = self.firmware.clone() {
