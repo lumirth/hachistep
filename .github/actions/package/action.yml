@@ -1,0 +1,19 @@
+name: Package desktop
+description: Build the native desktop and CLI archive.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: cargo build --release --locked -p hs-cli
+    - shell: bash
+      run: cargo build --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
+    - shell: bash
+      run: python desktop/package.py --out out/package
+    - uses: actions/upload-artifact@v7
+      with:
+        name: hachistep-${{ runner.os }}-${{ runner.arch }}
+        path: |
+          out/package/*.zip
+          out/package/*.tar.gz
+        retention-days: 7
+        if-no-files-found: error

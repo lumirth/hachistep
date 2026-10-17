@@ -1,0 +1,133 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+concurrency:
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      core: ${{ steps.paths.outputs.core }}
+      desktop: ${{ steps.paths.outputs.desktop }}
+      package: ${{ github.event_name != 'workflow_dispatch' && steps.paths.outputs.package || 'false' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: paths
+        with:
+          base: ${{ github.event.before || 'main' }}
+          filters: |
+            core:
+              - '{crates,tools,.github,.cargo}/**/!(*.md)'
+              - 'Cargo.*'
+              - 'rust-toolchain.toml'
+            desktop:
+              - 'desktop/**/!(*.md)'
+              - 'assets/**/!(*.md)'
+            package:
+              - '.github/actions/package/**/!(*.md)'
+              - '.github/workflows/release.yml'
+              - '.github/install-linux.sh'
+              - 'rust-toolchain.toml'
+              - 'desktop/package.py'
+              - 'desktop/crates/hs-desktop/build.rs'
+              - 'assets/**/!(*.md)'
+              - 'LICENSE'
+      - if: steps.paths.outputs.core == 'true' || steps.paths.outputs.desktop == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          rustup toolchain install --no-self-update
+          cargo fmt --all -- --check
+          cargo fmt --manifest-path desktop/Cargo.toml --all -- --check
+  core:
+    needs: changes
+    if: needs.changes.outputs.core == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare pinned Rust toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup toolchain uninstall stable
+      - run: rustup target add wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: core
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo check --workspace --all-features --target wasm32-wasip1 --locked
+      - run: cargo build --release --locked -p hs-cli
+      - uses: actions/checkout@v7
+        with:
+          repository: lumirth/hachiware
+          ref: 79213d8d84bbf4799c4c76792f9695d169d11f12
+          path: out/hachiware
+          persist-credentials: false
+      - name: Run Hachiware diagnostics
+        run: |
+          python3 out/hachiware/build.py out/guests
+          python3 out/hachiware/run.py --fixtures out/guests --adapter tools/hachiware_adapter.py --runner target/release/hachistep --out out/diagnostics
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hachiware
+          path: out/diagnostics
+          retention-days: 7
+          if-no-files-found: ignore
+  desktop:
+    needs: changes
+    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.package == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare pinned Rust toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup toolchain uninstall stable
+      - if: runner.os == 'Linux'
+        run: bash .github/install-linux.sh
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ needs.changes.outputs.package == 'true' && 'build' || 'desktop' }}
+          workspaces: |
+            .
+            desktop
+      - if: runner.os != 'Linux' && (needs.changes.outputs.core == 'true' || github.event_name == 'workflow_dispatch')
+        run: cargo check --workspace --all-targets --all-features --locked
+      - run: cargo clippy --manifest-path desktop/Cargo.toml --workspace --all-targets --all-features --locked -- -D warnings
+      - if: needs.changes.outputs.package == 'true'
+        uses: ./.github/actions/package
+      - if: needs.changes.outputs.package != 'true'
+        run: cargo build --manifest-path desktop/Cargo.toml -p hs-desktop --locked
+  result:
+    name: CI
+    if: always()
+    needs: [changes, core, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['RESULTS'])
+          assert jobs['changes']['result'] == 'success', jobs
+          assert all(job['result'] in ('success', 'skipped') for job in jobs.values()), jobs
+          PY
