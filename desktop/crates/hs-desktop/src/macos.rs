@@ -68,23 +68,6 @@ mod native {
             let _: () = msg_send![app, arrangeInFront: std::ptr::null::<Object>()];
         }
     }
-    pub fn restore_minimized() -> bool {
-        unsafe {
-            let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
-            let windows: *mut Object = msg_send![app, windows];
-            let count: usize = msg_send![windows, count];
-            for ix in 0..count {
-                let window: *mut Object = msg_send![windows, objectAtIndex: ix];
-                let minimized: BOOL = msg_send![window, isMiniaturized];
-                if minimized == YES {
-                    let _: () = msg_send![window, deminiaturize: std::ptr::null::<Object>()];
-                    let _: () = msg_send![window, makeKeyAndOrderFront: std::ptr::null::<Object>()];
-                    return true;
-                }
-            }
-        }
-        false
-    }
 }
 #[cfg(target_os = "macos")]
 pub(crate) use native::*;
@@ -96,7 +79,3 @@ pub(crate) fn finish_quit(_: bool) -> bool {
 }
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn bring_all() {}
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn restore_minimized() -> bool {
-    false
-}

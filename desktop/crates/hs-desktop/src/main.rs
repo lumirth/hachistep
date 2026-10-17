@@ -444,14 +444,6 @@ fn main() {
             pending_files.borrow_mut().extend(paths);
         }
     });
-    application.on_reopen(|cx| {
-        if macos::restore_minimized() {
-            return;
-        }
-        if cx.global::<Desktop>().windows.is_empty() {
-            new_window(cx, None);
-        }
-    });
     application.run(move |cx| {
         gpui_kit::init(cx);
         cx.set_app_identity("me.kukas.hachistep", "hachistep");
@@ -474,6 +466,14 @@ fn main() {
             tool_bounds: BTreeMap::new(),
             tcp_options: BTreeMap::new(),
         });
+        let reopen_context = cx.to_async();
+        platform.on_reopen(Box::new(move || {
+            reopen_context.update(|cx| {
+                if !cx.global::<Desktop>().quitting && cx.windows().is_empty() {
+                    new_window(cx, None);
+                }
+            });
+        }));
         let menu_context = cx.to_async();
         platform.on_will_open_app_menu(Box::new(move || {
             menu_context.update(|cx| {
