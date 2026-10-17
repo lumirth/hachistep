@@ -1,3 +1,3 @@
-Fix missing menu bars on Windows and Linux. Menus now update with each player's state.
+Fix macOS windows not reopening from the Dock after all windows close, and extra windows appearing later.
 
-macOS downloads now target Apple silicon.
+Prevent "Open firmware first" errors when using window commands before loading firmware.
