@@ -524,8 +524,10 @@ impl PlayerView {
     }
     pub fn release(&mut self) {
         self.buttons = Buttons::RELEASED;
-        self.player.send(Command::Turbo(false));
-        self.player.send(Command::Release);
+        if self.presentation.ready {
+            self.player.send(Command::Turbo(false));
+            self.player.send(Command::Release);
+        }
     }
 
     pub fn request_close(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
