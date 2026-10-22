@@ -1,18 +1,32 @@
 name: Package desktop
-description: Build the native desktop and CLI archive.
+description: Build the desktop download for the current platform.
 runs:
   using: composite
   steps:
     - shell: bash
-      run: cargo build --release --locked -p hs-cli
-    - shell: bash
       run: cargo build --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
-    - shell: bash
+    - if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        python -m venv out/package-venv
+        out/package-venv/bin/python -m pip install -r desktop/requirements-macos.txt
+        out/package-venv/bin/python desktop/package.py --out out/package
+    - if: runner.os != 'macOS'
+      shell: bash
       run: python desktop/package.py --out out/package
+    - name: Verify the app in the macOS image
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        mkdir out/package-mount
+        hdiutil attach -quiet -readonly -nobrowse -mountpoint out/package-mount out/package/*.dmg
+        trap 'hdiutil detach -quiet out/package-mount' EXIT
+        codesign --verify --deep --strict out/package-mount/hachistep.app
     - uses: actions/upload-artifact@v7
       with:
         name: hachistep-${{ runner.os }}-${{ runner.arch }}
         path: |
+          out/package/*.dmg
           out/package/*.zip
           out/package/*.tar.gz
         retention-days: 7

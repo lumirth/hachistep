@@ -72,19 +72,22 @@ Launch firmware and an EEPROM directly:
 cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked -- --firmware firmware.bin --eeprom alice.bin
 ```
 
-Core, CLI, runtime, and desktop use one release version. Build the CLI too before
-packaging the desktop download. Packaging requires Python 3.11 or newer:
+Packaging requires Python 3.11 or newer and a release desktop build. On macOS,
+install the DMG builder in a virtual environment first:
 
 ```sh
-cargo build --release --locked -p hs-cli
-python3 desktop/package.py --out out/desktop
+python3 -m venv .venv
+.venv/bin/python -m pip install -r desktop/requirements-macos.txt
+.venv/bin/python desktop/package.py --out out/desktop
 ```
 
-The versioned ZIP or Linux tarball contains the desktop application and
-`hachistep-cli`. Linux needs an X11 or Wayland session and a Vulkan driver.
+On Windows and Linux, run `python3 desktop/package.py --out out/desktop`.
+The downloads are a macOS DMG, a Windows ZIP, and a Linux tarball. To install on
+macOS, open the DMG and drag hachistep to Applications. Linux needs an X11 or
+Wayland session and a Vulkan driver.
 
 The Release workflow builds downloads for version tags. Run it manually to get
-review archives for one platform or all platforms. CI checks development builds
-on ordinary changes and packaged builds when packaging inputs change.
+review downloads for one platform or all platforms. CI builds packages when
+packaging inputs change.
 
 The desktop pins an AccessKit 0.26.3 [KVO teardown backport](https://github.com/lumirth/accesskit/commit/e09cf84b8e0af7659423e5b91eed41c5ac2dd693) to prevent a macOS crash when closing a window after keyboard input. [Issue #10](https://github.com/lumirth/hachistep/issues/10) tracks returning to a published release.

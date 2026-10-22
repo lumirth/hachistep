@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package existing desktop and CLI release builds for the current platform."""
+"""Package the desktop release build for the current platform."""
 import argparse
 from pathlib import Path
 import platform
@@ -16,7 +16,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--binary", type=Path)
-    parser.add_argument("--cli", type=Path)
     args = parser.parse_args()
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     core_version = tomllib.loads((ROOT.parent / "Cargo.toml").read_text())["workspace"]["package"]["version"]
@@ -34,10 +33,10 @@ def main():
     assets = ROOT.parent / "assets/icons"
     suffix = ".exe" if sys.platform == "win32" else ""
     binary = args.binary or ROOT / f"target/release/hs-desktop{suffix}"
-    cli = args.cli or ROOT.parent / f"target/release/hachistep{suffix}"
-    shutil.copy2(cli, stage / f"hachistep-cli{suffix}")
-    shutil.copy2(ROOT.parent / "LICENSE", stage / "LICENSE")
+    archive = out / f"hachistep-{version}-{systems[sys.platform]}-{arch}"
     if sys.platform == "darwin":
+        import dmgbuild
+
         contents = stage / "hachistep.app/Contents"
         (contents / "MacOS").mkdir(parents=True)
         (contents / "Resources").mkdir()
@@ -60,12 +59,26 @@ def main():
                 }],
             }, file)
         subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(contents.parent)], check=True)
+        archive = f"{archive}.dmg"
+        dmgbuild.build_dmg(str(archive), "hachistep", settings={
+            "format": "UDZO",
+            "files": [str(contents.parent)],
+            "symlinks": {"Applications": "/Applications"},
+            "icon": str(assets / "macos/icon.icns"),
+            "background": str(ROOT.parent / "assets/dmg/background.png"),
+            # Finder can keep the user's path and status bars visible.
+            # Leave room below the icon labels.
+            "window_rect": ((200, 200), (640, 420)),
+            "icon_locations": {"hachistep.app": (166, 220), "Applications": (474, 220)},
+            "icon_size": 112,
+            "text_size": 14,
+        })
     else:
         shutil.copy2(binary, stage / f"hachistep{suffix}")
+        shutil.copy2(ROOT.parent / "LICENSE", stage / "LICENSE")
         if sys.platform == "linux":
             shutil.copy2(ROOT.parent / "assets/glyph.svg", stage / "hachistep.svg")
-    archive = out / f"hachistep-{version}-{systems[sys.platform]}-{arch}"
-    archive = shutil.make_archive(str(archive), "gztar" if sys.platform == "linux" else "zip", out, stage.name)
+        archive = shutil.make_archive(str(archive), "gztar" if sys.platform == "linux" else "zip", out, stage.name)
     print(archive)
 
 

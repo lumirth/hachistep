@@ -36,40 +36,11 @@ jobs:
         with:
           shared-key: build
           save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          workspaces: |
-            .
-            desktop
+          workspaces: desktop
       - uses: ./.github/actions/package
-  wasi:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-      - name: Prepare pinned Rust toolchain
-        run: |
-          rustup toolchain install --no-self-update
-          rustup toolchain uninstall stable
-      - run: rustup target add wasm32-wasip1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: core
-          save-if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-      - run: cargo build --release --locked -p hs-cli --target wasm32-wasip1
-      - name: Package WASI CLI
-        run: |
-          version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
-          mkdir -p out/package/hachistep
-          cp target/wasm32-wasip1/release/hachistep.wasm LICENSE out/package/hachistep/
-          tar -czf "out/package/hachistep-$version-wasm32-wasip1.tar.gz" -C out/package hachistep
-      - uses: actions/upload-artifact@v7
-        with:
-          name: hachistep-wasi
-          path: out/package/*.tar.gz
-          retention-days: 7
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [build, wasi]
+    needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -94,5 +65,5 @@ jobs:
           gh run watch "$run" --exit-status --interval 10
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
           test "$TAG" = "v$version"
-          (cd out/release && sha256sum -- *.zip *.tar.gz > SHA256SUMS)
+          (cd out/release && sha256sum -- *.dmg *.zip *.tar.gz > SHA256SUMS)
           gh release create "$TAG" out/release/* --verify-tag --title "hachistep $version" --notes-file docs/release.md --latest
