@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="360" viewBox="0 0 640 360">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="640" height="420" viewBox="0 0 640 420">
   <defs>
     <linearGradient id="paper" x2="0" y2="1">
       <stop stop-color="#FCF8EE"/>
       <stop offset="1" stop-color="#F2E7D2"/>
     </linearGradient>
   </defs>
-  <rect width="640" height="360" fill="url(#paper)"/>
+  <rect width="640" height="420" fill="url(#paper)"/>
   <image x="210" y="28" width="220" height="51" xlink:href="../logo.svg"/>
   <text x="320" y="113" text-anchor="middle" font-family="Helvetica Neue, Helvetica, sans-serif" font-size="17" fill="#68502E">Drag hachistep to Applications</text>
   <path d="M288 220H352M340 208L352 220L340 232" fill="none" stroke="#BC872E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>

@@ -66,7 +66,9 @@ def main():
             "symlinks": {"Applications": "/Applications"},
             "icon": str(assets / "macos/icon.icns"),
             "background": str(ROOT.parent / "assets/dmg/background.png"),
-            "window_rect": ((200, 200), (640, 360)),
+            # Finder can keep the user's path and status bars visible.
+            # Leave room below the icon labels.
+            "window_rect": ((200, 200), (640, 420)),
             "icon_locations": {"hachistep.app": (166, 220), "Applications": (474, 220)},
             "icon_size": 112,
             "text_size": 14,
