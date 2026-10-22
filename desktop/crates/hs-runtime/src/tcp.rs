@@ -49,6 +49,7 @@ impl std::fmt::Display for Connection {
 pub(crate) struct Incoming {
     pub(crate) bytes: SyncSender<(Instant, u8)>,
     pub(crate) wake: thread::Thread,
+    pub(crate) maintenance: Option<crate::melonds::Maintenance>,
 }
 
 pub(crate) struct Tcp {
@@ -62,6 +63,7 @@ pub(crate) struct Tcp {
     receive_end: Time,
     burst: Vec<u8>,
     transmit_end: Time,
+    maintenance: Option<crate::melonds::Maintenance>,
 }
 
 impl Drop for Tcp {
@@ -94,6 +96,8 @@ impl Tcp {
             Connection::Connecting
         }));
         let stop = Arc::new(AtomicBool::new(false));
+        let maintenance = melon_port.map(|_| Arc::new(Mutex::new(None)));
+        let worker_maintenance = maintenance.clone();
         let worker_state = state.clone();
         let worker_stop = stop.clone();
         thread::Builder::new()
@@ -102,6 +106,7 @@ impl Tcp {
                 let incoming = Incoming {
                     bytes: incoming,
                     wake,
+                    maintenance: worker_maintenance,
                 };
                 let result = if let Some(port) = melon_port {
                     crate::melonds::transport(port, &worker_stop, &worker_state, outgoing, incoming)
@@ -133,6 +138,7 @@ impl Tcp {
             receive_end: Time::ZERO,
             burst: Vec::new(),
             transmit_end: Time::ZERO,
+            maintenance,
         }
     }
 
@@ -203,25 +209,56 @@ impl Tcp {
                 .checked_add(Duration::from_micros(elapsed))
                 .context("IR clock overflow")?;
             let start = now.max(arrived).max(self.receive_end);
-            for cell in 0..9 {
-                if cell == 0 || byte & (1 << (cell - 1)) == 0 {
-                    let at = Time::from_raw(start.raw() + BIT * cell);
-                    self.incoming.push_back(TimedInput {
-                        at,
-                        input: Input::InfraredLevel(true),
-                    });
-                    self.incoming.push_back(TimedInput {
-                        at: Time::from_raw(at.raw() + BIT * 3 / 16),
-                        input: Input::InfraredLevel(false),
-                    });
+            self.receive_byte(start, byte)?;
+        }
+        // Local maintenance follows guest time and ordinary optical inputs;
+        // debugger waits do not own its scheduling. Real input takes priority.
+        if self.frame.is_none() && self.burst.is_empty() {
+            let frame = self
+                .maintenance
+                .as_ref()
+                .and_then(|m| *m.lock().unwrap())
+                .filter(|(seen, _)| seen.elapsed() < WallDuration::from_secs(1));
+            if let Some((_, bytes)) = frame {
+                let due = self
+                    .receive_end
+                    .max(self.transmit_end)
+                    .checked_add(Duration::from_micros(32_000))
+                    .context("IR clock overflow")?;
+                if due < end {
+                    for byte in bytes {
+                        self.receive_byte(now.max(due).max(self.receive_end), byte)?;
+                    }
+                    // A burst ends with idle time; a real packet arriving
+                    // during maintenance must not join its eight-byte frame.
+                    self.receive_end = self
+                        .receive_end
+                        .checked_add(Duration::from_micros(1000))
+                        .context("IR clock overflow")?;
                 }
             }
-            self.receive_end = start
-                .checked_add(Duration::from_raw(BIT * 10))
-                .context("IR clock overflow")?;
         }
         let count = self.incoming.partition_point(|input| input.at < end);
         Ok(self.incoming.drain(..count).collect())
+    }
+    fn receive_byte(&mut self, start: Time, byte: u8) -> Result<()> {
+        for cell in 0..9 {
+            if cell == 0 || byte & (1 << (cell - 1)) == 0 {
+                let at = Time::from_raw(start.raw() + BIT * cell);
+                self.incoming.push_back(TimedInput {
+                    at,
+                    input: Input::InfraredLevel(true),
+                });
+                self.incoming.push_back(TimedInput {
+                    at: Time::from_raw(at.raw() + BIT * 3 / 16),
+                    input: Input::InfraredLevel(false),
+                });
+            }
+        }
+        self.receive_end = start
+            .checked_add(Duration::from_raw(BIT * 10))
+            .context("IR clock overflow")?;
+        Ok(())
     }
 }
 

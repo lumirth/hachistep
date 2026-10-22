@@ -619,8 +619,6 @@ impl Worker {
         }
     }
     fn run(&mut self) {
-        #[cfg(target_os = "macos")]
-        let mut priority = melonds::Priority::new();
         let mut last = Instant::now();
         let mut publish = Instant::now();
         let mut audio_check = Instant::now();
@@ -651,12 +649,6 @@ impl Worker {
                 }
                 audio_check = Instant::now();
             }
-            #[cfg(target_os = "macos")]
-            priority.set(
-                self.sessions
-                    .values()
-                    .any(|s| s.tcp.as_ref().is_some_and(|t| t.melon_ds && t.active())),
-            );
             self.poll_gamepads();
             if last.elapsed() > Duration::from_millis(500) {
                 let linked: Vec<_> = self.links.iter().flat_map(|link| link.ids).collect();

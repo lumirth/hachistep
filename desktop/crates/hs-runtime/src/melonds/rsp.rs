@@ -14,7 +14,6 @@ pub(super) struct Rsp {
     input: BufReader<TcpStream>,
     output: TcpStream,
     halted: bool,
-    breakpoint: Option<u32>,
     trace: Option<(PathBuf, VecDeque<String>)>,
 }
 
@@ -33,7 +32,6 @@ impl Rsp {
             input: BufReader::new(output.try_clone()?),
             output,
             halted: false,
-            breakpoint: None,
             trace: std::env::var_os("HACHISTEP_MELONDS_TRACE").map(|p| (p.into(), VecDeque::new())),
         };
         // NoAck survives disconnect in melonDS 1.1: the initial '+' reply may
@@ -76,8 +74,43 @@ impl Rsp {
         }
         Ok(byte[0])
     }
+    fn wait_response(&mut self) -> Result<()> {
+        let start = Instant::now();
+        let mut wake = start;
+        self.output
+            .set_read_timeout(Some(Duration::from_millis(1)))?;
+        loop {
+            match self.input.fill_buf() {
+                Ok(bytes) => {
+                    ensure!(!bytes.is_empty(), "melonDS disconnected");
+                    break;
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(e) => return Err(e.into()),
+            }
+            ensure!(
+                start.elapsed() < Duration::from_secs(2),
+                "melonDS stopped responding. Resume it or close its settings dialog, then retry"
+            );
+            // Stock Poll checks socket readability before its existing receive
+            // buffer. Continue + the next command can arrive together, leaving
+            // that command buffered until another byte arrives. ACK is ignored
+            // in NoAck mode and wakes Poll without replaying a command/write.
+            if wake.elapsed() >= Duration::from_millis(10) {
+                self.output.write_all(b"+")?;
+                wake = Instant::now();
+            }
+        }
+        self.output.set_read_timeout(Some(Duration::from_secs(2)))?;
+        Ok(())
+    }
     fn receive(&mut self) -> Result<String> {
         loop {
+            self.wait_response()?;
             match self.byte()? {
                 b'$' => break,
                 b'+' => (),
@@ -100,9 +133,8 @@ impl Rsp {
             checksum == body.iter().fold(0u8, |sum, b| sum.wrapping_add(*b)),
             "Debugger checksum mismatch"
         );
-        // NoAck mode disables protocol retransmission. Stock still accepts '+',
-        // and sending it promptly acknowledges the TCP data as well, preventing
-        // its next small response from waiting behind Nagle on every platform.
+        // Stock accepts ACKs even in NoAck mode. Sending one promptly also
+        // carries a TCP acknowledgement for the response just received.
         self.output.write_all(b"+")?;
         Ok(String::from_utf8(body)?)
     }
@@ -165,11 +197,6 @@ impl Rsp {
                 format!("{:.3}ms ok", start.elapsed().as_secs_f64() * 1000.)
             });
         }
-        Ok(())
-    }
-    pub fn breakpoint(&mut self, address: u32) -> Result<()> {
-        self.ok(&format!("Z1,{address:x},4"))?;
-        self.breakpoint = Some(address);
         Ok(())
     }
     pub fn wait_stop(&mut self) -> Result<bool> {
@@ -235,11 +262,6 @@ impl Rsp {
 
 impl Drop for Rsp {
     fn drop(&mut self) {
-        if let Some(address) = self.breakpoint {
-            let _ = self.ok(&format!("z1,{address:x},4"));
-        }
-        // Stock melonDS retains breakpoints after socket loss. Remove ours
-        // before releasing execution on an ordinary disconnect.
         let _ = self.send("c");
         if let Some((path, lines)) = &self.trace {
             if let Ok(mut file) = std::fs::File::create(path) {

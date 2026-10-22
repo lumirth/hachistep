@@ -1,7 +1,8 @@
 // Cartridge contract: ctrl-cheeb-del/pokeheartgold@f63c1d92,
 // lib/NitroSDK/src/card/card_spi_wait.c and application/pokewalker/pokewalker_ir.c.
-// The adapter replaces only block I/O. Both firmware endpoints own handshakes,
-// timeouts, checksums, and persistence; the optical path is shared with TCP.
+// The adapter replaces block I/O. Both firmware endpoints own the application
+// protocol and persistence. Local maintenance bounds sensitivity to host stalls;
+// the optical path is shared with TCP.
 mod rsp;
 
 use crate::tcp::{Connection, Incoming};
@@ -12,7 +13,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::Receiver,
-        Mutex,
+        Arc, Mutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -36,24 +37,25 @@ const PARTS: [(usize, usize, &str); 3] = [
     ),
 ];
 const RAM: u32 = 0x0200_0000;
+const HOST: usize = 128;
 const RX: usize = 144;
 const TX: usize = 572;
 const MAIL: usize = 484;
 const ACTIVE: usize = MAIL + 20;
-const SEQUENCE: usize = MAIL + 24;
 const EPOCH: usize = 512;
-const MAX: usize = 185;
-// The write routine has published its complete block and is about to return.
-const TRANSMITTED: u32 = 448;
+const MAX: usize = 136;
+const MAINTENANCE: usize = RX + MAX;
+pub(crate) type Maintenance = Arc<Mutex<Option<(Instant, [u8; 8])>>>;
 
 fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
 }
 fn mutable(at: usize) -> bool {
-    (RX..RX + MAX).contains(&at)
-        || (TX..TX + MAX).contains(&at)
+    (HOST..MAINTENANCE + 8).contains(&at)
+        || (TX..TX + MAX * 2).contains(&at)
         || (MAIL..MAIL + 28).contains(&at)
         || (EPOCH..EPOCH + 16).contains(&at)
+        || (548..552).contains(&at)
 }
 fn shim_part(bytes: &[u8], start: usize, end: usize) -> bool {
     (start..end).all(|i| mutable(i) || bytes[i] == IMAGE[i])
@@ -135,9 +137,48 @@ fn install(rsp: &mut Rsp, base: u32) -> Result<()> {
         shim_part(&rsp.read(base, IMAGE.len())?, 0, IMAGE.len()),
         "The game changed while connecting"
     );
-    rsp.write(base + MAIL as u32, &[0; 24])?;
+    rsp.write(base + HOST as u32, &[0; 16])?;
+    rsp.write(base + MAIL as u32, &[0; 28])?;
     rsp.write(base + ACTIVE as u32, &1u32.to_le_bytes())?;
     Ok(())
+}
+
+// Unknown 0x2e is ignored by both matching protocol handlers, while receive
+// activity renews their inactivity timer. Unlike 0x24/0x26, it cannot advance
+// an application transfer. Learn only from a checksum-valid established frame.
+fn maintenance(bytes: &[u8], current: &mut Option<[u8; 8]>, closed: &mut bool) {
+    if bytes == [0xfc ^ 0xaa] {
+        *current = None;
+        *closed = false;
+        return;
+    }
+    if bytes.len() < 8 {
+        return;
+    }
+    let mut decoded: Vec<_> = bytes.iter().map(|b| b ^ 0xaa).collect();
+    let expected = u16::from_le_bytes([decoded[2], decoded[3]]);
+    decoded[2..4].fill(0);
+    if checksum(&decoded) != expected {
+        return;
+    }
+    if decoded[0] == 0xf4 {
+        *current = None;
+        *closed = true;
+    } else if !*closed && decoded[0] < 0xf0 {
+        let mut frame = [0u8; 8];
+        frame[0] = 0x2e;
+        frame[4..].copy_from_slice(&decoded[4..8]);
+        let sum = checksum(&frame);
+        frame[2..4].copy_from_slice(&sum.to_le_bytes());
+        *current = Some(frame);
+    }
+}
+fn checksum(bytes: &[u8]) -> u16 {
+    let sum = bytes.iter().enumerate().fold(2u32, |sum, (i, b)| {
+        sum + (u32::from(*b) << if i % 2 == 0 { 8 } else { 0 })
+    });
+    let sum = (sum & 0xffff) + (sum >> 16);
+    (sum + (sum >> 16)) as u16
 }
 
 pub(super) fn transport(
@@ -147,12 +188,6 @@ pub(super) fn transport(
     outgoing: Receiver<Vec<u8>>,
     incoming: Incoming,
 ) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    let mut priority = Priority::new();
-    #[cfg(target_os = "macos")]
-    priority.set(true);
-    #[cfg(target_os = "macos")]
-    let _activity = Activity::new();
     let mut rsp = Rsp::connect(port)?;
     let base = locate(&mut rsp, stop)?;
     install(&mut rsp, base)?;
@@ -160,104 +195,132 @@ pub(super) fn transport(
         .duration_since(UNIX_EPOCH)?
         .as_nanos()
         .to_le_bytes();
-    let mut sequence = 1u32;
     rsp.write(base + EPOCH as u32, &epoch)?;
-    rsp.write(base + SEQUENCE as u32, &sequence.to_le_bytes())?;
-    rsp.breakpoint(base + TRANSMITTED)?;
     rsp.resume()?;
     *state.lock().unwrap() = Connection::Connected;
     let mut receive_end = Instant::now();
-    let mut heartbeat = Instant::now();
+    let mut rx_sequence = 0u32;
+    let mut rx_length = 0u32;
+    let mut tx_sequence = 0u32;
+    let mut rx_consumed = 0u32;
     let mut pending = None;
+    let mut upkeep = None;
+    let mut closed = false;
+    let mut heartbeat = Instant::now();
+    let mut progress = Instant::now();
+    let mut host_sequence = 0u32;
+    let mut block = vec![0; MAINTENANCE + 8 - HOST];
     let result = (|| -> Result<()> {
         while !stop.load(Ordering::Relaxed) {
-            if pending.is_none() {
-                pending = outgoing.try_recv().ok();
-            }
-            if !rsp.wait_stop()? {
-                if pending.is_none() && heartbeat.elapsed() < Duration::from_millis(500) {
-                    continue;
-                }
-                rsp.halt()?;
-            }
-            heartbeat = Instant::now();
-            // The live path reads the transmitter and mailbox in one packet.
-            // Epoch + sequence reject resets and state restores before any write;
-            // the complete adapter is checked when connecting and disconnecting.
-            let image = rsp.read(base + MAIL as u32, TX + MAX - MAIL)?;
+            // Stock services running GDB requests on its emulation thread at
+            // frame boundaries. One handler completes without guest execution
+            // interleaving its loads/stores. No per-packet stop or resume.
+            let image = rsp.read(base + MAIL as u32, TX + MAX * 2 - MAIL)?;
             ensure!(
                 image[EPOCH - MAIL..EPOCH + 16 - MAIL] == epoch
-                    && word(&image, SEQUENCE - MAIL) == sequence,
-                "melonDS restored or reset the game. Reconnect to continue"
-            );
-            ensure!(
-                image[532 - MAIL..548 - MAIL] == IMAGE[532..548]
+                    && image[532 - MAIL..548 - MAIL] == IMAGE[532..548]
                     && image[564 - MAIL..572 - MAIL] == IMAGE[564..572],
                 "melonDS changed game or restored a state. Reconnect to continue"
             );
+            let consumed = word(&image, 0);
+            ensure!(
+                consumed == rx_consumed || consumed == rx_sequence,
+                "melonDS restored the game. Reconnect to continue"
+            );
+            rx_consumed = consumed;
             ensure!(
                 word(&image, 16) == 0,
                 "Cartridge traffic could not be delivered. Retry the connection"
             );
-            let length = word(&image, 8) as usize;
-            ensure!(length <= MAX, "Invalid cartridge transmit length");
-            let transmitted = length != 0;
-            if transmitted {
-                let bytes = &image[TX - MAIL..TX - MAIL + length];
-                rsp.trace("ds_tx", || hex(bytes));
-                let arrived = Instant::now().max(receive_end);
-                receive_end = arrived
-                    + Duration::from_micros((length as u64 * 10_000_000).div_ceil(115_200) + 1_000);
-                for &byte in bytes {
-                    incoming
-                        .bytes
-                        .try_send((arrived, byte))
-                        .context("Incoming IR queue is full")?;
+            let transmitted = word(&image, 4);
+            let new_transmission = transmitted != tx_sequence;
+            if new_transmission {
+                let count = transmitted.wrapping_sub(tx_sequence);
+                ensure!(
+                    count <= 2,
+                    "melonDS restored the game. Reconnect to continue"
+                );
+                for _ in 0..count {
+                    let slot = (tx_sequence & 1) as usize;
+                    let length = word(&image, 8 + slot * 4) as usize;
+                    ensure!(
+                        (1..=MAX).contains(&length),
+                        "Invalid cartridge transmit length"
+                    );
+                    let offset = TX - MAIL + slot * MAX;
+                    let bytes = &image[offset..offset + length];
+                    maintenance(bytes, &mut upkeep, &mut closed);
+                    rsp.trace("ds_tx", || hex(bytes));
+                    let arrived = Instant::now().max(receive_end);
+                    receive_end = arrived
+                        + Duration::from_micros(
+                            (length as u64 * 10_000_000).div_ceil(115_200) + 1_000,
+                        );
+                    for &byte in bytes {
+                        incoming
+                            .bytes
+                            .try_send((arrived, byte))
+                            .context("Incoming IR queue is full")?;
+                    }
+                    incoming.wake.unpark();
+                    tx_sequence = tx_sequence
+                        .checked_add(1)
+                        .context("Connection sequence exhausted")?;
                 }
-                incoming.wake.unpark();
             }
-            let mut publication = image[..EPOCH + 16 - MAIL].to_vec();
-            publication[8..12].copy_from_slice(&0u32.to_le_bytes());
-            let mut received = None;
-            if word(&image, 0) == 0 {
-                if pending.is_none() && transmitted {
-                    // Coalesce a prompt optical reply into this debugger stop.
-                    // The walker keeps running at its normal speed throughout.
-                    // Bound the wait: cartridge writes can also be one-way.
-                    pending = outgoing.recv_timeout(Duration::from_millis(500)).ok();
+            if pending.is_none() {
+                pending = outgoing.try_recv().ok();
+                if pending.is_none() && new_transmission && word(&image, 0) == rx_sequence {
+                    // Let a prompt optical reply share the TX acknowledgement.
+                    // Otherwise an idle snapshot can occupy a whole DS frame
+                    // ahead of a response already being emitted by the walker.
+                    pending = outgoing.recv_timeout(Duration::from_millis(25)).ok();
                 }
+            }
+            block[..4].copy_from_slice(&tx_sequence.to_le_bytes());
+            block[4..8].copy_from_slice(&rx_sequence.to_le_bytes());
+            block[8..12].copy_from_slice(&rx_length.to_le_bytes());
+            let mut received = false;
+            if word(&image, 0) == rx_sequence {
                 if let Some(bytes) = pending.take() {
                     ensure!(
                         (1..=MAX).contains(&bytes.len()),
                         "IR burst exceeds the cartridge buffer"
                     );
-                    publication[..4].copy_from_slice(&1u32.to_le_bytes());
-                    publication[4..8].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
+                    rx_sequence = rx_sequence
+                        .checked_add(1)
+                        .context("Connection sequence exhausted")?;
+                    block[4..8].copy_from_slice(&rx_sequence.to_le_bytes());
+                    rx_length = bytes.len() as u32;
+                    block[8..12].copy_from_slice(&rx_length.to_le_bytes());
+                    maintenance(&bytes, &mut upkeep, &mut closed);
                     rsp.trace("walker_tx", || hex(&bytes));
-                    received = Some(bytes);
+                    block[RX - HOST..RX - HOST + bytes.len()].copy_from_slice(&bytes);
+                    received = true;
                 }
             }
-            sequence = sequence
-                .checked_add(1)
-                .context("Connection sequence exhausted")?;
-            publication[24..28].copy_from_slice(&sequence.to_le_bytes());
-            // CPU execution is stopped: publish RX bytes, TX acknowledgement,
-            // and continuation sequence together before resuming the game.
-            if let Some(bytes) = received {
-                // RX and mailbox span the unchanged write routine. Publishing
-                // that same code with the data saves a debugger round trip;
-                // ARM9 is stopped and no instruction changes.
-                let mut block = IMAGE[RX..EPOCH + 16].to_vec();
-                block[..bytes.len()].copy_from_slice(&bytes);
-                block[MAIL - RX..].copy_from_slice(&publication);
-                rsp.write(base + RX as u32, &block)?;
-            } else {
-                rsp.write(base + MAIL as u32, &publication)?;
+            if new_transmission || received {
+                progress = Instant::now();
             }
-            rsp.resume()?;
+            // Maintenance cannot conceal a stalled application indefinitely.
+            let live = upkeep.filter(|_| progress.elapsed() < Duration::from_secs(3));
+            *incoming.maintenance.as_ref().unwrap().lock().unwrap() =
+                live.map(|frame| (Instant::now(), frame.map(|b| b ^ 0xaa)));
+            block[MAINTENANCE - HOST..].copy_from_slice(&live.unwrap_or([0; 8]));
+            if new_transmission || received || heartbeat.elapsed() >= Duration::from_millis(250) {
+                host_sequence = host_sequence
+                    .checked_add(1)
+                    .context("Connection sequence exhausted")?;
+                block[12..16].copy_from_slice(&host_sequence.to_le_bytes());
+                heartbeat = Instant::now();
+                // Only host-owned data. The guest owns the snapshot counters;
+                // acknowledging TX cannot overwrite a newly published block.
+                rsp.write(base + HOST as u32, &block)?;
+            }
         }
         Ok(())
     })();
+    *incoming.maintenance.as_ref().unwrap().lock().unwrap() = None;
     // Leave the inert adapter in resident RAM. Resetting the game restores its
     // original driver. No code restore can race a suspended guest return address.
     if rsp.halt().is_ok() {
@@ -268,88 +331,4 @@ pub(super) fn transport(
         }
     }
     result
-}
-
-#[cfg(target_os = "macos")]
-// Keep the live link responsive while the user interacts with melonDS. The
-// activity and thread priorities end with the link; guest clocks stay unchanged.
-struct Activity(
-    objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2_foundation::NSObjectProtocol>>,
-);
-#[cfg(target_os = "macos")]
-impl Activity {
-    fn new() -> Self {
-        use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
-        objc2::rc::autoreleasepool(|_| {
-            Self(
-                NSProcessInfo::processInfo().beginActivityWithOptions_reason(
-                    NSActivityOptions::UserInitiatedAllowingIdleSystemSleep
-                        | NSActivityOptions::LatencyCritical,
-                    &NSString::from_str("Pokéwalker infrared connection"),
-                ),
-            )
-        })
-    }
-}
-#[cfg(target_os = "macos")]
-impl Drop for Activity {
-    fn drop(&mut self) {
-        objc2::rc::autoreleasepool(|_| unsafe {
-            objc2_foundation::NSProcessInfo::processInfo().endActivity(&self.0)
-        });
-    }
-}
-
-#[cfg(target_os = "macos")]
-const QOS_USER_INTERACTIVE: u32 = 0x21;
-#[cfg(target_os = "macos")]
-pub(super) struct Priority {
-    original: u32,
-    relative: i32,
-    active: bool,
-}
-#[cfg(target_os = "macos")]
-unsafe extern "C" {
-    fn pthread_self() -> *mut std::ffi::c_void;
-    fn pthread_get_qos_class_np(
-        thread: *mut std::ffi::c_void,
-        class: *mut u32,
-        relative: *mut i32,
-    ) -> i32;
-    fn pthread_set_qos_class_self_np(class: u32, priority: i32) -> i32;
-}
-#[cfg(target_os = "macos")]
-impl Priority {
-    pub(super) fn new() -> Self {
-        let (mut class, mut relative) = (0x15, 0);
-        unsafe {
-            pthread_get_qos_class_np(pthread_self(), &mut class, &mut relative);
-        }
-        Self {
-            original: if class == 0 { 0x15 } else { class },
-            relative,
-            active: false,
-        }
-    }
-    pub(super) fn set(&mut self, active: bool) {
-        if self.active != active {
-            unsafe {
-                pthread_set_qos_class_self_np(
-                    if active {
-                        QOS_USER_INTERACTIVE
-                    } else {
-                        self.original
-                    },
-                    if active { 0 } else { self.relative },
-                );
-            }
-            self.active = active;
-        }
-    }
-}
-#[cfg(target_os = "macos")]
-impl Drop for Priority {
-    fn drop(&mut self) {
-        self.set(false);
-    }
 }

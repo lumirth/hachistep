@@ -49,8 +49,7 @@ connect HachiStep, then enter the game's Pokéwalker menu. Finish the game's
 instructions before connecting from the walker. On a new walker's home screen,
 press the middle button; on a registered walker, select Connect. If the display
 is asleep, wake it first, then release the button before connecting. Keep both
-emulators at normal speed during a transfer. Transfers can still time out when
-host or debugger stalls exceed the firmware’s response deadline. Disable the GDB stub afterward:
+emulators at normal speed during a transfer. Disable the GDB stub afterward:
 melonDS exposes its unauthenticated debugger to the network, even though HachiStep
 connects locally.
 
@@ -58,10 +57,18 @@ The connection recognizes the cartridge IR routines in RAM across all HGSS
 languages, including relocated routines in hacks that retain that driver. An
 unrecognized driver is rejected. It installs a temporary cartridge adapter in
 those routines; game and walker firmware handle the protocol. ROM files and
-the melonDS executable stay untouched. Reset the game to remove the adapter;
-reconnect after a game reset, change, or state load. Connect before entering the
-Pokéwalker menu on a fresh game boot so installation cannot replace an active
+the melonDS executable stay untouched. Reset the game to remove the adapter.
+Disconnect before changing games or loading a state, then reconnect. Connect
+before entering the Pokéwalker menu on a fresh game boot so installation cannot
+replace an active
 cartridge operation.
+
+After installation, the game runs continuously while the debugger exchanges
+mailbox data. Each endpoint receives local `0x2E` maintenance frames during an
+active transfer, so debugger latency does not consume its short inactivity
+window. Genuine packets take priority; maintenance ends on shutdown, lost host
+contact, or three seconds without application traffic. The walker receives
+ordinary optical input, with its core execution and pacing unchanged.
 
 Launch firmware and an EEPROM directly:
 
