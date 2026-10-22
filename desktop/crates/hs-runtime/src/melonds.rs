@@ -137,7 +137,8 @@ fn install(rsp: &mut Rsp, base: u32) -> Result<()> {
         shim_part(&rsp.read(base, IMAGE.len())?, 0, IMAGE.len()),
         "The game changed while connecting"
     );
-    rsp.write(base + HOST as u32, &[0; 16])?;
+    // Clear old session data, including its maintenance token, before activation.
+    rsp.write(base + HOST as u32, &[0; MAINTENANCE + 8 - HOST])?;
     rsp.write(base + MAIL as u32, &[0; 28])?;
     rsp.write(base + ACTIVE as u32, &1u32.to_le_bytes())?;
     Ok(())
