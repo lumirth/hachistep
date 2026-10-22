@@ -30,7 +30,7 @@ impl Kind {
             Self::Motion => "Walking",
             Self::Link => "Local Link",
             Self::Tcp => "TCP Connection",
-            Self::MelonDs => "Connect to melonDS",
+            Self::MelonDs => "melonDS Connection",
         }
     }
 }
@@ -602,18 +602,19 @@ impl Tool {
             .when_some(error, |root, error| root.child(div().text_sm().text_color(cx.theme().danger).child(error)))
             .when(!busy, |root| root
                 .child(v_flex().gap_2().text_sm()
-                    .child("1. In melonDS: Config → Emu settings → Devtools → Enable GDB stub. Use the interpreter, then restart melonDS.")
-                    .child("2. Open HGSS and connect here before entering its Pokéwalker menu."))
+                    .child("1. In melonDS, enable the GDB stub under Config → Emu settings → Devtools.")
+                    .child("2. Under CPU emulation, disable the JIT recompiler. Restart melonDS.")
+                    .child("3. Open HeartGold or SoulSilver. Connect here before opening Connect to Pokéwalker."))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
-                    .child("The debugger is accessible from your network. Disable it when finished."))
+                    .child("The debugger accepts unauthenticated network connections. Disable it when finished."))
                 .child(Collapsible::new().open(self.port_open)
                     .child(Button::new("melon-port").ghost().small().px_0().self_start()
                         .icon(if self.port_open { IconName::ChevronDown } else { IconName::ChevronRight })
-                        .label("Debugger port")
+                        .label("ARM9 debugger port")
                         .on_click(cx.listener(|view, _, _, cx| { view.port_open = !view.port_open; cx.notify(); })))
-                    .content(v_flex().gap_2().text_sm().child("ARM9 port").child(Input::new(&self.address)))))
+                    .content(Input::new(&self.address))))
             .when(connected, |root| root
-                .child(div().text_sm().child("Finish the game's Pokéwalker prompts, then connect from your walker. On a new walker's home screen, press the middle button; on a registered walker, select Connect."))
+                .child(div().text_sm().child("When the game waits for your walker, connect from the walker. On a new walker's home screen, press the middle button. On a registered walker, select Connect."))
                 .child(self.activity_disclosure(&frame, cx)))
             .into_any_element()
     }
@@ -622,7 +623,7 @@ impl Tool {
         if frame.melon_ds && frame.connection.is_active() {
             return v_flex()
                 .gap_4()
-                .child("This walker is using the melonDS connection.")
+                .child("Connected to melonDS")
                 .child(
                     Button::new("open-melonds")
                         .label("Open melonDS connection")

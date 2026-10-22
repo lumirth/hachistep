@@ -1,8 +1,9 @@
 // Cartridge contract: ctrl-cheeb-del/pokeheartgold@f63c1d92,
-// lib/NitroSDK/src/card/card_spi_wait.c and application/pokewalker/pokewalker_ir.c.
+// lib/NitroSDK/src/card/card_spi_wait.c and src/application/pokewalker/pokewalker_ir.c.
 // The adapter replaces block I/O. Both firmware endpoints own the application
-// protocol and persistence. Local maintenance bounds sensitivity to host stalls;
-// the optical path is shared with TCP.
+// protocol and persistence. The debugger exchanges mailbox data while the game
+// runs. Local maintenance covers host stalls without changing either guest clock.
+// The optical path is shared with TCP.
 mod rsp;
 
 use crate::tcp::{Connection, Incoming};
@@ -57,16 +58,15 @@ fn mutable(at: usize) -> bool {
         || (EPOCH..EPOCH + 16).contains(&at)
         || (548..552).contains(&at)
 }
-fn shim_part(bytes: &[u8], start: usize, end: usize) -> bool {
+fn matches_adapter(bytes: &[u8], start: usize, end: usize) -> bool {
     (start..end).all(|i| mutable(i) || bytes[i] == IMAGE[i])
 }
 fn fingerprint(bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
     for chunk in bytes.as_chunks::<4>().0 {
         let mut instruction = word(chunk, 0);
-        // ARM BL relocations and RAM literals vary between languages and builds.
-        // Everything else, including branch conditions and peripheral addresses,
-        // must match the complete routine, not just its prologue or ROM title.
+        // Normalize ARM BL relocations and RAM literals across languages and builds.
+        // Match all other bytes, including branch conditions and peripheral addresses.
         if instruction & 0x0f00_0000 == 0x0b00_0000 {
             instruction &= 0xff00_0000;
         } else if (RAM..RAM + 0x40_0000).contains(&instruction) {
@@ -78,14 +78,14 @@ fn fingerprint(bytes: &[u8]) -> String {
 }
 fn recognize(bytes: &[u8]) -> bool {
     PARTS.iter().all(|&(start, end, expected)| {
-        shim_part(bytes, start, end) || fingerprint(&bytes[start..end]) == expected
+        matches_adapter(bytes, start, end) || fingerprint(&bytes[start..end]) == expected
     })
 }
 
 fn locate(rsp: &mut Rsp, stop: &AtomicBool) -> Result<u32> {
     let mut ram = Vec::with_capacity(0x40_0000);
     while ram.len() < ram.capacity() {
-        ensure!(!stop.load(Ordering::Relaxed), "Connection cancelled");
+        ensure!(!stop.load(Ordering::Relaxed), "Connection canceled");
         ram.extend(rsp.read(RAM + ram.len() as u32, 512)?);
     }
     let candidates: Vec<_> = (0..=ram.len() - IMAGE.len())
@@ -106,9 +106,9 @@ fn locate(rsp: &mut Rsp, stop: &AtomicBool) -> Result<u32> {
 fn install(rsp: &mut Rsp, base: u32) -> Result<()> {
     let original = rsp.read(base, IMAGE.len())?;
     ensure!(recognize(&original), "The game changed while connecting");
-    if !shim_part(&original, 0, IMAGE.len()) {
+    if !matches_adapter(&original, 0, IMAGE.len()) {
         // CARD_SpiWaitInit marks this before any driver calls. Refuse an active
-        // driver: a suspended thread could still hold a return into its body.
+        // driver because a suspended thread could hold a return address inside it.
         let state = word(&original, 308);
         ensure!(
             (RAM..RAM + 0x40_0000 - 8).contains(&state),
@@ -118,9 +118,8 @@ fn install(rsp: &mut Rsp, base: u32) -> Result<()> {
             word(&rsp.read(state + 4, 4)?, 0) == 0,
             "Restart the game, then connect HachiStep before opening Connect to Pokéwalker"
         );
-        // Each request replaces one whole routine. Write initializes an inactive
-        // mailbox; read last publishes the RX buffer. An interrupted
-        // install leaves callable routines and never a half-written function.
+        // Replace whole routines, with read last, so an interrupted installation
+        // leaves callable functions and an inactive mailbox.
         for &(start, end, _) in PARTS.iter().rev() {
             rsp.write(base + start as u32, &IMAGE[start..end])?;
         }
@@ -134,7 +133,7 @@ fn install(rsp: &mut Rsp, base: u32) -> Result<()> {
     // Let any in-flight leaf operation finish with new calls disabled.
     rsp.halt()?;
     ensure!(
-        shim_part(&rsp.read(base, IMAGE.len())?, 0, IMAGE.len()),
+        matches_adapter(&rsp.read(base, IMAGE.len())?, 0, IMAGE.len()),
         "The game changed while connecting"
     );
     // Clear old session data, including its maintenance token, before activation.
@@ -144,9 +143,9 @@ fn install(rsp: &mut Rsp, base: u32) -> Result<()> {
     Ok(())
 }
 
-// Unknown 0x2e is ignored by both matching protocol handlers, while receive
-// activity renews their inactivity timer. Unlike 0x24/0x26, it cannot advance
-// an application transfer. Learn only from a checksum-valid established frame.
+// pw src/support/ir.c and HGSS pokewalker_ir.c ignore command 0x2E but
+// renew the receive timer. Learn its session token from a checksum-valid
+// application frame. Commands 0x24 and 0x26 would advance the transfer.
 fn maintenance(bytes: &[u8], current: &mut Option<[u8; 8]>, closed: &mut bool) {
     if bytes == [0xfc ^ 0xaa] {
         *current = None;
@@ -201,7 +200,6 @@ pub(super) fn transport(
     *state.lock().unwrap() = Connection::Connected;
     let mut receive_end = Instant::now();
     let mut rx_sequence = 0u32;
-    let mut rx_length = 0u32;
     let mut tx_sequence = 0u32;
     let mut rx_consumed = 0u32;
     let mut pending = None;
@@ -210,12 +208,11 @@ pub(super) fn transport(
     let mut heartbeat = Instant::now();
     let mut progress = Instant::now();
     let mut host_sequence = 0u32;
-    let mut block = vec![0; MAINTENANCE + 8 - HOST];
+    let mut block = [0; MAINTENANCE + 8 - HOST];
     let result = (|| -> Result<()> {
         while !stop.load(Ordering::Relaxed) {
-            // Stock services running GDB requests on its emulation thread at
-            // frame boundaries. One handler completes without guest execution
-            // interleaving its loads/stores. No per-packet stop or resume.
+            // melonDS 1.1 services GDB requests on the emulation thread at frame
+            // boundaries. Guest execution cannot interleave a memory request.
             let image = rsp.read(base + MAIL as u32, TX + MAX * 2 - MAIL)?;
             ensure!(
                 image[EPOCH - MAIL..EPOCH + 16 - MAIL] == epoch
@@ -271,7 +268,7 @@ pub(super) fn transport(
             }
             if pending.is_none() {
                 pending = outgoing.try_recv().ok();
-                if pending.is_none() && new_transmission && word(&image, 0) == rx_sequence {
+                if pending.is_none() && new_transmission && consumed == rx_sequence {
                     // Let a prompt optical reply share the TX acknowledgement.
                     // Otherwise an idle snapshot can occupy a whole DS frame
                     // ahead of a response already being emitted by the walker.
@@ -279,10 +276,8 @@ pub(super) fn transport(
                 }
             }
             block[..4].copy_from_slice(&tx_sequence.to_le_bytes());
-            block[4..8].copy_from_slice(&rx_sequence.to_le_bytes());
-            block[8..12].copy_from_slice(&rx_length.to_le_bytes());
             let mut received = false;
-            if word(&image, 0) == rx_sequence {
+            if consumed == rx_sequence {
                 if let Some(bytes) = pending.take() {
                     ensure!(
                         (1..=MAX).contains(&bytes.len()),
@@ -292,8 +287,7 @@ pub(super) fn transport(
                         .checked_add(1)
                         .context("Connection sequence exhausted")?;
                     block[4..8].copy_from_slice(&rx_sequence.to_le_bytes());
-                    rx_length = bytes.len() as u32;
-                    block[8..12].copy_from_slice(&rx_length.to_le_bytes());
+                    block[8..12].copy_from_slice(&(bytes.len() as u32).to_le_bytes());
                     maintenance(&bytes, &mut upkeep, &mut closed);
                     rsp.trace("walker_tx", || hex(&bytes));
                     block[RX - HOST..RX - HOST + bytes.len()].copy_from_slice(&bytes);
@@ -314,19 +308,19 @@ pub(super) fn transport(
                     .context("Connection sequence exhausted")?;
                 block[12..16].copy_from_slice(&host_sequence.to_le_bytes());
                 heartbeat = Instant::now();
-                // Only host-owned data. The guest owns the snapshot counters;
-                // acknowledging TX cannot overwrite a newly published block.
+                // Write host-owned fields only. A TX acknowledgement must not
+                // overwrite the guest counters or a newly published packet.
                 rsp.write(base + HOST as u32, &block)?;
             }
         }
         Ok(())
     })();
     *incoming.maintenance.as_ref().unwrap().lock().unwrap() = None;
-    // Leave the inert adapter in resident RAM. Resetting the game restores its
-    // original driver. No code restore can race a suspended guest return address.
+    // Disable the adapter and leave its code in RAM. Restoring the original
+    // driver could invalidate a suspended thread's return address.
     if rsp.halt().is_ok() {
         if let Ok(image) = rsp.read(base, IMAGE.len()) {
-            if shim_part(&image, 0, IMAGE.len()) && image[EPOCH..EPOCH + 16] == epoch {
+            if matches_adapter(&image, 0, IMAGE.len()) && image[EPOCH..EPOCH + 16] == epoch {
                 let _ = rsp.write(base + ACTIVE as u32, &0u32.to_le_bytes());
             }
         }

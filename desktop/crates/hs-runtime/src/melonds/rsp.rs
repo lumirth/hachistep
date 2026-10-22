@@ -41,7 +41,7 @@ impl Rsp {
             this.request("qHostInfo")?
                 .split(';')
                 .any(|field| field == "cpusubtype:7"),
-            "Choose melonDS’s ARM9 debugger port"
+            "Use the ARM9 debugger port"
         );
         this.halt()?;
         Ok(this)
@@ -68,7 +68,7 @@ impl Rsp {
                 error.kind(),
                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
             ) {
-                bail!("melonDS stopped responding. Resume it or close its settings dialog, then retry");
+                bail!("melonDS stopped responding. Resume the game or close melonDS settings, then retry");
             }
             return Err(error).context("Lost the melonDS debugger connection");
         }
@@ -94,12 +94,12 @@ impl Rsp {
             }
             ensure!(
                 start.elapsed() < Duration::from_secs(2),
-                "melonDS stopped responding. Resume it or close its settings dialog, then retry"
+                "melonDS stopped responding. Resume the game or close melonDS settings, then retry"
             );
             // Stock Poll checks socket readability before its existing receive
-            // buffer. Continue + the next command can arrive together, leaving
+            // buffer. Continue and the next command can arrive together, leaving
             // that command buffered until another byte arrives. ACK is ignored
-            // in NoAck mode and wakes Poll without replaying a command/write.
+            // in NoAck mode and wakes Poll without replaying a command.
             if wake.elapsed() >= Duration::from_millis(10) {
                 self.output.write_all(b"+")?;
                 wake = Instant::now();
@@ -145,7 +145,7 @@ impl Rsp {
             .write_all(format!("${body}#{checksum:02x}").as_bytes())?;
         Ok(())
     }
-    pub fn request(&mut self, body: &str) -> Result<String> {
+    fn request(&mut self, body: &str) -> Result<String> {
         let start = Instant::now();
         self.send(body)?;
         let received = loop {
@@ -168,7 +168,7 @@ impl Rsp {
         ensure!(!reply.starts_with('E'), "melonDS debugger error: {reply}");
         Ok(reply)
     }
-    pub fn ok(&mut self, body: &str) -> Result<()> {
+    fn ok(&mut self, body: &str) -> Result<()> {
         ensure!(
             self.request(body)? == "OK",
             "Unsupported melonDS debugger command"
@@ -184,7 +184,7 @@ impl Rsp {
             self.output.write_all(&[3])?;
             let mut wake = Instant::now();
             while !self.wait_stop()? {
-                ensure!(start.elapsed() < Duration::from_secs(2), "melonDS stopped responding. Resume it or close its settings dialog, then retry");
+                ensure!(start.elapsed() < Duration::from_secs(2), "melonDS stopped responding. Resume the game or close melonDS settings, then retry");
                 // Stock only checks its receive buffer when the socket becomes
                 // readable. A harmless ACK wakes it if interrupt and continue
                 // arrived together and the interrupt remained buffered.
@@ -199,7 +199,7 @@ impl Rsp {
         }
         Ok(())
     }
-    pub fn wait_stop(&mut self) -> Result<bool> {
+    fn wait_stop(&mut self) -> Result<bool> {
         if self.halted {
             return Ok(true);
         }
@@ -234,8 +234,8 @@ impl Rsp {
         Ok(ready)
     }
     pub fn resume(&mut self) -> Result<()> {
-        // Standard continue has no reply. vCont;c adds an unnecessary OK
-        // before the next stop, exposing stock's Nagle/delayed-ACK interaction.
+        // Use c because it has no reply. Stock vCont;c sends an extra OK
+        // that can delay the next response through Nagle and delayed ACKs.
         self.send("c")?;
         self.halted = false;
         Ok(())

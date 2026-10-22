@@ -1,4 +1,4 @@
-// Cartridge I/O only. Position independent ARMv5TE; protocol stays in HGSS.
+// ARMv5TE cartridge adapter. Rebuild with python3 tools/melonds_cartridge.py.
 .syntax unified
 .arch armv5te
 .arm
@@ -34,7 +34,8 @@ empty_return:
     pop {r4, r5}
     bx lr
 .org 128
-// Host owns TX consumed, RX published, RX length, then RX bytes.
+// Host owns TX consumed, RX published, RX length, and heartbeat sequence.
+// The RX bytes and maintenance frame follow.
 host: .space 16
 rx: .space 136
 maintenance: .space 8
@@ -43,7 +44,6 @@ write:
     adr r2, write
     sub r2, r2, #332
     add r12, r2, #572
-    add r3, r2, #128
     add r2, r2, #484
     ldr r3, [r2, #20]
     cmp r3, #0
@@ -79,7 +79,8 @@ fault:
     str r3, [r2, #16]
     b done
 .org 484
-// Guest owns RX consumed, TX published, TX length, reserved, fault.
+// Guest publishes RX consumed, TX published, two TX lengths, and fault.
+// The host controls active. The guest updates the maintenance countdown.
 mailbox: .space 28
 epoch: .space 16
 .org 532
@@ -94,7 +95,7 @@ status:
 tx: .space 272
 .org 844
 // HGSS polls every 4 ms. Stop maintenance after 255 empty receive calls
-// without a host publication (about one guest second), including host loss.
+// without a host publication, about one guest second.
 upkeep:
     ldr r1, [r2, #64]
     ldr r5, [r2, #-344]

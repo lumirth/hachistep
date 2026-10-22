@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the checked-in cartridge shim with Clang (maintainers only)."""
+"""Rebuild the cartridge adapter with Clang."""
 from pathlib import Path
 import struct
 import subprocess
@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory() as tmp:
     strings = sections[names]
     strings = data[strings[4]:strings[4] + strings[5]]
     for section in sections:
-        assert section[1] not in (4, 9), 'The shim must have no relocations'
+        assert section[1] not in (4, 9), 'The adapter must have no relocations'
         if strings[section[0]:].split(b'\0')[0] == b'.text':
             code = data[section[4]:section[4] + section[5]]
             assert len(code) == 948
