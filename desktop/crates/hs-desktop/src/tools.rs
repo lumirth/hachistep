@@ -604,7 +604,7 @@ impl Tool {
                 .child(v_flex().gap_2().text_sm()
                     .child("1. In melonDS, enable the GDB stub under Config → Emu settings → Devtools.")
                     .child("2. Under CPU emulation, disable the JIT recompiler. Restart melonDS.")
-                    .child("3. Start HeartGold or SoulSilver in melonDS. Leave the game on its main menu, then click Connect in HachiStep."))
+                    .child("3. Start HeartGold or SoulSilver in melonDS and click Connect in HachiStep. Wait until HachiStep connects before selecting Connect to Pokéwalker on the in-game main menu."))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("The debugger accepts unauthenticated network connections. Disable it when finished."))
                 .child(Collapsible::new().open(self.port_open)
