@@ -42,6 +42,7 @@ jobs:
               - '.github/install-linux.sh'
               - 'rust-toolchain.toml'
               - 'desktop/package.py'
+              - 'desktop/requirements-macos.txt'
               - 'desktop/crates/hs-desktop/build.rs'
               - 'assets/**/!(*.md)'
               - 'LICENSE'
