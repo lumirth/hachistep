@@ -604,7 +604,7 @@ impl Tool {
                 .child(v_flex().gap_2().text_sm()
                     .child("1. In melonDS, enable the GDB stub under Config → Emu settings → Devtools.")
                     .child("2. Under CPU emulation, disable the JIT recompiler. Restart melonDS.")
-                    .child("3. Open HeartGold or SoulSilver. Connect here before opening Connect to Pokéwalker."))
+                    .child("3. Start HeartGold or SoulSilver in melonDS. Leave the game on its main menu, then click Connect in HachiStep."))
                 .child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("The debugger accepts unauthenticated network connections. Disable it when finished."))
                 .child(Collapsible::new().open(self.port_open)
@@ -614,7 +614,7 @@ impl Tool {
                         .on_click(cx.listener(|view, _, _, cx| { view.port_open = !view.port_open; cx.notify(); })))
                     .content(Input::new(&self.address))))
             .when(connected, |root| root
-                .child(div().text_sm().child("When the game waits for your walker, connect from the walker. On a new walker's home screen, press the middle button. On a registered walker, select Connect."))
+                .child(div().text_sm().child("In the game, open Connect to Pokéwalker and follow the prompts. When the game waits for your walker, press the middle button on a new walker's home screen, or select Connect on a registered walker."))
                 .child(self.activity_disclosure(&frame, cx)))
             .into_any_element()
     }

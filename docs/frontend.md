@@ -47,11 +47,13 @@ To connect a walker to stock melonDS 1.1 on the same computer:
 1. In melonDS, enable the ARM9 GDB stub under **Config → Emu settings → Devtools**.
    The debugger accepts unauthenticated connections from your network.
 2. Under **CPU emulation**, clear **Enable JIT recompiler**. Restart melonDS.
-3. Open HeartGold or SoulSilver. Before opening **Connect to Pokéwalker**, choose
-   **Tools → Infrared → Connect to melonDS…** in HachiStep and click **Connect**.
+3. Start HeartGold or SoulSilver in melonDS. Leave the game on its main menu.
+4. In HachiStep, choose **Tools → Infrared → Connect to melonDS…**.
    If you changed the ARM9 port in melonDS, enter it under **ARM9 debugger port**.
-4. Complete the game's prompts until the game waits for the walker.
-5. On a new walker's home screen, press the middle button. On a registered walker,
+   Click **Connect**.
+5. On the game's main menu, select **Connect to Pokéwalker**.
+   Follow the prompts until the game waits for the walker.
+6. On a new walker's home screen, press the middle button. On a registered walker,
    select **Connect**. If the display is asleep, wake the walker and release the
    button first.
 
