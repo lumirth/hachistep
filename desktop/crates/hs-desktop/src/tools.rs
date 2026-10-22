@@ -21,6 +21,7 @@ pub(crate) enum Kind {
     Motion,
     Link,
     Tcp,
+    MelonDs,
 }
 
 impl Kind {
@@ -29,6 +30,7 @@ impl Kind {
             Self::Motion => "Walking",
             Self::Link => "Local Link",
             Self::Tcp => "TCP Connection",
+            Self::MelonDs => "melonDS Connection",
         }
     }
 }
@@ -79,6 +81,7 @@ pub(crate) fn open(
             Kind::Motion => (392., 340.),
             Kind::Link => (440., 200.),
             Kind::Tcp => (420., 300.),
+            Kind::MelonDs => (460., 340.),
         };
         let mut options = crate::options(&format!("{name} · {filename}"), width, height);
         options.window_min_size = Some(size(
@@ -86,6 +89,7 @@ pub(crate) fn open(
             px(match kind {
                 Kind::Link => 180.,
                 Kind::Tcp => 260.,
+                Kind::MelonDs => 260.,
                 Kind::Motion => 320.,
             }),
         ));
@@ -129,6 +133,7 @@ struct Tool {
     focus: FocusHandle,
     details: BTreeSet<hs_runtime::Id>,
     activity_open: bool,
+    port_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 impl Tool {
@@ -191,9 +196,37 @@ impl Tool {
             .get(&player.id())
             .cloned()
             .unwrap_or_default();
-        let address = cx.new(|cx| InputState::new(window, cx).default_value(tcp.address.clone()));
+        let address = cx.new(|cx| {
+            InputState::new(window, cx).default_value(if kind == Kind::MelonDs {
+                cx.global::<Desktop>()
+                    .melon_ports
+                    .get(&player.id())
+                    .copied()
+                    .unwrap_or(3333)
+                    .to_string()
+            } else {
+                tcp.address.clone()
+            })
+        });
         let address_changed = cx.subscribe(&address, |view, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
+            if view.kind == Kind::MelonDs {
+                match event {
+                    InputEvent::PressEnter { .. } => view.toggle_melon_ds(cx),
+                    InputEvent::Change => {
+                        view.error = None;
+                        if let Ok(port) = view.address.read(cx).value().trim().parse::<u16>() {
+                            if port != 0 {
+                                cx.global_mut::<Desktop>()
+                                    .melon_ports
+                                    .insert(view.player.id(), port);
+                            }
+                        }
+                        cx.notify();
+                    }
+                    _ => (),
+                }
+            }
+            if matches!(event, InputEvent::Change) && view.kind != Kind::MelonDs {
                 view.tcp.address = view.address.read(cx).value().to_string();
                 view.remember_tcp(cx);
             }
@@ -248,6 +281,7 @@ impl Tool {
             focus,
             details: BTreeSet::new(),
             activity_open: false,
+            port_open: false,
             _subscriptions: vec![
                 cadence_changed,
                 slider_changed,
@@ -527,9 +561,95 @@ impl Tool {
             })
             .into_any_element()
     }
+    fn toggle_melon_ds(&mut self, cx: &mut Context<Self>) {
+        let frame = self.player.presentation();
+        if frame.melon_ds && frame.connection.is_active() {
+            self.player.send(Command::Disconnect);
+        } else if !frame.paused && !frame.is_connection_active() {
+            match self.address.read(cx).value().trim().parse::<u16>() {
+                Ok(port) if port > 0 => {
+                    self.error = None;
+                    self.player.send(Command::MelonDs { port });
+                }
+                _ => self.error = Some("Enter a port between 1 and 65535".into()),
+            }
+        }
+        cx.notify();
+    }
+    fn melon_ds(&self, cx: &mut Context<Self>) -> AnyElement {
+        let frame = self.player.presentation();
+        let busy = frame.melon_ds && frame.connection.is_active();
+        let connected = frame.melon_ds && frame.connection == hs_runtime::Connection::Connected;
+        let other = frame.peer.is_some() || (!frame.melon_ds && frame.connection.is_active());
+        let error = match &frame.connection {
+            hs_runtime::Connection::Error(error) if frame.melon_ds => Some(error.clone()),
+            _ => None,
+        };
+        let failed = error.is_some();
+        v_flex().gap_4()
+            .child(h_flex().gap_4().justify_between()
+                .child(div().flex_1().min_w_0().text_sm().child(
+                    if other { "Disconnect the other IR link first" }
+                    else if connected { "Connected to melonDS" }
+                    else if busy { "Preparing game…" }
+                    else if frame.paused { "Resume emulation to connect" }
+                    else if failed { "Connection error" }
+                    else { "Not connected" }))
+                .child(Button::new("melon-connect").flex_shrink_0()
+                    .label(if connected { "Disconnect" } else if busy { "Cancel" } else if failed { "Retry" } else { "Connect" })
+                    .disabled(other || (frame.paused && !busy))
+                    .on_click(cx.listener(|view, _, _, cx| view.toggle_melon_ds(cx)))))
+            .when_some(error, |root, error| root.child(div().text_sm().text_color(cx.theme().danger).child(error)))
+            .when(!busy, |root| root
+                .child(v_flex().gap_2().text_sm()
+                    .child("1. In melonDS, enable the GDB stub under Config → Emu settings → Devtools.")
+                    .child("2. Under CPU emulation, disable the JIT recompiler. Restart melonDS.")
+                    .child("3. Start HeartGold or SoulSilver in melonDS and click Connect in HachiStep. Wait until HachiStep connects before selecting Connect to Pokéwalker on the in-game main menu."))
+                .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("The debugger accepts unauthenticated network connections. Disable it when finished."))
+                .child(Collapsible::new().open(self.port_open)
+                    .child(Button::new("melon-port").ghost().small().px_0().self_start()
+                        .icon(if self.port_open { IconName::ChevronDown } else { IconName::ChevronRight })
+                        .label("ARM9 debugger port")
+                        .on_click(cx.listener(|view, _, _, cx| { view.port_open = !view.port_open; cx.notify(); })))
+                    .content(Input::new(&self.address))))
+            .when(connected, |root| root
+                .child(div().text_sm().child("In the game, open Connect to Pokéwalker and follow the prompts. When the game waits for your walker, press the middle button on a new walker's home screen, or select Connect on a registered walker."))
+                .child(self.activity_disclosure(&frame, cx)))
+            .into_any_element()
+    }
     fn tcp(&self, cx: &mut Context<Self>) -> AnyElement {
         let frame = self.player.presentation();
-        let busy = frame.connection.is_active();
+        if frame.melon_ds && frame.connection.is_active() {
+            return v_flex()
+                .gap_4()
+                .child("Connected to melonDS")
+                .child(
+                    Button::new("open-melonds")
+                        .label("Open melonDS connection")
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.invoke(Intent::Tool(Kind::MelonDs), cx)
+                        })),
+                )
+                .into_any_element();
+        }
+        let connection = if frame.melon_ds {
+            hs_runtime::Connection::Disconnected
+        } else {
+            frame.connection.clone()
+        };
+        let error = match &connection {
+            hs_runtime::Connection::Error(error) => Some(error.clone()),
+            _ => None,
+        };
+        let status = if frame.peer.is_some() {
+            "Local link".into()
+        } else if error.is_some() {
+            "Connection error".into()
+        } else {
+            connection.to_string()
+        };
+        let busy = connection.is_active();
         let local = frame.peer.is_some();
         v_flex()
             .gap_5()
@@ -573,12 +693,15 @@ impl Tool {
                     .gap_4()
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(frame.connection_name()),
+                            .child(status),
                     )
                     .child(
                         Button::new("tcp-action")
+                            .flex_shrink_0()
                             .label(if busy {
                                 if self.tcp.listen
                                     && frame.connection == hs_runtime::Connection::Listening
@@ -606,6 +729,9 @@ impl Tool {
                             })),
                     ),
             )
+            .when_some(error, |root, error| {
+                root.child(div().text_sm().text_color(cx.theme().danger).child(error))
+            })
             .child(self.activity_disclosure(&frame, cx))
             .into_any_element()
     }
@@ -627,6 +753,7 @@ impl Render for Tool {
             Kind::Motion => self.motion(cx),
             Kind::Link => self.link(cx),
             Kind::Tcp => self.tcp(cx),
+            Kind::MelonDs => self.melon_ds(cx),
         };
         let name = self.kind.name();
         let frame = self.player.presentation();

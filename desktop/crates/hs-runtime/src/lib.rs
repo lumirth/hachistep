@@ -1,4 +1,5 @@
 mod files;
+mod melonds;
 mod motion;
 mod optical;
 mod sound;
@@ -145,6 +146,9 @@ pub enum Command {
         listen: bool,
         allow_remote: bool,
     },
+    MelonDs {
+        port: u16,
+    },
     Disconnect,
     Close,
     CancelClose,
@@ -171,6 +175,7 @@ pub struct Presentation {
     pub firmware: String,
     pub peer: Option<Id>,
     pub connection: Connection,
+    pub melon_ds: bool,
     pub saving: bool,
     pub modified: bool,
     pub eeprom_error: Option<String>,
@@ -209,6 +214,7 @@ impl Default for Presentation {
             firmware: String::new(),
             peer: None,
             connection: Connection::Disconnected,
+            melon_ds: false,
             saving: false,
             modified: false,
             eeprom_error: None,
@@ -236,6 +242,8 @@ impl Presentation {
     pub fn connection_name(&self) -> String {
         if self.peer.is_some() {
             "Local link".into()
+        } else if self.melon_ds && self.connection == Connection::Connected {
+            "Connected to melonDS".into()
         } else {
             self.connection.to_string()
         }
@@ -866,7 +874,7 @@ impl Worker {
                 }
                 return Ok(());
             }
-            Command::Reset | Command::Tcp { .. } => {
+            Command::Reset | Command::Tcp { .. } | Command::MelonDs { .. } => {
                 self.forget_undo(id);
                 self.disconnect(id)?;
             }
@@ -945,6 +953,19 @@ impl Worker {
                     allow_remote,
                     thread::current(),
                 ));
+            }
+            Command::MelonDs { port } => {
+                ensure!(!session.paused, "Resume emulation before connecting");
+                ensure!(
+                    port != 0,
+                    "Choose an ARM9 debugger port between 1 and 65535"
+                );
+                session.fast = false;
+                session.turbo_toggle = false;
+                session.speed_percent = 100;
+                session.reanchor();
+                session.clear_audio(self.sound.rate)?;
+                session.tcp = Some(tcp::Tcp::melon_ds(port, thread::current()));
             }
             Command::CancelClose => session.closing = false,
             _ => (),
@@ -1299,6 +1320,7 @@ impl Worker {
                         l.ids[0]
                     }
                 });
+                view.melon_ds = session.tcp.as_ref().is_some_and(|tcp| tcp.melon_ds);
                 view.connection = session
                     .tcp
                     .as_ref()

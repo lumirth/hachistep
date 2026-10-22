@@ -68,6 +68,7 @@ struct Desktop {
     tool_bounds: BTreeMap<(hs_runtime::Id, tools::Kind), Bounds<Pixels>>,
     about_window: Option<AnyWindowHandle>,
     tcp_options: BTreeMap<hs_runtime::Id, tools::TcpOptions>,
+    melon_ports: BTreeMap<hs_runtime::Id, u16>,
 }
 impl Global for Desktop {}
 
@@ -465,6 +466,7 @@ fn main() {
             tools: BTreeMap::new(),
             tool_bounds: BTreeMap::new(),
             tcp_options: BTreeMap::new(),
+            melon_ports: BTreeMap::new(),
         });
         let reopen_context = cx.to_async();
         platform.on_reopen(Box::new(move || {

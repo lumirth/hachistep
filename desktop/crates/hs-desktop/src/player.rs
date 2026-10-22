@@ -284,6 +284,7 @@ impl PlayerView {
                 .tool_bounds
                 .retain(|(id, _), _| *id != self.player.id());
             desktop.tcp_options.remove(&self.player.id());
+            desktop.melon_ports.remove(&self.player.id());
             let quitting = desktop.quitting && desktop.windows.is_empty();
             let empty = desktop.windows.is_empty();
             if empty {
@@ -309,6 +310,7 @@ impl PlayerView {
             || self.presentation.eeprom != presentation.eeprom
             || self.presentation.peer != presentation.peer
             || self.presentation.connection != presentation.connection
+            || self.presentation.melon_ds != presentation.melon_ds
             || self.presentation.eeprom_error != presentation.eeprom_error
             || self.presentation.contrast != presentation.contrast
             || self.presentation.speed_percent != presentation.speed_percent
@@ -1390,23 +1392,39 @@ impl Render for PlayerView {
                             .when(indicators && !connection.is_empty(), |bar| {
                                 bar.right(
                                     status_button("status-connection")
-                                        .icon(if frame.peer.is_some() {
-                                            gpui_kit::assets::IconName::Radio
-                                        } else {
-                                            gpui_kit::assets::IconName::Network
-                                        })
+                                        .icon(
+                                            if matches!(
+                                                frame.connection,
+                                                hs_runtime::Connection::Error(_)
+                                            ) {
+                                                gpui_kit::assets::IconName::TriangleAlert
+                                            } else if frame.peer.is_some() {
+                                                gpui_kit::assets::IconName::Radio
+                                            } else {
+                                                gpui_kit::assets::IconName::Network
+                                            },
+                                        )
                                         .accessibility_label(connection.clone())
                                         .when(
                                             !compact
                                                 && frame.connection
                                                     != hs_runtime::Connection::Connected
                                                 && frame.peer.is_none(),
-                                            |button| button.label(frame.connection_name()),
+                                            |button| {
+                                                button.label(match frame.connection {
+                                                    hs_runtime::Connection::Error(_) => {
+                                                        "IR error".into()
+                                                    }
+                                                    _ => frame.connection_name(),
+                                                })
+                                            },
                                         )
                                         .tooltip(connection)
                                         .on_click(cx.listener(|view, _, window, cx| {
                                             let kind = if view.presentation.peer.is_some() {
                                                 crate::tools::Kind::Link
+                                            } else if view.presentation.melon_ds {
+                                                crate::tools::Kind::MelonDs
                                             } else {
                                                 crate::tools::Kind::Tcp
                                             };
