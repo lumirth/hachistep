@@ -46,12 +46,13 @@ impl std::fmt::Display for Connection {
     }
 }
 
-struct Incoming {
-    bytes: SyncSender<(Instant, u8)>,
-    wake: thread::Thread,
+pub(crate) struct Incoming {
+    pub(crate) bytes: SyncSender<(Instant, u8)>,
+    pub(crate) wake: thread::Thread,
 }
 
 pub(crate) struct Tcp {
+    pub melon_ds: bool,
     pub state: Arc<Mutex<Connection>>,
     tx: SyncSender<Vec<u8>>,
     rx: Receiver<(Instant, u8)>,
@@ -71,6 +72,20 @@ impl Drop for Tcp {
 
 impl Tcp {
     pub fn start(address: String, listen: bool, allow_remote: bool, wake: thread::Thread) -> Self {
+        Self::spawn(address, listen, allow_remote, None, wake)
+    }
+
+    pub fn melon_ds(port: u16, wake: thread::Thread) -> Self {
+        Self::spawn(String::new(), false, false, Some(port), wake)
+    }
+
+    fn spawn(
+        address: String,
+        listen: bool,
+        allow_remote: bool,
+        melon_port: Option<u16>,
+        wake: thread::Thread,
+    ) -> Self {
         let (tx, outgoing) = mpsc::sync_channel(CAPACITY);
         let (incoming, rx) = mpsc::sync_channel(CAPACITY);
         let state = Arc::new(Mutex::new(if listen {
@@ -84,18 +99,23 @@ impl Tcp {
         thread::Builder::new()
             .name("hachistep-tcp".into())
             .spawn(move || {
-                let result = transport(
-                    &address,
-                    listen,
-                    allow_remote,
-                    &worker_stop,
-                    &worker_state,
-                    outgoing,
-                    Incoming {
-                        bytes: incoming,
-                        wake,
-                    },
-                );
+                let incoming = Incoming {
+                    bytes: incoming,
+                    wake,
+                };
+                let result = if let Some(port) = melon_port {
+                    crate::melonds::transport(port, &worker_stop, &worker_state, outgoing, incoming)
+                } else {
+                    transport(
+                        &address,
+                        listen,
+                        allow_remote,
+                        &worker_stop,
+                        &worker_state,
+                        outgoing,
+                        incoming,
+                    )
+                };
                 *worker_state.lock().unwrap() = match result {
                     Ok(()) => Connection::Disconnected,
                     Err(error) => Connection::Error(format!("{error:#}")),
@@ -103,6 +123,7 @@ impl Tcp {
             })
             .expect("create TCP worker");
         Self {
+            melon_ds: melon_port.is_some(),
             state,
             tx,
             rx,

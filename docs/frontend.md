@@ -42,6 +42,27 @@ next transition before either recipient runs past it. TCP exchanges decoded
 reconstructs optical input at observed arrival times. The wire format carries no
 sender timestamps.
 
+Use **Tools → Infrared → Connect to melonDS…** with stock melonDS 1.1 on the
+same computer. In melonDS, enable the ARM9 GDB stub under **Config → Emu settings
+→ Devtools**, use the interpreter, and restart. Open HeartGold or SoulSilver,
+connect HachiStep, then enter the game's Pokéwalker menu. Finish the game's
+instructions before connecting from the walker. On a new walker's home screen,
+press the middle button; on a registered walker, select Connect. If the display
+is asleep, wake it first, then release the button before connecting. Keep both
+emulators at normal speed during a transfer. Transfers can still time out when
+host or debugger stalls exceed the firmware’s response deadline. Disable the GDB stub afterward:
+melonDS exposes its unauthenticated debugger to the network, even though HachiStep
+connects locally.
+
+The connection recognizes the cartridge IR routines in RAM across all HGSS
+languages, including relocated routines in hacks that retain that driver. An
+unrecognized driver is rejected. It installs a temporary cartridge adapter in
+those routines; game and walker firmware handle the protocol. ROM files and
+the melonDS executable stay untouched. Reset the game to remove the adapter;
+reconnect after a game reset, change, or state load. Connect before entering the
+Pokéwalker menu on a fresh game boot so installation cannot replace an active
+cartridge operation.
+
 Launch firmware and an EEPROM directly:
 
 ```sh

@@ -283,6 +283,10 @@ impl MenuState {
 
     fn infrared_menu(&self) -> MenuItem {
         MenuItem::submenu(Menu::new("Infrared").items([
+            self.active(
+                "Connect to melonDS…",
+                Intent::Tool(crate::tools::Kind::MelonDs),
+            ),
             self.active("Local Link…", Intent::Tool(crate::tools::Kind::Link)),
             self.active("TCP Connection…", Intent::Tool(crate::tools::Kind::Tcp)),
         ]))
