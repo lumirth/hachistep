@@ -10,7 +10,7 @@ use gpui_kit::{
         h_flex,
         menu::AppMenuBar,
         status_bar::StatusBar,
-        v_flex, ActiveTheme, Disableable, Sizable, WindowExt,
+        v_flex, ActiveTheme, Sizable, WindowExt,
     },
     prelude::*,
     *,
@@ -1667,22 +1667,6 @@ impl Render for PlayerView {
                                             component::tooltip::Tooltip::new("Time since power-on")
                                                 .build(window, cx)
                                         }),
-                                )
-                            })
-                            .when(indicators && frame.modified, |bar| {
-                                bar.right(
-                                    status_button("status-save")
-                                        .icon(gpui_kit::assets::IconName::Save)
-                                        .accessibility_label("Save EEPROM")
-                                        .tooltip_with_action(
-                                            "Save EEPROM",
-                                            &Intent::SaveEeprom,
-                                            None,
-                                        )
-                                        .disabled(frame.saving)
-                                        .on_click(cx.listener(|view, _, window, cx| {
-                                            view.execute(Intent::SaveEeprom, window, cx)
-                                        })),
                                 )
                             })
                             .when(indicators && frame.walking, |bar| {

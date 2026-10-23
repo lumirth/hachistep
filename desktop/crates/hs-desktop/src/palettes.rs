@@ -395,7 +395,7 @@ impl Editor {
             .child(
                 v_flex()
                     .gap_2()
-                    .child("Default palette")
+                    .child(theme::settings_heading("Default palette", cx))
                     .child(
                         v_flex()
                             .id("palette-list")
@@ -650,25 +650,29 @@ impl Editor {
                         v_flex()
                             .gap_2()
                             .child(
-                                h_flex().justify_between().gap_3().child("Preview").child(
-                                    h_flex()
-                                        .gap_2()
-                                        .child(div().text_sm().child("LCD contrast"))
-                                        .child(
-                                            Switch::new("preview-contrast")
-                                                .small()
-                                                .checked(!self.preview_raw)
-                                                .accessibility_label(
-                                                    "Apply LCD contrast to preview",
-                                                )
-                                                .on_change(cx.listener(
-                                                    |view, contrast: &bool, _, cx| {
-                                                        view.preview_raw = !*contrast;
-                                                        cx.notify();
-                                                    },
-                                                )),
-                                        ),
-                                ),
+                                h_flex()
+                                    .justify_between()
+                                    .gap_3()
+                                    .child(theme::settings_heading("Preview", cx))
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(div().text_sm().child("LCD contrast"))
+                                            .child(
+                                                Switch::new("preview-contrast")
+                                                    .small()
+                                                    .checked(!self.preview_raw)
+                                                    .accessibility_label(
+                                                        "Apply LCD contrast to preview",
+                                                    )
+                                                    .on_change(cx.listener(
+                                                        |view, contrast: &bool, _, cx| {
+                                                            view.preview_raw = !*contrast;
+                                                            cx.notify();
+                                                        },
+                                                    )),
+                                            ),
+                                    ),
                             )
                             .child(div().w_48().h_32().self_center().child(lcd::display(
                                 frame.pixels,

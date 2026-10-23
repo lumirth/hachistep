@@ -9,6 +9,7 @@ use gpui_kit::{
         h_flex,
         kbd::Kbd,
         menu::{DropdownMenu, PopupMenuItem},
+        popover::Popover,
         switch::Switch,
         v_flex, ActiveTheme, Selectable, Sizable,
     },
@@ -35,9 +36,7 @@ fn open_section(section: Option<Section>, cx: &mut App) {
                         view._resize =
                             crate::macos::resize_settings(window, px(section.height()), cx);
                     }
-                    view.capture = None;
-                    view.error = None;
-                    cx.notify();
+                    view.cancel_binding(cx);
                 });
                 window.activate_window();
             })
@@ -75,10 +74,10 @@ enum Section {
 impl Section {
     fn height(self) -> f32 {
         match self {
-            Self::General => 490.,
-            Self::Display => 470.,
-            Self::Controls => 390.,
-            Self::Hotkeys => 560.,
+            Self::General => 430.,
+            Self::Display => 430.,
+            Self::Controls => 290.,
+            Self::Hotkeys => 600.,
         }
     }
     fn name(self) -> &'static str {
@@ -172,8 +171,7 @@ impl Settings {
         let mut subscriptions = vec![release];
         let target = cx.global::<Desktop>().active_player.clone();
         subscriptions.push(cx.observe_window_activation(window, |view, window, cx| {
-            view.capture = None;
-            view.error = None;
+            view.cancel_binding(cx);
             if window.is_window_active() {
                 view.target = cx.global::<Desktop>().active_player.clone();
                 if let Some(target) = &view.target {
@@ -279,7 +277,7 @@ impl Settings {
             self.capture = None;
             self.error = None;
         } else {
-            self.error = Some("Choose a face button, shoulder button, or D-pad direction.".into());
+            self.error = Some("Press a face button, shoulder button, or D-pad direction.".into());
         }
         cx.notify();
     }
@@ -317,9 +315,7 @@ impl Settings {
             return;
         };
         if key.key == "escape" {
-            self.capture = None;
-            self.error = None;
-            cx.notify();
+            self.cancel_binding(cx);
             return;
         }
         if matches!(
@@ -341,7 +337,7 @@ impl Settings {
                 if fixed {
                     "That shortcut is reserved for a menu command."
                 } else {
-                    "Use one key without modifiers for a held control or walker button."
+                    "Press a single key without modifiers."
                 }
                 .into(),
             );
@@ -363,46 +359,158 @@ impl Settings {
         self.update(|p| target.set(p, key), cx);
         self.changed_keys(cx);
     }
-    fn key_button(&self, target: Capture, cx: &Context<Self>) -> Button {
+    fn binding_target(&self) -> Option<Capture> {
+        self.capture
+            .or_else(|| self.conflict.as_ref().map(|conflict| conflict.target))
+    }
+    fn cancel_binding(&mut self, cx: &mut Context<Self>) {
+        self.capture = None;
+        self.conflict = None;
+        self.error = None;
+        cx.notify();
+    }
+    fn swap_binding(&mut self, cx: &mut Context<Self>) {
+        if let Some(conflict) = self.conflict.take() {
+            let old = conflict.target.key(&cx.global::<Desktop>().preferences);
+            self.update(
+                |p| {
+                    conflict.target.set(p, conflict.key);
+                    conflict.other.set(p, old);
+                },
+                cx,
+            );
+            self.cancel_binding(cx);
+            self.changed_keys(cx);
+        }
+    }
+    // Handle Confirm before the popover trigger consumes a button's Enter or Space.
+    fn binding_editor(&self, target: Capture, cx: &Context<Self>) -> impl IntoElement {
+        v_flex()
+            .w_64()
+            .gap_2()
+            .text_sm()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .justify_between()
+                    .child(
+                        crate::theme::settings_heading(target.name(), cx)
+                            .flex_1()
+                            .min_w_0(),
+                    )
+                    .child(
+                        Button::new("cancel-binding")
+                            .small()
+                            .ghost()
+                            .label("Cancel")
+                            .on_click(cx.listener(|view, _, _, cx| view.cancel_binding(cx)))
+                            .on_action(cx.listener(
+                                |view, _: &gpui_kit::base::actions::Confirm, _, cx| {
+                                    cx.stop_propagation();
+                                    view.cancel_binding(cx);
+                                },
+                            )),
+                    ),
+            )
+            .when(self.capture == Some(target), |panel| {
+                let gamepad = matches!(target, Capture::Gamepad(_));
+                panel.child(
+                    h_flex()
+                        .gap_2()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(
+                            component::Icon::new(if gamepad {
+                                gpui_kit::assets::IconName::Gamepad2
+                            } else {
+                                gpui_kit::assets::IconName::Keyboard
+                            })
+                            .small(),
+                        )
+                        .child(if gamepad {
+                            "Press a button…"
+                        } else {
+                            "Press a key…"
+                        }),
+                )
+            })
+            .when_some(self.error.clone(), |panel, error| {
+                panel.child(div().text_color(cx.theme().danger).child(error))
+            })
+            .when_some(self.conflict.as_ref(), |panel, conflict| {
+                let old = conflict.target.key(&cx.global::<Desktop>().preferences);
+                panel
+                    .child(format!(
+                        "{} is already used by {}.",
+                        settings::key_name(&conflict.key),
+                        conflict.other.name()
+                    ))
+                    .when(conflict.other.accepts(&old), |panel| {
+                        panel.child(
+                            Button::new("swap-bindings")
+                                .small()
+                                .primary()
+                                .self_end()
+                                .label("Swap")
+                                .on_click(cx.listener(|view, _, _, cx| view.swap_binding(cx)))
+                                .on_action(cx.listener(
+                                    |view, _: &gpui_kit::base::actions::Confirm, _, cx| {
+                                        cx.stop_propagation();
+                                        view.swap_binding(cx);
+                                    },
+                                )),
+                        )
+                    })
+            })
+    }
+    fn key_button(&self, target: Capture, cx: &Context<Self>) -> Popover {
         let binding = target.key(&cx.global::<Desktop>().preferences);
-        let capturing = self.capture == Some(target);
-        Button::new(SharedString::from(format!("binding-{}", target.name())))
+        let owner = cx.weak_entity();
+        let open = self.binding_target() == Some(target);
+        let button = Button::new(SharedString::from(format!("binding-{}", target.name())))
             .small()
             .w_40()
+            .selected(open)
             .accessibility_label(format!("Change {} binding", target.name()))
-            .when(capturing, |button| {
-                button.label(if matches!(target, Capture::Gamepad(_)) {
-                    "Press a button…"
-                } else {
-                    "Press a key…"
-                })
-            })
-            .when(!capturing, |button| {
+            .map(|button| {
                 if matches!(target, Capture::Gamepad(_)) || binding.is_empty() {
                     button.label(if binding.is_empty() {
                         "None".into()
                     } else {
-                        binding.clone()
+                        binding
                     })
                 } else {
                     button.child(
                         Kbd::new(Keystroke::parse(&binding).unwrap_or_default()).appearance(false),
                     )
                 }
-            })
-            .on_click(cx.listener(move |view, _, window, cx| {
-                view.capture = Some(target);
-                view.conflict = None;
-                view.error = None;
-                view.pad_sequence = cx
-                    .global::<Desktop>()
-                    .runtime
-                    .gamepad_press()
-                    .map(|(sequence, _)| sequence)
-                    .unwrap_or(0);
-                view.focus.focus(window, cx);
-                cx.notify();
-            }))
+            });
+        Popover::new(SharedString::from(format!(
+            "binding-editor-{}",
+            target.name()
+        )))
+        .anchor(Anchor::BottomRight)
+        .arrow(true)
+        .open(open)
+        .trigger(button)
+        .on_open_change(move |open, _, cx| {
+            let _ = owner.update(cx, |view, cx| {
+                if *open {
+                    view.capture = Some(target);
+                    view.conflict = None;
+                    view.error = None;
+                    view.pad_sequence = cx
+                        .global::<Desktop>()
+                        .runtime
+                        .gamepad_press()
+                        .map(|(sequence, _)| sequence)
+                        .unwrap_or(0);
+                    cx.notify();
+                } else if view.binding_target() == Some(target) {
+                    view.cancel_binding(cx);
+                }
+            });
+        })
+        .child(self.binding_editor(target, cx))
     }
     fn controls(&self, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
@@ -411,8 +519,8 @@ impl Settings {
                 h_flex()
                     .gap_4()
                     .child(div().w_16())
-                    .child(div().w_40().text_sm().child("Keyboard"))
-                    .child(div().w_40().text_sm().child("Gamepad")),
+                    .child(crate::theme::settings_heading("Keyboard", cx).w_40())
+                    .child(crate::theme::settings_heading("Gamepad", cx).w_40()),
             )
             .children(
                 ["Left", "Center", "Right"]
@@ -428,7 +536,7 @@ impl Settings {
             )
             .child(
                 div()
-                    .text_sm()
+                    .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child("Select a binding, then press the key or gamepad button."),
             )
@@ -441,13 +549,7 @@ impl Settings {
             .child(
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("Held controls"),
-                    )
+                    .child(crate::theme::settings_heading("Held controls", cx))
                     .child(
                         h_flex()
                             .justify_between()
@@ -466,13 +568,10 @@ impl Settings {
             .children(["System", "States", "Screen"].map(|group| {
                 v_flex()
                     .gap_1()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(group),
-                    )
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .pt_3()
+                    .child(crate::theme::settings_heading(group, cx))
                     .children(
                         shortcuts
                             .iter()
@@ -489,7 +588,7 @@ impl Settings {
             }))
             .child(
                 div()
-                    .text_sm()
+                    .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(
                         "F1–F10 load slots. Shift-F1–F10 save slots. Backspace clears a shortcut.",
@@ -557,7 +656,7 @@ impl Settings {
             .child(
                 v_flex()
                     .gap_3()
-                    .child(div().font_weight(FontWeight::MEDIUM).child("Firmware"))
+                    .child(crate::theme::settings_heading("Firmware", cx))
                     .child(
                         h_flex()
                             .gap_3()
@@ -592,7 +691,7 @@ impl Settings {
                                 )
                             }),
                     )
-                    .child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground)
                         .child("New walkers use this firmware. Existing EEPROMs remember the firmware they last used."))
                     .when_some(self.firmware_error.clone(), |root, error| {
                         root.child(div().text_sm().text_color(cx.theme().danger).child(error))
@@ -602,7 +701,7 @@ impl Settings {
             .child(
                 v_flex()
                     .gap_3()
-                    .child(div().font_weight(FontWeight::MEDIUM).child("New windows"))
+                    .child(crate::theme::settings_heading("New windows", cx))
                     .child(self.speed_choice("default-speed", "Speed", p.speed, false, cx))
                     .child(self.speed_choice("turbo-speed", "Fast-forward rate", p.turbo, true, cx))
                     .child(
@@ -646,7 +745,7 @@ impl Settings {
                             ),
                     ),
             )
-            .child(div().text_sm().text_color(cx.theme().muted_foreground)
+            .child(div().text_xs().text_color(cx.theme().muted_foreground)
                 .child("These defaults apply to new walkers. Change an open walker's settings in the System menu."))
             .when_some(
                 cx.global::<Desktop>()
@@ -760,11 +859,9 @@ impl Render for Settings {
                 }
             }))
             .capture_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" && view.capture.is_some() {
-                    view.capture = None;
-                    view.error = None;
+                if event.keystroke.key == "escape" && view.binding_target().is_some() {
+                    view.cancel_binding(cx);
                     cx.stop_propagation();
-                    cx.notify();
                 }
             }))
             .child(
@@ -843,9 +940,7 @@ impl Render for Settings {
                                             px(section.height()),
                                             cx,
                                         );
-                                        view.capture = None;
-                                        view.conflict = None;
-                                        view.error = None;
+                                        view.cancel_binding(cx);
                                         view.update(
                                             |p| p.settings_page = view_section_index(section),
                                             cx,
@@ -862,103 +957,6 @@ impl Render for Settings {
                     .min_h_0()
                     .overflow_y_scroll()
                     .child(v_flex().px_5().py_3().gap_3().child(content)),
-            )
-            .when(
-                self.capture.is_some() || self.conflict.is_some() || self.error.is_some(),
-                |root| {
-                    root.child(
-                        v_flex()
-                            .flex_shrink_0()
-                            .border_t_1()
-                            .border_color(cx.theme().border)
-                            .px_5()
-                            .py_3()
-                            .gap_3()
-                            .when(self.capture.is_some(), |root| {
-                                root.child(
-                                    Button::new("cancel-capture")
-                                        .small()
-                                        .self_end()
-                                        .label("Cancel")
-                                        .on_click(cx.listener(|view, _, _, cx| {
-                                            view.capture = None;
-                                            view.error = None;
-                                            cx.notify();
-                                        })),
-                                )
-                            })
-                            .when_some(self.conflict.as_ref(), |root, conflict| {
-                                let p = &cx.global::<Desktop>().preferences;
-                                let old = conflict.target.key(p);
-                                let swappable = conflict.other.accepts(&old);
-                                root.child(
-                                    v_flex()
-                                        .gap_2()
-                                        .child(format!(
-                                            "{} is already used by {}.",
-                                            settings::key_name(&conflict.key),
-                                            conflict.other.name()
-                                        ))
-                                        .child(
-                                            h_flex()
-                                                .justify_end()
-                                                .gap_2()
-                                                .child(
-                                                    Button::new("cancel-swap")
-                                                        .small()
-                                                        .label("Cancel")
-                                                        .on_click(cx.listener(|view, _, _, cx| {
-                                                            view.conflict = None;
-                                                            cx.notify();
-                                                        })),
-                                                )
-                                                .when(swappable, |row| {
-                                                    row.child(
-                                                        Button::new("swap-bindings")
-                                                            .small()
-                                                            .label("Swap")
-                                                            .on_click(cx.listener(
-                                                                |view, _, _, cx| {
-                                                                    if let Some(conflict) =
-                                                                        view.conflict.take()
-                                                                    {
-                                                                        let old = conflict
-                                                                            .target
-                                                                            .key(
-                                                                            &cx.global::<Desktop>()
-                                                                                .preferences,
-                                                                        );
-                                                                        view.update(
-                                                                            |p| {
-                                                                                conflict
-                                                                                    .target
-                                                                                    .set(
-                                                                                        p,
-                                                                                        conflict
-                                                                                            .key,
-                                                                                    );
-                                                                                conflict
-                                                                                    .other
-                                                                                    .set(p, old);
-                                                                            },
-                                                                            cx,
-                                                                        );
-                                                                        view.changed_keys(cx);
-                                                                    }
-                                                                },
-                                                            )),
-                                                    )
-                                                }),
-                                        ),
-                                )
-                            })
-                            .when_some(self.error.clone(), |root, error| {
-                                root.child(
-                                    div().text_sm().text_color(cx.theme().danger).child(error),
-                                )
-                            }),
-                    )
-                },
             )
     }
 }
