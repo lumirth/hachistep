@@ -8,4 +8,8 @@ A cross-platform GPUI frontend can be downloaded from [Releases](https://github.
 
 There's also [hachiware](https://github.com/lumirth/hachiware), hachistep's sister project which exists for end to end benchmarking, testing, evaluation, etc.
 
+> Why is it called hachistep?
+
+Because the Pokéwalker's chip uses the H8 architecture. "Hachi" is Japanese for 8. Thus, hachistep. 
+
 [Embed the core](docs/api.md) · [Build](docs/build.md)
