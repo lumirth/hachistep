@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::mpsc::Sender};
 
 gpui_kit::assets::icon_assets!(
     DesktopIcons,
-    [Clock3, Save, Footprints, Radio, Network, Gauge]
+    [Clock3, Save, Footprints, Radio, Network, Gauge, Settings, Monitor, Gamepad2, Keyboard]
 );
 
 struct Assets;
@@ -33,6 +33,9 @@ impl AssetSource for Assets {
         match path {
             "wordmark.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
                 "../../../../assets/logo-two-tone.svg"
+            )))),
+            "infrared-walker.svg" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
+                "../../../../assets/infrared-walker.svg"
             )))),
             "icon.png" => Ok(Some(std::borrow::Cow::Borrowed(include_bytes!(
                 "../../../../assets/icons/macos/icon.png"
@@ -69,6 +72,7 @@ struct Desktop {
     about_window: Option<AnyWindowHandle>,
     tcp_options: BTreeMap<hs_runtime::Id, tools::TcpOptions>,
     melon_ports: BTreeMap<hs_runtime::Id, u16>,
+    palette_preview: Option<(String, lcd::Palette)>,
 }
 impl Global for Desktop {}
 
@@ -369,6 +373,21 @@ fn invoke_player(owner: &WeakEntity<PlayerView>, intent: commands::Intent, cx: &
     }
 }
 
+fn focus_player(owner: &WeakEntity<PlayerView>, cx: &mut App) {
+    let handle = cx
+        .global::<Desktop>()
+        .windows
+        .iter()
+        .find(|window| window.view.entity_id() == owner.entity_id())
+        .map(|window| window.handle);
+    if let Some(handle) = handle {
+        let _ = handle.update(cx, |_, window, cx| {
+            window.activate_window();
+            let _ = owner.update(cx, |view, cx| view.focus_window(window, cx));
+        });
+    }
+}
+
 fn player_menu(owner: &WeakEntity<PlayerView>, cx: &mut App) {
     let _ = owner.update(cx, |owner, cx| owner.install_menu(cx));
 }
@@ -451,7 +470,6 @@ fn main() {
         let (preferences, persist) = Preferences::load();
         theme::apply(preferences.appearance, cx);
         let runtime = Runtime::new();
-        runtime.sound_enabled(!preferences.mute);
         cx.set_global(Desktop {
             runtime,
             preferences,
@@ -467,6 +485,7 @@ fn main() {
             tool_bounds: BTreeMap::new(),
             tcp_options: BTreeMap::new(),
             melon_ports: BTreeMap::new(),
+            palette_preview: None,
         });
         let reopen_context = cx.to_async();
         platform.on_reopen(Box::new(move || {
@@ -500,7 +519,7 @@ fn main() {
                 }
             })
         }));
-        commands::bind(cx);
+        commands::init(cx);
         commands::MenuState::new(
             &hs_runtime::Presentation::default(),
             false,

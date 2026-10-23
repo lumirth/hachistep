@@ -7,7 +7,7 @@ use crate::{
 use gpui_kit::{
     component::{
         button::{Button, ButtonRounded, ButtonVariants},
-        checkbox::Checkbox,
+        h_flex,
         menu::AppMenuBar,
         status_bar::StatusBar,
         v_flex, ActiveTheme, Disableable, Sizable, WindowExt,
@@ -16,7 +16,10 @@ use gpui_kit::{
     *,
 };
 use hs_runtime::{Buttons, Command, Player, Presentation};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum FileCommand {
@@ -52,10 +55,12 @@ pub(crate) struct PlayerView {
     player: Player,
     presentation: Presentation,
     firmware: Option<PathBuf>,
-    retain_firmware: bool,
     new_after_firmware: bool,
     requested: Option<Recent>,
     palette_id: Option<String>,
+    options: settings::WalkerPreferences,
+    walk_held: Option<bool>,
+    notice: Option<(String, Instant, bool)>,
     pending: Option<(Player, PathBuf, Option<PathBuf>)>,
     focus: FocusHandle,
     buttons: Buttons,
@@ -179,15 +184,12 @@ impl PlayerView {
             player,
             presentation: Presentation::default(),
             new_after_firmware: false,
-            retain_firmware: firmware.is_none()
-                && cx
-                    .global::<Desktop>()
-                    .preferences
-                    .default_firmware
-                    .is_none(),
             firmware,
             requested: None,
             palette_id: None,
+            options: settings::WalkerPreferences::default(),
+            walk_held: None,
+            notice: None,
             pending: None,
             focus,
             buttons: Buttons::RELEASED,
@@ -223,7 +225,9 @@ impl PlayerView {
 
         if let Some((player, firmware, eeprom)) = &self.pending {
             let view = player.presentation();
-            if view.ready {
+            if view.ready
+                && (!self.presentation.ready || !self.player.presentation().is_connection_active())
+            {
                 let player = player.clone();
                 let firmware = firmware.clone();
                 let eeprom = eeprom.clone();
@@ -239,10 +243,6 @@ impl PlayerView {
                     });
                     crate::save_preferences(cx);
                 }
-                self.player
-                    .send(Command::Speed(cx.global::<Desktop>().preferences.speed));
-                self.player
-                    .send(Command::TurboRate(cx.global::<Desktop>().preferences.turbo));
                 let mapping = cx
                     .global::<Desktop>()
                     .preferences
@@ -252,6 +252,7 @@ impl PlayerView {
                 self.focus.focus(window, cx);
                 self.player.send(Command::Focus(window.is_window_active()));
                 self.error = None;
+                self.apply_options(window, cx);
             } else if let Some(error) = view.error {
                 player.send(Command::Close);
                 self.pending = None;
@@ -303,6 +304,49 @@ impl PlayerView {
             }
             return;
         }
+        let completion = presentation.completion.as_ref().map(|(id, _)| *id);
+        if completion != self.presentation.completion.as_ref().map(|(id, _)| *id) {
+            if let Some((_, result)) = &presentation.completion {
+                use hs_runtime::Completion;
+                let message = match result {
+                    Completion::SavedEeprom(path) => format!("Saved {}", settings::filename(path)),
+                    Completion::SavedState(path) => {
+                        let name = settings::filename(path);
+                        if let Some(slot) = name
+                            .strip_prefix("slot-")
+                            .and_then(|s| s.strip_suffix(".hstepstate"))
+                        {
+                            format!("Saved slot {slot}")
+                        } else {
+                            format!("Saved {name}")
+                        }
+                    }
+                    Completion::LoadedState => {
+                        let undo = commands::shortcuts()
+                            .into_iter()
+                            .find(|shortcut| shortcut.intent == Intent::UndoLoadState)
+                            .unwrap()
+                            .key(&cx.global::<Desktop>().preferences);
+                        if undo.is_empty() {
+                            "Loaded state".into()
+                        } else {
+                            format!("Loaded state. Press {} to undo.", settings::key_name(&undo))
+                        }
+                    }
+                    Completion::UndidLoad => "Undid the state load".into(),
+                    Completion::Written(path) => format!("Saved {}", settings::filename(path)),
+                };
+                self.notify(message, false, cx);
+            }
+        }
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|(_, until, _)| Instant::now() >= *until)
+        {
+            self.notice = None;
+            cx.notify();
+        }
         let changed = self.presentation.pixels != presentation.pixels
             || self.presentation.ready != presentation.ready
             || self.presentation.paused != presentation.paused
@@ -330,6 +374,13 @@ impl PlayerView {
                 });
                 crate::save_preferences(cx);
             }
+            if let Some(path) = &presentation.eeprom {
+                cx.global_mut::<Desktop>()
+                    .preferences
+                    .walkers
+                    .insert(path.clone(), self.options.clone());
+                crate::save_preferences(cx);
+            }
         }
         self.presentation = presentation;
         window.set_window_edited(self.presentation.modified);
@@ -337,6 +388,7 @@ impl PlayerView {
             && self.presentation.closing
             && self.presentation.paused
             && !self.presentation.saving
+            && !self.presentation.is_connection_active()
         {
             if !self.presentation.modified {
                 self.finish_close();
@@ -365,31 +417,11 @@ impl PlayerView {
                 .detach();
             }
         }
-        let mut title = if self.presentation.ready {
-            format!("hachistep · {}", self.filename())
+        let title = if self.presentation.ready {
+            self.filename()
         } else {
-            "hachistep".into()
+            "HachiStep".into()
         };
-        if self.presentation.paused {
-            title.push_str(" · Paused");
-        }
-        if self.presentation.speed_percent != 100 {
-            title.push_str(&format!(" · {}%", self.presentation.speed_percent));
-        }
-        if self.presentation.turbo {
-            title.push_str(" · Fast-forward");
-        }
-        if self.presentation.walking {
-            title.push_str(" · Walking");
-        }
-        if self.presentation.peer.is_some()
-            || self.presentation.connection == hs_runtime::Connection::Connected
-        {
-            title.push_str(" · Linked");
-        }
-        if self.presentation.eeprom_error.is_some() {
-            title.push_str(" · EEPROM error");
-        }
         window.set_window_title(&title);
         if let Some(error) = self
             .presentation
@@ -405,6 +437,13 @@ impl PlayerView {
                 }
                 self.release();
                 let eeprom = self.presentation.eeprom_error.is_some();
+                if !eeprom {
+                    self.notify(error, true, cx);
+                    if changed {
+                        cx.notify();
+                    }
+                    return;
+                }
                 let owner = cx.weak_entity();
                 window.open_dialog(cx, move |dialog, _, _| {
                     let dialog = dialog
@@ -474,7 +513,12 @@ impl PlayerView {
             &cx.global::<Desktop>().preferences,
             self.selected_slot(cx),
         )
-        .with_palette(self.palette_id())
+        .with_palette(self.palette_id().filter(|id| {
+            cx.global::<Desktop>()
+                .preferences
+                .palette_named(id)
+                .is_some()
+        }))
     }
 
     fn selected_slot(&self, cx: &App) -> u8 {
@@ -497,10 +541,10 @@ impl PlayerView {
         }
     }
 
-    fn slot(&mut self, slot: u8, load: bool, cx: &mut App) {
+    fn slot(&mut self, slot: u8, load: bool, _cx: &mut App) {
         if let Some(eeprom) = &self.presentation.eeprom {
             let path = hs_runtime::slot_path(eeprom, slot);
-            self.select_slot(slot, cx);
+
             self.player.send(if load {
                 Command::LoadState(path)
             } else {
@@ -525,6 +569,9 @@ impl PlayerView {
         self.player.send(Command::Close);
     }
     pub fn release(&mut self) {
+        if let Some(walking) = self.walk_held.take() {
+            self.player.send(Command::Walking(walking));
+        }
         self.buttons = Buttons::RELEASED;
         if self.presentation.ready {
             self.player.send(Command::Turbo(false));
@@ -567,12 +614,80 @@ impl PlayerView {
     pub fn accepts_file(&self) -> bool {
         !self.presentation.ready && self.pending.is_none() && self.requested.is_none()
     }
+    pub(crate) fn focus_window(&self, window: &mut Window, cx: &mut App) {
+        self.focus.focus(window, cx);
+    }
+    fn notify(&mut self, text: String, error: bool, cx: &mut Context<Self>) {
+        self.notice = Some((
+            text,
+            Instant::now() + Duration::from_secs(if error { 8 } else { 3 }),
+            error,
+        ));
+        cx.notify();
+    }
+    fn apply_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let preferences = &cx.global::<Desktop>().preferences;
+        let frame = self.player.presentation();
+        self.options = frame
+            .eeprom
+            .as_ref()
+            .and_then(|path| preferences.walkers.get(path))
+            .cloned()
+            .unwrap_or_default();
+        self.palette_id = self.options.palette.clone();
+        self.raw = self.options.raw;
+        let speed = self
+            .options
+            .speed
+            .filter(|value| (25..=800).contains(value))
+            .unwrap_or(preferences.speed);
+        let rate = self
+            .options
+            .turbo
+            .filter(|value| (100..=800).contains(value))
+            .unwrap_or(preferences.turbo);
+        let cadence = self
+            .options
+            .cadence
+            .filter(|value| (30..=240).contains(value))
+            .unwrap_or(preferences.cadence);
+        let muted = self.options.muted.unwrap_or(preferences.mute);
+        self.player.send(Command::Speed(speed));
+        self.player.send(Command::TurboRate(rate));
+        self.player.send(Command::Cadence(cadence));
+        self.player.send(Command::Mute(muted));
+        if self.status != self.options.status {
+            self.layout(self.options.status, self.margin, window);
+        }
+    }
+    fn remember_options(&self, cx: &mut App) {
+        if let Some(path) = &self.presentation.eeprom {
+            cx.global_mut::<Desktop>()
+                .preferences
+                .walkers
+                .insert(path.clone(), self.options.clone());
+            crate::save_preferences(cx);
+        }
+    }
     pub fn palette(&self, cx: &App) -> lcd::Palette {
         let preferences = &cx.global::<Desktop>().preferences;
+        let id = self
+            .palette_id
+            .as_deref()
+            .filter(|id| preferences.palette_named(id).is_some())
+            .unwrap_or(&preferences.palette_id);
+        if let Some((preview, colors)) = &cx.global::<Desktop>().palette_preview {
+            if preview == id {
+                return *colors;
+            }
+        }
         self.palette_id
             .as_deref()
             .and_then(|id| preferences.palette_named(id))
             .unwrap_or(preferences.palette)
+    }
+    pub(crate) fn raw_display(&self) -> bool {
+        self.raw
     }
     pub(crate) fn palette_id(&self) -> Option<&str> {
         self.palette_id.as_deref()
@@ -703,13 +818,17 @@ impl PlayerView {
         cx: &mut Context<Self>,
     ) {
         self.release();
-        let firmware = if self.retain_firmware {
+        let firmware = if cx
+            .global::<Desktop>()
+            .preferences
+            .default_firmware
+            .is_none()
+        {
             match crate::firmware::Firmware::retain(&firmware) {
                 Ok(retained) => {
                     let path = retained.path().unwrap();
                     cx.global_mut::<Desktop>().preferences.default_firmware = Some(retained);
                     crate::save_preferences(cx);
-                    self.retain_firmware = false;
                     path
                 }
                 Err(error) => {
@@ -790,7 +909,18 @@ impl PlayerView {
             | Intent::BringAll => {}
             Intent::Palette(ref id) => {
                 self.palette_id = id.clone();
+                self.options.palette = id.clone();
+                self.remember_options(cx);
             }
+            Intent::EditPalettes => crate::preferences::open_display(cx),
+            Intent::ClearRecents => {
+                let preferences = &mut cx.global_mut::<Desktop>().preferences;
+                preferences.recent.clear();
+                preferences.recent_firmware.clear();
+                crate::save_preferences(cx);
+                self.install_menu(cx);
+            }
+            Intent::RevertEeprom => self.revert(window, cx),
             Intent::NewEeprom => {
                 if let Some(firmware) = self.firmware.clone() {
                     self.open_image(firmware, None, cx);
@@ -814,8 +944,38 @@ impl PlayerView {
             Intent::Close => self.request_close(window, cx),
             Intent::Pause => self.player.send(Command::Pause),
             Intent::Reset => self.player.send(Command::Reset),
-            Intent::Mute => self.player.send(Command::Mute(!self.presentation.muted)),
-            Intent::Speed(percent) => self.player.send(Command::Speed(percent)),
+            Intent::Mute => {
+                let muted = !self.presentation.muted;
+                self.player.send(Command::Mute(muted));
+                self.options.muted = Some(muted);
+                self.remember_options(cx);
+            }
+            Intent::Speed(percent) => {
+                self.player.send(Command::Speed(percent));
+                self.options.speed = Some(percent);
+                self.remember_options(cx);
+                self.notify(format!("Speed {percent}%"), false, cx);
+            }
+            Intent::TurboRate(percent) => {
+                self.player.send(Command::TurboRate(percent));
+                self.options.turbo = Some(percent);
+                self.remember_options(cx);
+            }
+            Intent::Cadence(cadence) => {
+                self.player.send(Command::Cadence(cadence));
+                self.options.cadence = Some(cadence);
+                self.remember_options(cx);
+            }
+            Intent::Disconnect => self.player.send(Command::Disconnect),
+            Intent::CopyScreen => self.copy_screen(cx),
+            Intent::Larger => {
+                self.scale = self.scale.saturating_add(1).clamp(1, 8);
+                self.fit(window, Some(self.scale));
+            }
+            Intent::Smaller => {
+                self.scale = self.scale.saturating_sub(1).clamp(1, 8);
+                self.fit(window, Some(self.scale));
+            }
             Intent::Scale(scale) => {
                 self.scale = scale;
                 self.fit(window, Some(scale));
@@ -832,13 +992,17 @@ impl PlayerView {
                     window.viewport_size(),
                 ));
                 self.layout(!status, margin, window);
+                self.options.status = !status;
+                self.remember_options(cx);
             }
-            Intent::Raw => self.raw = !self.raw,
+            Intent::Raw => {
+                self.raw = !self.raw;
+                self.options.raw = self.raw;
+                self.remember_options(cx);
+            }
             Intent::RecentEeprom(pair) => self.open_pair(pair, cx),
             Intent::RecentFirmware(path) => self.selected(FileCommand::Firmware, path, window, cx),
-            Intent::Recents => {
-                commands::native(self.menu(cx).recents()).show(window.mouse_position(), window, cx);
-            }
+            Intent::Info => (),
             Intent::Tool(kind) => {
                 crate::tools::open(self.player.clone(), cx.weak_entity(), kind, window, cx)
             }
@@ -849,6 +1013,60 @@ impl PlayerView {
             Intent::Report => cx.open_url("https://github.com/lumirth/hachistep/issues/new"),
         }
         cx.notify();
+    }
+
+    fn copy_screen(&mut self, cx: &mut Context<Self>) {
+        if !self.presentation.ready {
+            return;
+        }
+        match lcd::screenshot(
+            &self.presentation.pixels,
+            self.presentation.contrast,
+            self.raw,
+            self.palette(cx),
+        ) {
+            Ok(bytes) => {
+                cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(
+                    ImageFormat::Png,
+                    bytes,
+                )));
+                self.notify("Copied the screen".into(), false, cx);
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+    fn revert(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((firmware, eeprom)) = self.firmware.clone().zip(self.presentation.eeprom.clone())
+        else {
+            return;
+        };
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Revert \"{}\" to the saved EEPROM?", self.filename()),
+            Some("Changes since the last save will be lost and the walker will restart."),
+            &["Revert", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |view, cx| {
+            if answer.await.ok() != Some(0) {
+                return;
+            }
+            let _ = view.update(cx, |view, cx| {
+                view.release();
+                if !view.presentation.paused {
+                    view.player.send(Command::Pause);
+                }
+                let candidate = cx.global::<Desktop>().runtime.player();
+                candidate.send(Command::Open {
+                    firmware: firmware.clone(),
+                    eeprom: Some(eeprom.clone()),
+                });
+                view.pending = Some((candidate, firmware, Some(eeprom)));
+                view.error = None;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn layout(&mut self, status: bool, margin: u16, window: &mut Window) {
@@ -967,14 +1185,30 @@ impl PlayerView {
                     self.error = Some(error.to_string());
                     return;
                 }
-                self.retain_firmware = cx
-                    .global::<Desktop>()
-                    .preferences
-                    .default_firmware
-                    .is_none();
                 cx.global_mut::<Desktop>()
                     .preferences
                     .remember_firmware(path.clone());
+                let path = if cx
+                    .global::<Desktop>()
+                    .preferences
+                    .default_firmware
+                    .is_none()
+                {
+                    match crate::firmware::Firmware::retain(&path) {
+                        Ok(retained) => {
+                            let path = retained.path().unwrap();
+                            cx.global_mut::<Desktop>().preferences.default_firmware =
+                                Some(retained);
+                            path
+                        }
+                        Err(error) => {
+                            self.error = Some(error.to_string());
+                            return;
+                        }
+                    }
+                } else {
+                    path
+                };
                 crate::save_preferences(cx);
                 if self.presentation.ready {
                     crate::new_window(cx, Some(crate::Launch::Firmware(path)));
@@ -1040,138 +1274,165 @@ impl PlayerView {
         {
             self.player.send(Command::Turbo(pressed));
         }
+        if key == cx.global::<Desktop>().preferences.walk_key {
+            if pressed && self.walk_held.is_none() {
+                self.walk_held = Some(self.presentation.walking);
+                self.player.send(Command::Walking(true));
+            } else if !pressed {
+                if let Some(walking) = self.walk_held.take() {
+                    self.player.send(Command::Walking(walking));
+                }
+            }
+        }
         self.player.send(Command::Buttons(self.buttons));
     }
     fn empty(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let selected_default = self
-            .firmware
-            .as_ref()
-            .zip(cx.global::<Desktop>().preferences.default_firmware.as_ref())
-            .filter(|(path, firmware)| {
-                path.file_stem()
-                    .is_some_and(|stem| stem == firmware.hash.as_str())
-            });
-        let firmware_name = selected_default
-            .map(|(_, firmware)| firmware.name.clone())
-            .or_else(|| self.firmware.as_deref().map(settings::filename));
-        let mut content = v_flex()
+        let preferences = &cx.global::<Desktop>().preferences;
+        let firmware_name = self.firmware.as_ref().map(|path| {
+            preferences
+                .default_firmware
+                .as_ref()
+                .filter(|firmware| {
+                    path.file_stem()
+                        .is_some_and(|stem| stem == firmware.hash.as_str())
+                })
+                .map(|firmware| firmware.name.clone())
+                .unwrap_or_else(|| settings::filename(path))
+        });
+        let recent = preferences.recent.clone();
+        let compact = window.viewport_size().height < window.rem_size() * 18.;
+        v_flex()
+            .id("launcher")
             .size_full()
             .items_center()
-            .justify_center()
-            .gap_3()
-            .p_6();
-        if window.viewport_size().width < px(288.) || window.viewport_size().height < px(192.) {
-            content = content.p_2().gap_1();
-            if self.pending.is_some() {
-                return content.child("Opening…").into_any_element();
-            }
-            let intent = if self.firmware.is_some() {
-                Intent::OpenEeprom
-            } else {
-                Intent::OpenFirmware
-            };
-            return content
-                .child(Button::new("open").small().label("Open…").on_click(
-                    cx.listener(move |view, _, window, cx| {
-                        view.execute(intent.clone(), window, cx)
-                    }),
-                ))
-                .when(self.firmware.is_some(), |root| {
-                    root.child(Button::new("new").small().ghost().label("New…").on_click(
-                        cx.listener(|view, _, window, cx| {
-                            view.execute(Intent::NewEeprom, window, cx)
-                        }),
-                    ))
-                })
-                .into_any_element();
-        }
-        if self.pending.is_some() {
-            content = content.child("Opening…");
-        } else if let Some(firmware_name) = firmware_name {
-            content = content
-                .child(
-                    svg()
-                        .path("wordmark.svg")
-                        .w_48()
-                        .h_10()
-                        .text_color(cx.theme().primary),
-                )
-                .child(
-                    component::h_flex()
-                        .w_48()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(firmware_name),
-                        )
-                        .child(
-                            Button::new("change-firmware")
-                                .small()
-                                .label("Change…")
-                                .on_click(cx.listener(|view, _, window, cx| {
-                                    view.execute(Intent::OpenFirmware, window, cx)
-                                })),
-                        ),
-                )
-                .when(selected_default.is_none(), |root| {
-                    root.child(
-                        Checkbox::new("default-firmware")
-                            .text_sm()
-                            .label("Use as default firmware")
-                            .checked(self.retain_firmware)
-                            .on_change(cx.listener(|view, checked, _, cx| {
-                                view.retain_firmware = *checked;
-                                cx.notify();
-                            })),
+            .min_h_0()
+            .overflow_y_scroll()
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(rems(32.))
+                    .items_center()
+                    .gap_3()
+                    .p_5()
+                    .child(
+                        svg()
+                            .path("wordmark.svg")
+                            .w_48()
+                            .h_10()
+                            .text_color(cx.theme().primary),
                     )
-                })
-                .child(
-                    Button::new("open-save")
-                        .w_48()
-                        .label("Open EEPROM…")
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.execute(Intent::OpenEeprom, window, cx)
-                        })),
-                )
-                .child(Button::new("new-save").w_48().label("New EEPROM").on_click(
-                    cx.listener(|view, _, window, cx| view.execute(Intent::NewEeprom, window, cx)),
-                ));
-        } else {
-            content = content
-                .child(
-                    svg()
-                        .path("wordmark.svg")
-                        .w_48()
-                        .h_10()
-                        .text_color(cx.theme().primary),
-                )
-                .child(
-                    Button::new("open-firmware")
-                        .w_48()
-                        .label("Open Firmware…")
-                        .on_click(cx.listener(|view, _, window, cx| {
-                            view.execute(Intent::OpenFirmware, window, cx)
-                        })),
-                );
-        }
-        if self.pending.is_none()
-            && (!cx.global::<Desktop>().preferences.recent.is_empty()
-                || !cx
-                    .global::<Desktop>()
-                    .preferences
-                    .recent_firmware
-                    .is_empty())
-        {
-            content = content.child(Button::new("recent").w_48().label("Open Recent").on_click(
-                cx.listener(|view, _, window, cx| view.execute(Intent::Recents, window, cx)),
-            ));
-        }
-        content.into_any_element()
+                    .when(self.pending.is_some(), |root| root.child("Opening…"))
+                    .when(self.pending.is_none(), |root| {
+                        root.when_some(firmware_name, |root, name| {
+                            root.child(
+                                h_flex()
+                                    .w_full()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .truncate()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(name),
+                                    )
+                                    .child(
+                                        Button::new("change-firmware")
+                                            .small()
+                                            .label("Change…")
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.execute(Intent::OpenFirmware, window, cx)
+                                            })),
+                                    ),
+                            )
+                        })
+                        .when(self.firmware.is_none(), |root| {
+                            root.child(Button::new("firmware").label("Choose Firmware…").on_click(
+                                cx.listener(|view, _, window, cx| {
+                                    view.execute(Intent::OpenFirmware, window, cx)
+                                }),
+                            ))
+                        })
+                        .when(self.firmware.is_some(), |root| {
+                            root.child(
+                                h_flex()
+                                    .gap_2()
+                                    .w_full()
+                                    .child(
+                                        Button::new("open")
+                                            .flex_1()
+                                            .label("Open EEPROM…")
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.execute(Intent::OpenEeprom, window, cx)
+                                            })),
+                                    )
+                                    .child(Button::new("new").label("New EEPROM").on_click(
+                                        cx.listener(|view, _, window, cx| {
+                                            view.execute(Intent::NewEeprom, window, cx)
+                                        }),
+                                    )),
+                            )
+                        })
+                        .when(!recent.is_empty() && !compact, |root| {
+                            root.child(
+                                v_flex()
+                                    .gap_1()
+                                    .w_full()
+                                    .mt_2()
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Recent EEPROMs"),
+                                    )
+                                    .children(recent.into_iter().take(5).enumerate().map(
+                                        |(ix, pair)| {
+                                            let name = settings::filename(&pair.eeprom);
+                                            let folder = pair
+                                                .eeprom
+                                                .parent()
+                                                .map(|path| path.display().to_string())
+                                                .unwrap_or_default();
+                                            Button::new(("recent", ix))
+                                                .accessibility_label(format!("Open {name}"))
+                                                .tooltip(pair.eeprom.display().to_string())
+                                                .ghost()
+                                                .w_full()
+                                                .h_auto()
+                                                .py_2()
+                                                .justify_start()
+                                                .child(
+                                                    v_flex()
+                                                        .w_full()
+                                                        .min_w_0()
+                                                        .items_start()
+                                                        .text_left()
+                                                        .child(
+                                                            div()
+                                                                .w_full()
+                                                                .whitespace_normal()
+                                                                .child(name),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .truncate()
+                                                                .text_sm()
+                                                                .text_color(
+                                                                    cx.theme().muted_foreground,
+                                                                )
+                                                                .child(folder),
+                                                        ),
+                                                )
+                                                .on_click(cx.listener(move |view, _, _, cx| {
+                                                    view.open_pair(pair.clone(), cx)
+                                                }))
+                                        },
+                                    )),
+                            )
+                        })
+                    }),
+            )
+            .into_any_element()
     }
 }
 
@@ -1181,6 +1442,7 @@ impl Render for PlayerView {
         let content = if loaded {
             div()
                 .size_full()
+                .relative()
                 .p(px(f32::from(self.margin)))
                 .bg(rgb(self.palette(cx).panel))
                 .child(lcd::display(
@@ -1189,6 +1451,55 @@ impl Render for PlayerView {
                     self.raw,
                     self.palette(cx),
                 ))
+                .when(self.presentation.paused, |root| {
+                    let compact = window.viewport_size().width < window.rem_size() * 12.;
+                    root.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .bg(rgb(self.palette(cx).panel))
+                            .opacity(0.55),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                v_flex()
+                                    .id("paused-overlay")
+                                    .role(Role::Status)
+                                    .aria_label("Emulation paused")
+                                    .items_center()
+                                    .gap_1()
+                                    .rounded_md()
+                                    .p_2()
+                                    .bg(cx.theme().popover)
+                                    .text_color(cx.theme().popover_foreground)
+                                    .when(!compact, |overlay| {
+                                        overlay.child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child("Paused"),
+                                        )
+                                    })
+                                    .child(
+                                        Button::new("resume-emulation")
+                                            .xsmall()
+                                            .icon(gpui_kit::assets::IconName::Play)
+                                            .label("Resume")
+                                            .accessibility_label("Resume emulation")
+                                            .on_click(cx.listener(|view, _, window, cx| {
+                                                view.execute(Intent::Pause, window, cx);
+                                                view.focus.focus(window, cx);
+                                            })),
+                                    ),
+                            ),
+                    )
+                })
                 .into_any_element()
         } else {
             self.empty(window, cx)
@@ -1197,6 +1508,7 @@ impl Render for PlayerView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .key_context("EmulatorCommands")
             .on_drop(cx.listener(|_, files: &ExternalPaths, _, cx| {
                 let paths = files.0.to_vec();
                 cx.defer(move |cx| crate::open_paths(paths, cx));
@@ -1206,20 +1518,9 @@ impl Render for PlayerView {
             }))
             .child(theme::title(
                 if loaded {
-                    let filename = self.filename();
-                    if self.presentation.eeprom_error.is_some() {
-                        format!("{filename} · EEPROM error")
-                    } else if self.presentation.paused {
-                        format!("{filename} · Paused")
-                    } else if self.presentation.turbo {
-                        format!("{filename} · Fast-forward")
-                    } else if self.presentation.speed_percent != 100 {
-                        format!("{filename} · {}%", self.presentation.speed_percent)
-                    } else {
-                        filename
-                    }
+                    self.filename()
                 } else {
-                    "hachistep".into()
+                    "HachiStep".into()
                 },
                 window,
                 cx,
@@ -1239,10 +1540,19 @@ impl Render for PlayerView {
             .child(
                 div()
                     .id("player")
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .track_focus(&self.focus)
                     .key_context("Player")
+                    .on_action(
+                        cx.listener(|view, _: &component::input::Copy, _, cx| view.copy_screen(cx)),
+                    )
+                    .on_action(cx.listener(|view, _: &component::input::Undo, _, _| {
+                        if view.presentation.can_undo {
+                            view.player.send(Command::UndoLoadState);
+                        }
+                    }))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|view, _, window, cx| view.focus.focus(window, cx)),
@@ -1270,7 +1580,29 @@ impl Render for PlayerView {
                     .on_key_up(cx.listener(|view, event: &KeyUpEvent, window, cx| {
                         view.key(&event.keystroke.key, false, window, cx)
                     }))
-                    .child(content),
+                    .child(content)
+                    .when_some(self.notice.as_ref(), |root, (message, _, error)| {
+                        root.child(
+                            div()
+                                .id("screen-feedback")
+                                .role(Role::Status)
+                                .aria_label(message.clone())
+                                .absolute()
+                                .left_2()
+                                .max_w(window.viewport_size().width - window.rem_size())
+                                .bottom_2()
+                                .p_2()
+                                .rounded_md()
+                                .bg(cx.theme().popover)
+                                .text_sm()
+                                .text_color(if *error {
+                                    cx.theme().danger
+                                } else {
+                                    cx.theme().popover_foreground
+                                })
+                                .child(message.clone()),
+                        )
+                    }),
             )
             .when(self.status, |root| {
                 let frame = &self.presentation;
@@ -1297,18 +1629,8 @@ impl Render for PlayerView {
                             frame.connection_name()
                         }
                     });
-                let pace = if loaded
-                    && !frame.paused
-                    && frame.speed > 0.
-                    && (frame.speed * 100. - f64::from(frame.speed_percent)).abs() > 5.
-                    && !frame.turbo
-                {
-                    format!("{:.0}% actual", frame.speed * 100.)
-                } else {
-                    String::new()
-                };
                 let percent = if frame.turbo {
-                    cx.global::<Desktop>().preferences.turbo
+                    frame.turbo_percent
                 } else {
                     frame.speed_percent
                 };
@@ -1343,7 +1665,7 @@ impl Render for PlayerView {
                                         .id("emulated-time")
                                         .role(Role::Label)
                                         .aria_label(format!(
-                                            "Emulated time {}",
+                                            "Time since power-on {}",
                                             crate::tools::elapsed(frame.time.raw())
                                         ))
                                         .child(
@@ -1352,7 +1674,11 @@ impl Render for PlayerView {
                                             )
                                             .xsmall(),
                                         )
-                                        .child(crate::tools::elapsed(frame.time.raw())),
+                                        .child(crate::tools::elapsed(frame.time.raw()))
+                                        .tooltip(|window, cx| {
+                                            component::tooltip::Tooltip::new("Time since power-on")
+                                                .build(window, cx)
+                                        }),
                                 )
                             })
                             .when(indicators && frame.modified, |bar| {
@@ -1375,11 +1701,8 @@ impl Render for PlayerView {
                                 bar.right(
                                     status_button("status-walking")
                                         .icon(gpui_kit::assets::IconName::Footprints)
-                                        .accessibility_label("Walking Simulation")
-                                        .tooltip(format!(
-                                            "Walking Simulation · {}/min",
-                                            frame.cadence
-                                        ))
+                                        .accessibility_label("Walking")
+                                        .tooltip(format!("Walking · {}/min", frame.cadence))
                                         .on_click(cx.listener(|view, _, window, cx| {
                                             view.execute(
                                                 Intent::Tool(crate::tools::Kind::Motion),
@@ -1421,18 +1744,11 @@ impl Render for PlayerView {
                                         )
                                         .tooltip(connection)
                                         .on_click(cx.listener(|view, _, window, cx| {
-                                            let kind = if view.presentation.peer.is_some() {
-                                                crate::tools::Kind::Link
-                                            } else if view.presentation.melon_ds {
-                                                crate::tools::Kind::MelonDs
-                                            } else {
-                                                crate::tools::Kind::Tcp
-                                            };
+                                            let kind = crate::tools::Kind::Infrared;
                                             view.execute(Intent::Tool(kind), window, cx)
                                         })),
                                 )
                             })
-                            .when(!compact && !pace.is_empty(), |bar| bar.right(pace))
                             .right(
                                 status_button("status-speed")
                                     .when(!compact, |button| {
@@ -1443,15 +1759,24 @@ impl Render for PlayerView {
                                     .label(format!("{percent}%"))
                                     .w(if compact { rems(3.5) } else { rems(5.) })
                                     .accessibility_label("Emulation speed")
-                                    .tooltip("Speed")
+                                    .tooltip(format!(
+                                        "Speed {}%. Measured {:.0}%.",
+                                        frame.speed_percent,
+                                        frame.speed * 100.
+                                    ))
                                     .on_click(cx.listener(|view, _, window, cx| {
                                         view.release();
                                         view.focus.focus(window, cx);
-                                        commands::native(view.menu(cx).speeds()).show(
-                                            window.mouse_position(),
-                                            window,
-                                            cx,
+                                        let compact =
+                                            window.viewport_size().width < window.rem_size() * 20.;
+                                        let at = point(
+                                            window.viewport_size().width
+                                                - window.rem_size()
+                                                    * (if compact { 3.5 } else { 5. } + 0.75),
+                                            window.viewport_size().height,
                                         );
+                                        commands::native(view.menu(cx).speeds())
+                                            .show(at, window, cx);
                                     })),
                             )
                         }),

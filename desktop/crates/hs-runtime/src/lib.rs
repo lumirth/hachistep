@@ -163,18 +163,20 @@ pub struct Presentation {
     pub loading: bool,
     pub paused: bool,
     pub can_undo: bool,
-    pub slots: [bool; 10],
+    pub slots: [Option<u64>; 10],
     pub walking: bool,
     pub cadence: u16,
     pub muted: bool,
     pub speed: f64,
     pub speed_percent: u16,
+    pub turbo_percent: u16,
     pub turbo: bool,
     pub time: Time,
     pub eeprom: Option<PathBuf>,
     pub firmware: String,
     pub peer: Option<Id>,
     pub connection: Connection,
+    pub connection_address: Option<String>,
     pub melon_ds: bool,
     pub saving: bool,
     pub modified: bool,
@@ -187,10 +189,28 @@ pub struct Presentation {
     pub connection_error: Option<String>,
     pub audio_underruns: u64,
     pub motion_samples: Arc<[hs_core::Acceleration]>,
-    pub activity: Arc<[(Time, bool)]>,
+    pub activity: Arc<[InfraredActivity]>,
     pub display_enabled: bool,
     pub closing: bool,
     pub closed: bool,
+    pub completion: Option<(u64, Completion)>,
+    pub gamepad_press: Option<(u64, GamepadButton)>,
+}
+
+#[derive(Clone, Copy)]
+pub struct InfraredActivity {
+    pub at: Time,
+    pub sent: u32,
+    pub received: u32,
+}
+
+#[derive(Clone)]
+pub enum Completion {
+    SavedEeprom(PathBuf),
+    SavedState(PathBuf),
+    LoadedState,
+    UndidLoad,
+    Written(PathBuf),
 }
 
 impl Default for Presentation {
@@ -202,18 +222,20 @@ impl Default for Presentation {
             loading: false,
             paused: false,
             can_undo: false,
-            slots: [false; 10],
+            slots: [None; 10],
             walking: false,
             cadence: 120,
             muted: false,
             speed: 0.,
             speed_percent: 100,
+            turbo_percent: 400,
             turbo: false,
             time: Time::ZERO,
             eeprom: None,
             firmware: String::new(),
             peer: None,
             connection: Connection::Disconnected,
+            connection_address: None,
             melon_ds: false,
             saving: false,
             modified: false,
@@ -230,11 +252,20 @@ impl Default for Presentation {
             display_enabled: false,
             closing: false,
             closed: false,
+            completion: None,
+            gamepad_press: None,
         }
     }
 }
 
 impl Presentation {
+    fn completed(&mut self, result: Completion) {
+        let next = self
+            .completion
+            .as_ref()
+            .map_or(1, |(id, _)| id.saturating_add(1));
+        self.completion = Some((next, result));
+    }
     pub fn is_connection_active(&self) -> bool {
         self.peer.is_some() || self.connection.is_active()
     }
@@ -285,7 +316,7 @@ struct Session {
     audio_resets: u64,
     motion_samples: VecDeque<hs_core::Acceleration>,
     motion_sample: u8,
-    activity: VecDeque<(Time, bool)>,
+    activity: VecDeque<InfraredActivity>,
     tcp: Option<tcp::Tcp>,
 }
 
@@ -493,10 +524,35 @@ impl Session {
         channel.queue.extend(samples.into_iter().take(available));
     }
     fn record_activity(&mut self, at: Time, transmit: bool) {
-        if self.activity.len() == 256 {
+        let at = Time::from_raw((at.raw() >> 59) << 59);
+        let index = match self.activity.binary_search_by_key(&at, |sample| sample.at) {
+            Ok(index) => index,
+            Err(index) => {
+                self.activity.insert(
+                    index,
+                    InfraredActivity {
+                        at,
+                        sent: 0,
+                        received: 0,
+                    },
+                );
+                index
+            }
+        };
+        let sample = &mut self.activity[index];
+        let count = if transmit {
+            &mut sample.sent
+        } else {
+            &mut sample.received
+        };
+        *count = count.saturating_add(1);
+        while self
+            .activity
+            .front()
+            .is_some_and(|sample| at.raw().saturating_sub(sample.at.raw()) > (12_u128 << 64))
+        {
             self.activity.pop_front();
         }
-        self.activity.push_back((at, transmit));
     }
     fn capture_state(&self) -> PendingSession {
         PendingSession {
@@ -754,7 +810,10 @@ impl Worker {
             }
             Command::UndoLoadState => {
                 self.undo_load(id)?;
-                self.view(id, |view| view.error = None);
+                self.view(id, |view| {
+                    view.error = None;
+                    view.completed(Completion::UndidLoad);
+                });
                 return Ok(());
             }
             Command::SaveState(path) => {
@@ -875,6 +934,32 @@ impl Worker {
                 return Ok(());
             }
             Command::Reset | Command::Tcp { .. } | Command::MelonDs { .. } => {
+                if !matches!(command, Command::Reset) {
+                    ensure!(
+                        !self
+                            .sessions
+                            .get(&id)
+                            .and_then(|session| session.tcp.as_ref())
+                            .is_some_and(tcp::Tcp::active),
+                        "Disconnect before starting another connection"
+                    );
+                }
+                if let Command::MelonDs { port } = command {
+                    let address = format!("127.0.0.1:{port}");
+                    if self.sessions.iter().any(|(&other, session)| {
+                        other != id
+                            && session.tcp.as_ref().is_some_and(|tcp| {
+                                tcp.melon_ds
+                                    && tcp.active()
+                                    && tcp.address.lock().unwrap().as_ref() == Some(&address)
+                            })
+                    }) {
+                        self.view(id, |view| view.connection_error = Some(
+                            "melonDS is connected to another walker. Disconnect it before connecting this walker.".into()
+                        ));
+                        return Ok(());
+                    }
+                }
                 self.forget_undo(id);
                 self.disconnect(id)?;
             }
@@ -1025,7 +1110,13 @@ impl Worker {
         for id in ids {
             self.view(id, |view| view.connection_error = None);
             if let Some(session) = self.sessions.get_mut(&id) {
-                session.tcp = None;
+                if let Some(tcp) = &session.tcp {
+                    if tcp.active() {
+                        tcp.stop();
+                    } else {
+                        session.tcp = None;
+                    }
+                }
                 let now = session.machine.now();
                 session
                     .inputs
@@ -1080,16 +1171,21 @@ impl Worker {
                     session.saving = false;
                 }
                 self.view(id, |view| {
+                    view.completed(Completion::SavedEeprom(path.clone()));
                     view.eeprom = Some(path);
                     view.slots = slots;
                     view.eeprom_error = None;
                 });
             }
-            Reply::StateWritten { id, slots } => self.view(id, |view| {
+            Reply::StateWritten { id, path, slots } => self.view(id, |view| {
                 view.slots = slots;
                 view.error = None;
+                view.completed(Completion::SavedState(path));
             }),
-            Reply::Written(id) => self.view(id, |view| view.error = None),
+            Reply::Written { id, path } => self.view(id, |view| {
+                view.error = None;
+                view.completed(Completion::Written(path));
+            }),
             Reply::Failed {
                 id,
                 operation,
@@ -1127,6 +1223,11 @@ impl Worker {
                     .err()
                     .map(|error| format!("{error:#}"));
                 self.view(id, |view| view.error = error);
+                self.view(id, |view| {
+                    if view.error.is_none() {
+                        view.completed(Completion::LoadedState);
+                    }
+                });
             }
         }
     }
@@ -1309,6 +1410,7 @@ impl Worker {
                 view.time = session.machine.now();
                 view.speed = session.speed;
                 view.speed_percent = session.speed_percent;
+                view.turbo_percent = session.turbo_percent;
                 view.turbo = session.fast;
                 view.saving = session.saving || session.pending_save.is_some();
                 view.modified = session.dirty || view.saving;
@@ -1326,6 +1428,10 @@ impl Worker {
                     .as_ref()
                     .map(|tcp| tcp.state.lock().unwrap().clone())
                     .unwrap_or(Connection::Disconnected);
+                view.connection_address = session
+                    .tcp
+                    .as_ref()
+                    .and_then(|tcp| tcp.address.lock().unwrap().clone());
                 view.audio_error = self.sound.error.lock().unwrap().clone();
                 view.audio_resets = session.audio_resets;
                 let channel = session.samples.lock().unwrap();
@@ -1355,6 +1461,13 @@ impl Worker {
                 }
                 gilrs::EventType::ButtonPressed(button, _)
                 | gilrs::EventType::ButtonReleased(button, _) => {
+                    if matches!(event.event, gilrs::EventType::ButtonPressed(..)) {
+                        for view in self.views.values() {
+                            let mut view = view.lock().unwrap();
+                            let next = view.gamepad_press.map_or(1, |(id, _)| id.saturating_add(1));
+                            view.gamepad_press = Some((next, button));
+                        }
+                    }
                     if let Some(session) = self.focused.and_then(|id| self.sessions.get_mut(&id)) {
                         let pressed = matches!(event.event, gilrs::EventType::ButtonPressed(..));
                         if session.paused {

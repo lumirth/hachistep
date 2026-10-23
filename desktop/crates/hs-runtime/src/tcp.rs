@@ -24,13 +24,22 @@ pub enum Connection {
     Disconnected,
     Listening,
     Connecting,
+    Preparing,
     Connected,
+    Disconnecting,
     Error(String),
 }
 
 impl Connection {
     pub fn is_active(&self) -> bool {
-        matches!(self, Self::Listening | Self::Connecting | Self::Connected)
+        matches!(
+            self,
+            Self::Listening
+                | Self::Connecting
+                | Self::Preparing
+                | Self::Connected
+                | Self::Disconnecting
+        )
     }
 }
 
@@ -40,7 +49,9 @@ impl std::fmt::Display for Connection {
             Self::Disconnected => f.write_str("Disconnected"),
             Self::Listening => f.write_str("Listening"),
             Self::Connecting => f.write_str("Connecting"),
+            Self::Preparing => f.write_str("Preparing game"),
             Self::Connected => f.write_str("Connected"),
+            Self::Disconnecting => f.write_str("Disconnecting"),
             Self::Error(error) => write!(f, "Connection error: {error}"),
         }
     }
@@ -50,11 +61,13 @@ pub(crate) struct Incoming {
     pub(crate) bytes: SyncSender<(Instant, u8)>,
     pub(crate) wake: thread::Thread,
     pub(crate) maintenance: Option<crate::melonds::Maintenance>,
+    pub(crate) address: Arc<Mutex<Option<String>>>,
 }
 
 pub(crate) struct Tcp {
     pub melon_ds: bool,
     pub state: Arc<Mutex<Connection>>,
+    pub address: Arc<Mutex<Option<String>>>,
     tx: SyncSender<Vec<u8>>,
     rx: Receiver<(Instant, u8)>,
     stop: Arc<AtomicBool>,
@@ -100,6 +113,10 @@ impl Tcp {
         let worker_maintenance = maintenance.clone();
         let worker_state = state.clone();
         let worker_stop = stop.clone();
+        let endpoint = Arc::new(Mutex::new(
+            melon_port.map(|port| format!("127.0.0.1:{port}")),
+        ));
+        let worker_endpoint = endpoint.clone();
         thread::Builder::new()
             .name("hachistep-tcp".into())
             .spawn(move || {
@@ -107,6 +124,7 @@ impl Tcp {
                     bytes: incoming,
                     wake,
                     maintenance: worker_maintenance,
+                    address: worker_endpoint,
                 };
                 let result = if let Some(port) = melon_port {
                     crate::melonds::transport(port, &worker_stop, &worker_state, outgoing, incoming)
@@ -121,7 +139,9 @@ impl Tcp {
                         incoming,
                     )
                 };
-                *worker_state.lock().unwrap() = match result {
+                let mut state = worker_state.lock().unwrap();
+                *state = match result {
+                    _ if *state == Connection::Disconnecting => Connection::Disconnected,
                     Ok(()) => Connection::Disconnected,
                     Err(error) => Connection::Error(format!("{error:#}")),
                 };
@@ -130,6 +150,7 @@ impl Tcp {
         Self {
             melon_ds: melon_port.is_some(),
             state,
+            address: endpoint,
             tx,
             rx,
             stop,
@@ -144,6 +165,14 @@ impl Tcp {
 
     pub fn active(&self) -> bool {
         self.state.lock().unwrap().is_active()
+    }
+
+    pub fn stop(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.is_active() {
+            *state = Connection::Disconnecting;
+            self.stop.store(true, Ordering::Relaxed);
+        }
     }
 
     pub fn connected(&self) -> bool {
@@ -196,6 +225,10 @@ impl Tcp {
         anchor: Instant,
         anchor_time: Time,
     ) -> Result<Vec<TimedInput>> {
+        if !self.connected() {
+            self.incoming.clear();
+            return Ok(Vec::new());
+        }
         while self.incoming.len() < CAPACITY * 2 {
             let (arrived, byte) = match self.rx.try_recv() {
                 Ok(byte) => byte,
@@ -280,6 +313,7 @@ fn transport(
             "Enable Allow remote connections before listening beyond this computer"
         );
         let listener = TcpListener::bind(address)?;
+        *incoming.address.lock().unwrap() = Some(listener.local_addr()?.to_string());
         listener.set_nonblocking(true)?;
         loop {
             if stop.load(Ordering::Relaxed) {
@@ -312,7 +346,14 @@ fn transport(
     socket.set_read_timeout(Some(WallDuration::from_millis(50)))?;
     socket.set_write_timeout(Some(WallDuration::from_millis(50)))?;
     let mut writer = socket.try_clone()?;
-    *state.lock().unwrap() = Connection::Connected;
+    *incoming.address.lock().unwrap() = Some(socket.peer_addr()?.to_string());
+    {
+        let mut state = state.lock().unwrap();
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        *state = Connection::Connected;
+    }
     thread::scope(|scope| {
         let transmit = scope.spawn(move || {
             let sent = write_bytes(&mut writer, outgoing, stop);

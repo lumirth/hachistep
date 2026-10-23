@@ -16,7 +16,8 @@ cargo run --manifest-path desktop/Cargo.toml -p hs-desktop --release --locked
 ```
 
 Firmware must be a raw 49,152-byte image; EEPROM images must contain 65,536 bytes.
-A default firmware is copied into application storage and used by new windows.
+The first firmware you open becomes the default. It is copied into application
+storage and used by new windows. Change it in **Settings → General**.
 Existing sessions retain their firmware. Recent EEPROMs remember their firmware's
 SHA-256 identity; a missing image is resolved from retained copies or located again.
 
@@ -29,10 +30,27 @@ committed hardware image, and `.hachistep.pending` allows recovery after an
 interrupted commit.
 
 State slots 1–10 live in `<eeprom>.states/`. The selected slot is remembered per
-EEPROM. State loads open paused and can be undone. Locally linked captures include
+EEPROM. Loading a state pauses emulation and can be undone. Locally linked captures include
 both machines and their optical queues. Connect the same two EEPROMs in the same
 order before loading a linked state. Untitled EEPROMs can use state files; numbered
 slots become available after the EEPROM is saved.
+
+The **System** menu controls playback, walking, and state slots. F1–F10 load slots;
+Shift+F1 through Shift+F10 save them. **Quick Slot** chooses the slot for Quick Save and Quick Load.
+**Settings → Hotkeys** changes emulator shortcuts and held controls.
+
+Palette, LCD contrast, status bar, speed, fast-forward rate, walking pace, and mute
+are remembered per EEPROM. **Settings → General** sets playback defaults for new
+windows. Hold W to walk, or enable **System → Walk**.
+
+**Settings → Display** manages palettes, including the editable included palettes.
+Its **More** menu imports palettes, copies one or all, and restores the included
+set. Import and Copy All use one `Name|FFFFFF|AAAAAA|555555|000000` record per line.
+The four colors run from background to foreground.
+
+**View → Apply LCD Contrast** applies the firmware's contrast setting. Turn it off
+to see the palette colors directly. The palette editor offers the same choice for
+its live preview.
 
 Infrared connections require 100% speed. Pausing, resetting, or closing a player
 disconnects it. Local links preserve each machine's clock state and forward optical
@@ -42,24 +60,33 @@ next transition before either recipient runs past it. TCP exchanges decoded
 reconstructs optical input at observed arrival times. The wire format carries no
 sender timestamps.
 
-To connect a walker to stock melonDS 1.1 on the same computer:
+To connect a walker to stock melonDS 1.1 on the same computer, set up melonDS once:
 
-1. In melonDS, enable the ARM9 GDB stub under **Config → Emu settings → Devtools**.
+1. Enable the ARM9 GDB stub under **Config → Emu settings → Devtools**.
    The debugger accepts unauthenticated connections from your network.
-2. Under **CPU emulation**, clear **Enable JIT recompiler**. Restart melonDS.
-3. Start HeartGold or SoulSilver in melonDS.
-4. In HachiStep, choose **Tools → Infrared → Connect to melonDS…**.
-   If you changed the ARM9 port in melonDS, enter it under **ARM9 debugger port**.
+2. Under **CPU emulation**, clear **Enable JIT recompiler** and restart melonDS.
+
+For each session:
+
+1. Start HeartGold or SoulSilver in melonDS.
+2. In HachiStep, choose **Tools → Infrared…** and select **melonDS**.
+   If you changed the ARM9 port, enter it beside **ARM9 port**.
    Click **Connect** and wait until HachiStep connects.
-5. On the game's main menu, select **Connect to Pokéwalker**.
+3. On the game's main menu, select **Connect to Pokéwalker**.
    Follow the prompts until the game waits for the walker.
-6. On a new walker's home screen, press the middle button. On a registered walker,
+4. On a new walker's home screen, press the middle button. On a registered walker,
    select **Connect**. If the display is asleep, wake the walker and release the
-   button first.
+   button first. In the Infrared window, **Show Walker** focuses the walker.
+   S is the default middle key.
+
+The Infrared window also offers **Local Link** for other open walkers and **TCP**
+for compatible emulators. The connection diagram shows optical activity in each
+direction. The game and walker display the transfer result.
 
 Keep both emulators at normal speed during transfers. Disconnect HachiStep before
-changing games or loading a melonDS state, then reconnect. When you finish using
-the connection, disable the GDB stub.
+changing games or loading a melonDS state, then reconnect.
+Only one walker can use a melonDS debugger port at a time. If a game session contains
+an older HachiStep adapter, reset the game in melonDS before reconnecting.
 
 HachiStep recognizes the cartridge IR driver across all HGSS languages and in
 hacks that retain the retail driver and the standard Pokéwalker protocol. It rejects

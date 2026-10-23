@@ -10,8 +10,20 @@ pub fn slot_path(eeprom: &Path, slot: u8) -> PathBuf {
     PathBuf::from(directory).join(format!("slot-{slot}.hstepstate"))
 }
 
-pub(crate) fn slots(eeprom: &Path) -> [bool; 10] {
-    std::array::from_fn(|index| slot_path(eeprom, index as u8 + 1).is_file())
+pub(crate) fn slots(eeprom: &Path) -> [Option<u64>; 10] {
+    std::array::from_fn(|index| {
+        let metadata = std::fs::metadata(slot_path(eeprom, index as u8 + 1)).ok()?;
+        if !metadata.is_file() {
+            return None;
+        }
+        Some(
+            metadata
+                .modified()
+                .ok()
+                .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |age| age.as_secs()),
+        )
+    })
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]

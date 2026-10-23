@@ -84,7 +84,8 @@ pub(crate) fn apply(appearance: usize, cx: &mut App) {
         c.slider_bar = c.muted;
         c.slider_thumb = c.primary;
         c.switch = c.muted;
-        c.tab_bar = c.background;
+        c.switch_thumb = color(0xfffefa, 0xeeede7);
+        c.tab_bar = c.muted;
         c.tab_bar_segmented = c.muted;
         c.tab_active = c.popover;
         c.tab_active_foreground = c.foreground;

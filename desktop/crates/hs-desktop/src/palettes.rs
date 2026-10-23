@@ -5,96 +5,33 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        button::Button,
+        button::{Button, ButtonVariants},
         color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
         dialog::DialogButtonProps,
         h_flex,
-        input::{Input, InputEvent, InputState, NumberInput},
+        input::{Input, InputEvent, InputState, NumberInput, Textarea, TextareaState},
         menu::{DropdownMenu, PopupMenuItem},
         radio::RadioGroup,
-        select::{SearchableVec, Select, SelectEvent, SelectGroup, SelectItem, SelectState},
+        switch::Switch,
         tab::{Tab, TabBar},
-        v_flex, ActiveTheme, Sizable, WindowExt,
+        v_flex, ActiveTheme, Disableable, Selectable, Sizable, WindowExt,
     },
     prelude::*,
     *,
 };
 
 pub(crate) struct Editor {
-    selection: Entity<SelectState<Choices>>,
     focus: FocusHandle,
     draft: Palette,
     middle: Option<[u32; 2]>,
     source: Option<String>,
+    preview: Option<WeakEntity<crate::player::PlayerView>>,
+    preview_raw: bool,
     name: Entity<InputState>,
     margin: Entity<InputState>,
     colors: [Entity<ColorPickerState>; 4],
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
-}
-#[derive(Clone)]
-struct Choice {
-    id: String,
-    name: String,
-    colors: Palette,
-}
-type Choices = SearchableVec<SelectGroup<Choice>>;
-impl Choice {
-    fn row(&self) -> AnyElement {
-        h_flex()
-            .id(SharedString::from(self.id.clone()))
-            .role(Role::Label)
-            .aria_label(self.name.clone())
-            .gap_3()
-            .child(swatches(self.colors).w_16().flex_shrink_0())
-            .child(self.name.clone())
-            .into_any_element()
-    }
-}
-impl SelectItem for Choice {
-    type Value = String;
-    fn title(&self) -> SharedString {
-        self.name.clone().into()
-    }
-    fn value(&self) -> &String {
-        &self.id
-    }
-    fn display_title(&self) -> Option<AnyElement> {
-        Some(self.row())
-    }
-    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.row()
-    }
-}
-fn choices(p: &crate::settings::Preferences) -> Choices {
-    let builtin = lcd::PRESETS
-        .map(|(name, colors)| Choice {
-            id: name.into(),
-            name: name.into(),
-            colors,
-        })
-        .to_vec();
-    let mut mine: Vec<_> = p
-        .palettes
-        .iter()
-        .map(|p| Choice {
-            id: p.id.clone(),
-            name: p.name.clone(),
-            colors: p.colors,
-        })
-        .collect();
-    if let Some(colors) = p.custom_palette {
-        mine.push(Choice {
-            id: "custom".into(),
-            name: "Custom".into(),
-            colors,
-        });
-    }
-    let mut groups = vec![SelectGroup::new("Built-in").items(builtin)];
-    if !mine.is_empty() {
-        groups.push(SelectGroup::new("My Palettes").items(mine));
-    }
-    SearchableVec::new(groups)
 }
 fn swatches(palette: Palette) -> Div {
     h_flex()
@@ -125,17 +62,33 @@ fn parse(value: &str) -> anyhow::Result<(String, Palette)> {
         },
     ))
 }
+fn parse_many(value: &str) -> anyhow::Result<Vec<(String, Palette)>> {
+    let mut palettes = Vec::new();
+    for (line, record) in value.lines().enumerate() {
+        if record.trim().is_empty() {
+            continue;
+        }
+        palettes
+            .push(parse(record).map_err(|error| anyhow::anyhow!("Line {}: {error}", line + 1))?);
+    }
+    anyhow::ensure!(!palettes.is_empty(), "Enter at least one palette.");
+    Ok(palettes)
+}
+fn export(palette: &SavedPalette) -> String {
+    format!(
+        "{}|{}",
+        palette.name,
+        palette
+            .colors
+            .shades()
+            .map(|v| format!("{v:06X}"))
+            .join("|")
+    )
+}
 impl Editor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let p = &cx.global::<Desktop>().preferences;
         let draft = p.palette;
-        let id = p.palette_id.clone();
-        let items = choices(p);
-        let selection = cx.new(|cx| {
-            let mut state = SelectState::new(items, None, window, cx);
-            state.set_selected_value(&id, window, cx);
-            state
-        });
         let colors = draft
             .shades()
             .map(|c| cx.new(|cx| ColorPickerState::new(window, cx).default_value(rgb(c))));
@@ -158,16 +111,6 @@ impl Editor {
                 }
             },
         )];
-        subscriptions.push(cx.subscribe_in(
-            &selection,
-            window,
-            |view, _, event: &SelectEvent<Choices>, window, cx| {
-                if let SelectEvent::Confirm(Some(id)) = event {
-                    cx.global_mut::<Desktop>().preferences.select_palette(id);
-                    view.changed(window, cx);
-                }
-            },
-        ));
         for (ix, color) in colors.iter().enumerate() {
             subscriptions.push(cx.subscribe_in(
                 color,
@@ -182,17 +125,23 @@ impl Editor {
                         if view.draft.middle.is_some() {
                             view.middle = view.draft.middle;
                         }
+                        if let Some(id) = &view.source {
+                            cx.global_mut::<Desktop>().palette_preview =
+                                Some((id.clone(), view.draft));
+                            cx.refresh_windows();
+                        }
                         cx.notify();
                     }
                 },
             ));
         }
         Self {
-            selection,
             focus: cx.focus_handle().tab_stop(true),
             draft,
             middle: draft.middle,
             source: None,
+            preview: None,
+            preview_raw: false,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("Custom")),
             colors,
             margin,
@@ -200,14 +149,7 @@ impl Editor {
             _subscriptions: subscriptions,
         }
     }
-    fn changed(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let p = &cx.global::<Desktop>().preferences;
-        let id = p.palette_id.clone();
-        let items = choices(p);
-        self.selection.update(cx, |selection, cx| {
-            selection.set_items(items, window, cx);
-            selection.set_selected_value(&id, window, cx);
-        });
+    fn changed(&self, _window: &mut Window, cx: &mut Context<Self>) {
         crate::save_preferences(cx);
         cx.refresh_windows();
         cx.notify();
@@ -223,7 +165,7 @@ impl Editor {
             });
         }
     }
-    fn edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn edit(&mut self, new: bool, window: &mut Window, cx: &mut Context<Self>) {
         let preferences = &cx.global::<Desktop>().preferences;
         self.draft = preferences.palette;
         self.middle = self.draft.middle;
@@ -231,13 +173,44 @@ impl Editor {
             .palettes
             .iter()
             .find(|p| p.id == preferences.palette_id);
-        self.source = saved.map(|p| p.id.clone());
-        let name = saved.map(|p| p.name.clone()).unwrap_or_default();
+        self.source = if new {
+            None
+        } else {
+            saved.map(|p| p.id.clone())
+        };
+        let name = if new {
+            String::new()
+        } else {
+            saved
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "Custom".into())
+        };
+        let desktop = cx.global::<Desktop>();
+        let active = desktop.active_player.as_ref().map(|view| view.entity_id());
+        let palette = self.source.as_deref().unwrap_or(&preferences.palette_id);
+        let preview = desktop
+            .windows
+            .iter()
+            .filter_map(|window| window.view.upgrade())
+            .filter(|view| view.read(cx).presentation().ready)
+            .max_by_key(|view| {
+                let walker = view.read(cx);
+                let selected = walker
+                    .palette_id()
+                    .filter(|id| preferences.palette_named(id).is_some())
+                    .unwrap_or(&preferences.palette_id);
+                (selected == palette, active == Some(view.entity_id()))
+            });
+        self.preview_raw = preview
+            .as_ref()
+            .is_some_and(|view| view.read(cx).raw_display());
+        self.preview = preview.as_ref().map(Entity::downgrade);
         self.name
             .update(cx, |input, cx| input.set_value(name, window, cx));
         self.error = None;
         self.sync(window, cx);
         self.focus.focus(window, cx);
+        cx.global_mut::<Desktop>().palette_preview = self.source.clone().map(|id| (id, self.draft));
         let owner = cx.entity();
         let form = cx.new(|cx| Form {
             owner: owner.clone(),
@@ -246,97 +219,96 @@ impl Editor {
         window.open_alert_dialog(cx, move |dialog, window, _| {
             let owner = owner.clone();
             dialog
-                .title("Edit Palette")
+                .title(if new { "New Palette" } else { "Edit Palette" })
                 .width(window.rem_size() * 26.)
                 .child(form.clone())
                 .confirm()
                 .button_props(DialogButtonProps::default().ok_text("Save"))
                 .on_ok(move |_, window, cx| owner.update(cx, |view, cx| view.save(window, cx)))
+                .on_close(|_, _, cx| {
+                    cx.global_mut::<Desktop>().palette_preview = None;
+                    cx.refresh_windows();
+                })
         });
         cx.notify();
     }
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let name = self.name.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            self.error = Some("Enter a palette name.".into());
+            cx.notify();
+            return false;
+        }
         if name.contains(['|', '\n', '\r']) {
             self.error = Some("Choose a name without | or line breaks.".into());
             cx.notify();
             return false;
         }
         let p = &mut cx.global_mut::<Desktop>().preferences;
-        if !name.is_empty()
-            && p.palettes
-                .iter()
-                .any(|saved| saved.name == name && self.source.as_ref() != Some(&saved.id))
-        {
+        let same_name = p
+            .palettes
+            .iter()
+            .any(|saved| self.source.as_ref() == Some(&saved.id) && saved.name == name);
+        if !same_name && p.palettes.iter().any(|saved| saved.name == name) {
             self.error = Some("A palette with this name already exists.".into());
             cx.notify();
             return false;
         }
-        if name.is_empty() {
-            p.edit_palette(self.draft);
-        } else {
-            let id = self.source.clone().unwrap_or_else(|| {
-                format!(
-                    "user-{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                )
-            });
-            if let Some(saved) = p.palettes.iter_mut().find(|saved| saved.id == id) {
+        let id = if let Some(id) = &self.source {
+            if let Some(saved) = p.palettes.iter_mut().find(|saved| saved.id == *id) {
                 saved.name = name;
                 saved.colors = self.draft;
-            } else {
-                p.palettes.push(SavedPalette {
-                    id: id.clone(),
-                    name,
-                    colors: self.draft,
-                });
             }
-            p.select_palette(&id);
-        }
+            id.clone()
+        } else {
+            p.add_palette(name, self.draft)
+        };
+        p.select_palette(&id);
         self.focus.focus(window, cx);
         self.changed(window, cx);
         true
     }
     fn import(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
-        let input = cx
-            .new(|cx| InputState::new(window, cx).placeholder("Name|FFFFFF|AAAAAA|555555|000000"));
+        let input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, 8)
+                .placeholder("Name|FFFFFF|AAAAAA|555555|000000")
+        });
         let error = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
         let owner = cx.weak_entity();
-        window.open_alert_dialog(cx, move |dialog, _, cx| {
+        window.open_alert_dialog(cx, move |dialog, window, cx| {
             let field = input.clone();
             let owner = owner.clone();
             let failure = error.clone();
             dialog
-                .title("Import Palette")
-                .child(Input::new(&input))
+                .title("Import Palettes")
+                .width(window.rem_size() * 28.)
+                .child(Textarea::new(&input).aria_label("Palette records"))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("One palette per line."),
+                )
                 .when_some(error.borrow().clone(), |dialog, error| {
                     dialog.child(div().text_sm().text_color(cx.theme().danger).child(error))
                 })
                 .confirm()
                 .button_props(DialogButtonProps::default().ok_text("Import"))
-                .on_ok(move |_, window, cx| {
-                    let result = parse(&field.read(cx).value());
-                    match result {
-                        Ok((name, colors)) => {
+                .on_ok(
+                    move |_, window, cx| match parse_many(&field.read(cx).value()) {
+                        Ok(records) => {
                             let _ = owner.update(cx, |view, cx| {
                                 let p = &mut cx.global_mut::<Desktop>().preferences;
-                                let id = format!(
-                                    "user-{}",
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_nanos()
-                                );
-                                p.palettes.push(SavedPalette {
-                                    id: id.clone(),
-                                    name,
-                                    colors,
-                                });
-                                p.select_palette(&id);
+                                let mut first = None;
+                                for (name, colors) in records {
+                                    let id = p.add_palette(name, colors);
+                                    first.get_or_insert(id);
+                                }
+                                if let Some(id) = first {
+                                    p.select_palette(&id);
+                                }
                                 view.changed(window, cx);
                             });
                             true
@@ -346,13 +318,16 @@ impl Editor {
                             cx.refresh_windows();
                             false
                         }
-                    }
-                })
+                    },
+                )
         });
     }
     fn delete(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
         let p = &cx.global::<Desktop>().preferences;
+        if p.palettes.len() <= 1 {
+            return;
+        }
         let Some(saved) = p
             .palettes
             .iter()
@@ -372,33 +347,43 @@ impl Editor {
                 .on_ok(move |_, window, cx| {
                     let _ = owner.update(cx, |view, cx| {
                         let p = &mut cx.global_mut::<Desktop>().preferences;
+                        if p.palettes.len() <= 1 {
+                            return;
+                        }
+                        let position = p.palettes.iter().position(|palette| palette.id == saved.id);
                         p.palettes.retain(|p| p.id != saved.id);
-                        p.edit_palette(p.palette);
+                        let fallback = p.palettes[position.unwrap_or(0).min(p.palettes.len() - 1)]
+                            .id
+                            .clone();
+                        p.select_palette(&fallback);
                         view.changed(window, cx);
                     });
                     true
                 })
         });
     }
-    fn appearance(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn appearance(&self, _: &Window, cx: &mut Context<Self>) -> AnyElement {
         let p = cx.global::<Desktop>().preferences.clone();
-        let owner = cx.weak_entity();
         let saved = p.palettes.iter().any(|saved| saved.id == p.palette_id);
+        let palettes = p.palettes.clone();
         v_flex()
             .gap_5()
             .child(
-                h_flex().justify_between().gap_4().child("Theme").child(
-                    RadioGroup::horizontal("appearance")
-                        .children(["System", "Light", "Dark"])
-                        .selected_index(Some(p.appearance))
-                        .on_change(cx.listener(|view, value, window, cx| {
-                            cx.global_mut::<Desktop>().preferences.appearance = *value;
-                            theme::apply(*value, cx);
-                            view.changed(window, cx);
-                        })),
-                ),
+                h_flex()
+                    .justify_between()
+                    .gap_4()
+                    .child("Appearance")
+                    .child(
+                        RadioGroup::horizontal("appearance")
+                            .children(["System", "Light", "Dark"])
+                            .selected_index(Some(p.appearance))
+                            .on_change(cx.listener(|view, value, window, cx| {
+                                cx.global_mut::<Desktop>().preferences.appearance = *value;
+                                theme::apply(*value, cx);
+                                view.changed(window, cx);
+                            })),
+                    ),
             )
-            .child(component::separator::Separator::horizontal())
             .child(
                 h_flex()
                     .justify_between()
@@ -412,77 +397,189 @@ impl Editor {
                     ),
             )
             .child(
-                v_flex().gap_2().child("Palette").child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Select::new(&self.selection)
-                                .small()
-                                .flex_1()
-                                .accessibility_label("Palette")
-                                .menu_max_h(
-                                    (window.viewport_size().height - component::TITLE_BAR_HEIGHT)
-                                        / 2.
-                                        - window.rem_size() * 2.,
-                                ),
-                        )
-                        .child(
-                            Button::new("edit-palette")
-                                .small()
-                                .label("Edit…")
-                                .on_click(cx.listener(|view, _, window, cx| view.edit(window, cx))),
-                        )
-                        .child(
-                            Button::new("palette-actions")
-                                .small()
-                                .icon(component::IconName::Ellipsis)
-                                .accessibility_label("Palette actions")
-                                .dropdown_menu(move |mut menu, _, _| {
-                                    let import_owner = owner.clone();
-                                    menu =
-                                        menu.item(PopupMenuItem::new("Import Palette…").on_click(
-                                            move |_, window, cx| {
-                                                let _ = import_owner
-                                                    .update(cx, |view, cx| view.import(window, cx));
-                                            },
-                                        ));
-                                    if saved {
-                                        let owner = owner.clone();
-                                        menu = menu.item(
-                                            PopupMenuItem::new("Delete Palette…").on_click(
-                                                move |_, window, cx| {
-                                                    let _ = owner.update(cx, |view, cx| {
-                                                        view.delete(window, cx)
-                                                    });
-                                                },
-                                            ),
-                                        );
-                                    }
-                                    menu.item(PopupMenuItem::new("Copy Palette").on_click(
-                                        |_, _, cx| {
-                                            let p = &cx.global::<Desktop>().preferences;
-                                            let name = p
-                                                .palettes
-                                                .iter()
-                                                .find(|saved| saved.id == p.palette_id)
-                                                .map(|p| p.name.as_str())
-                                                .unwrap_or(&p.palette_id);
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                format!(
-                                                    "{name}|{}",
-                                                    p.palette
-                                                        .shades()
-                                                        .map(|v| format!("{v:06X}"))
-                                                        .join("|")
-                                                ),
-                                            ));
-                                        },
-                                    ))
-                                }),
-                        ),
-                ),
+                v_flex()
+                    .gap_2()
+                    .child("Default palette")
+                    .child(
+                        v_flex()
+                            .id("palette-list")
+                            .max_h_48()
+                            .overflow_y_scroll()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .rounded_md()
+                            .children(palettes.into_iter().map(|palette| {
+                                let SavedPalette { id, name, colors } = palette;
+                                let selected = p.palette_id == id;
+                                Button::new(SharedString::from(format!("palette-{id}")))
+                                    .ghost()
+                                    .small()
+                                    .accessibility_label(name.clone())
+                                    .w_full()
+                                    .justify_start()
+                                    .selected(selected)
+                                    .child(
+                                        h_flex()
+                                            .w_full()
+                                            .gap_3()
+                                            .child(swatches(colors).w_16().flex_shrink_0())
+                                            .child(div().flex_1().min_w_0().truncate().child(name))
+                                            .when(selected, |row| {
+                                                row.child(
+                                                    component::Icon::new(
+                                                        gpui_kit::assets::IconName::Check,
+                                                    )
+                                                    .xsmall(),
+                                                )
+                                            }),
+                                    )
+                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                        cx.global_mut::<Desktop>().preferences.select_palette(&id);
+                                        view.changed(window, cx);
+                                    }))
+                            })),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(Button::new("new-palette").small().label("New…").on_click(
+                                cx.listener(|view, _, window, cx| view.edit(true, window, cx)),
+                            ))
+                            .child(
+                                Button::new("edit-palette")
+                                    .small()
+                                    .label("Edit…")
+                                    .disabled(!saved)
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.edit(false, window, cx)
+                                    })),
+                            )
+                            .child(div().flex_1())
+                            .child(self.actions(cx)),
+                    ),
             )
             .into_any_element()
+    }
+    fn actions(&self, cx: &Context<Self>) -> impl IntoElement {
+        let owner = cx.weak_entity();
+        Button::new("palette-actions")
+            .small()
+            .label("More")
+            .accessibility_label("Palette actions")
+            .dropdown_menu(move |menu, _, cx| {
+                let p = &cx.global::<Desktop>().preferences;
+                let selected = p.palettes.iter().any(|palette| palette.id == p.palette_id);
+                let last = p.palettes.len() <= 1;
+                let defaults_changed = p.default_palettes_changed();
+                let duplicate = owner.clone();
+                let copy = owner.clone();
+                let copy_all = owner.clone();
+                let import = owner.clone();
+                let delete = owner.clone();
+                let restore = owner.clone();
+                menu.item(
+                    PopupMenuItem::new("Duplicate")
+                        .disabled(!selected)
+                        .on_click(move |_, window, cx| {
+                            let _ = duplicate.update(cx, |view, cx| view.duplicate(window, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Delete…")
+                        .disabled(!selected || last)
+                        .on_click(move |_, window, cx| {
+                            let _ = delete.update(cx, |view, cx| view.delete(window, cx));
+                        }),
+                )
+                .when(last, |menu| {
+                    menu.item(PopupMenuItem::label("Keep at least one palette."))
+                })
+                .separator()
+                .item(
+                    PopupMenuItem::new("Import Palettes…").on_click(move |_, window, cx| {
+                        let _ = import.update(cx, |view, cx| view.import(window, cx));
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new("Copy Palette")
+                        .disabled(!selected)
+                        .on_click(move |_, _, cx| {
+                            let _ = copy.update(cx, |view, cx| view.copy(false, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new("Copy All Palettes").on_click(move |_, _, cx| {
+                        let _ = copy_all.update(cx, |view, cx| view.copy(true, cx));
+                    }),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new("Restore Default Palettes…")
+                        .disabled(!defaults_changed)
+                        .on_click(move |_, window, cx| {
+                            let _ =
+                                restore.update(cx, |view, cx| view.restore_defaults(window, cx));
+                        }),
+                )
+            })
+    }
+    fn copy(&self, all: bool, cx: &mut Context<Self>) {
+        let p = &cx.global::<Desktop>().preferences;
+        let records = p
+            .palettes
+            .iter()
+            .filter(|palette| all || palette.id == p.palette_id)
+            .map(export)
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.write_to_clipboard(ClipboardItem::new_string(records));
+    }
+    fn restore_defaults(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let p = &cx.global::<Desktop>().preferences;
+        let modified = p.palettes.iter().any(|palette| {
+            lcd::PRESETS.iter().any(|(id, colors)| {
+                palette.id == *id && (palette.name != *id || palette.colors != *colors)
+            })
+        });
+        if !modified {
+            cx.global_mut::<Desktop>()
+                .preferences
+                .restore_default_palettes();
+            self.changed(window, cx);
+            return;
+        }
+        let owner = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let owner = owner.clone();
+            dialog
+                .title("Restore Default Palettes?")
+                .child("Your changes to the included palettes will be lost.")
+                .confirm()
+                .button_props(DialogButtonProps::default().ok_text("Restore"))
+                .on_ok(move |_, window, cx| {
+                    let _ = owner.update(cx, |view, cx| {
+                        cx.global_mut::<Desktop>()
+                            .preferences
+                            .restore_default_palettes();
+                        view.changed(window, cx);
+                    });
+                    true
+                })
+        });
+    }
+    fn duplicate(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let p = &mut cx.global_mut::<Desktop>().preferences;
+        if let Some(original) = p
+            .palettes
+            .iter()
+            .find(|palette| palette.id == p.palette_id)
+            .cloned()
+        {
+            let id = p.add_palette(format!("{} copy", original.name), original.colors);
+            p.select_palette(&id);
+            self.changed(window, cx);
+        }
     }
     fn form(&self, cx: &mut Context<Self>) -> AnyElement {
         let four = self.draft.middle.is_some();
@@ -517,6 +614,11 @@ impl Editor {
                             view.draft.middle = Some(view.middle.unwrap_or([shades[1], shades[2]]));
                         }
                         view.sync(window, cx);
+                        if let Some(id) = &view.source {
+                            cx.global_mut::<Desktop>().palette_preview =
+                                Some((id.clone(), view.draft));
+                            cx.refresh_windows();
+                        }
                         cx.notify();
                     })),
             )
@@ -539,6 +641,48 @@ impl Editor {
                 ),
             )
             .child(swatches(self.draft))
+            .when_some(
+                self.preview
+                    .as_ref()
+                    .and_then(WeakEntity::upgrade)
+                    .and_then(|view| {
+                        let frame = view.read(cx).presentation().clone();
+                        frame.ready.then_some(frame)
+                    }),
+                |root, frame| {
+                    root.child(
+                        v_flex()
+                            .gap_2()
+                            .child(
+                                h_flex().justify_between().gap_3().child("Preview").child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(div().text_sm().child("LCD contrast"))
+                                        .child(
+                                            Switch::new("preview-contrast")
+                                                .small()
+                                                .checked(!self.preview_raw)
+                                                .accessibility_label(
+                                                    "Apply LCD contrast to preview",
+                                                )
+                                                .on_change(cx.listener(
+                                                    |view, contrast: &bool, _, cx| {
+                                                        view.preview_raw = !*contrast;
+                                                        cx.notify();
+                                                    },
+                                                )),
+                                        ),
+                                ),
+                            )
+                            .child(div().w_48().h_32().self_center().child(lcd::display(
+                                frame.pixels,
+                                frame.contrast,
+                                self.preview_raw,
+                                self.draft,
+                            ))),
+                    )
+                },
+            )
             .when_some(self.error.clone(), |root, error| {
                 root.child(div().text_sm().text_color(cx.theme().danger).child(error))
             })
