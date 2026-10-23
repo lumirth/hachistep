@@ -781,7 +781,7 @@ impl Tool {
                 Target::Local => "Start the connection on both walkers.", Target::Tcp => "Start the connection on both emulators.",
             })
         } else {
-            ("Not connected", match self.target { Target::MelonDs => "Start HeartGold or SoulSilver in melonDS. Connect HachiStep before choosing Connect to Pokéwalker in the game.", Target::Local => "Choose another open walker.", Target::Tcp => "" })
+            ("Not connected", match self.target { Target::MelonDs => "Start HeartGold or SoulSilver in melonDS. Connect hachistep before choosing Connect to Pokéwalker in the game.", Target::Local => "Choose another open walker.", Target::Tcp => "" })
         };
         let action = if stopping || connected {
             "Disconnect"

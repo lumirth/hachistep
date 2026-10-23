@@ -416,7 +416,7 @@ impl PlayerView {
         let title = if self.presentation.ready {
             self.filename()
         } else {
-            "HachiStep".into()
+            "hachistep".into()
         };
         window.set_window_title(&title);
         if let Some(error) = self
@@ -1508,7 +1508,7 @@ impl Render for PlayerView {
                 if loaded {
                     self.filename()
                 } else {
-                    "HachiStep".into()
+                    "hachistep".into()
                 },
                 window,
                 cx,

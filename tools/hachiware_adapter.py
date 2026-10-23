@@ -1,4 +1,4 @@
-"""Run hachiware experiments through HachiStep and export requested observations."""
+"""Run hachiware experiments through hachistep and export requested observations."""
 
 from __future__ import annotations
 

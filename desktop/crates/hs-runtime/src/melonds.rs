@@ -99,7 +99,7 @@ fn locate(rsp: &mut Rsp, stop: &AtomicBool) -> Result<u32> {
     if candidates.is_empty() {
         ensure!(
             !ram.windows(16).any(|bytes| bytes.starts_with(b"HachiStep IR v") && bytes != &IMAGE[532..548]),
-            "This game session contains an older HachiStep connection. In melonDS, choose System → Reset, then reconnect before opening Connect to Pokéwalker"
+            "This game session contains an older hachistep connection. In melonDS, choose System → Reset, then reconnect before opening Connect to Pokéwalker"
         );
     }
     ensure!(
@@ -122,7 +122,7 @@ fn install(rsp: &mut Rsp, base: u32) -> Result<()> {
         );
         ensure!(
             word(&rsp.read(state + 4, 4)?, 0) == 0,
-            "Restart the game, then connect HachiStep before opening Connect to Pokéwalker"
+            "Restart the game, then connect hachistep before opening Connect to Pokéwalker"
         );
         // Replace whole routines, with read last, so an interrupted installation
         // leaves callable functions and an inactive mailbox.

@@ -678,18 +678,18 @@ impl MenuState {
         if cfg!(target_os = "macos") {
             menus.insert(
                 0,
-                Menu::new("HachiStep").items([
-                    item("About HachiStep", Intent::About),
+                Menu::new("hachistep").items([
+                    item("About hachistep", Intent::About),
                     MenuItem::separator(),
                     item("Settings…", Intent::Settings),
                     MenuItem::separator(),
                     MenuItem::os_submenu("Services", SystemMenuType::Services),
                     MenuItem::separator(),
-                    item("Hide HachiStep", Intent::Hide),
+                    item("Hide hachistep", Intent::Hide),
                     item("Hide Others", Intent::HideOthers),
                     item("Show All", Intent::ShowAll),
                     MenuItem::separator(),
-                    item("Quit HachiStep", Intent::Quit),
+                    item("Quit hachistep", Intent::Quit),
                 ]),
             );
             menus.insert(
@@ -706,7 +706,7 @@ impl MenuState {
                 .last_mut()
                 .unwrap()
                 .items
-                .push(item("About HachiStep", Intent::About));
+                .push(item("About hachistep", Intent::About));
         }
         menus
     }
