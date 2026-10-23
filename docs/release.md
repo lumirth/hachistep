@@ -1,5 +1,10 @@
-Connect walkers to stock melonDS 1.1 through **Tools → Infrared → Connect to melonDS…**. [Setup instructions](https://github.com/lumirth/hachistep/blob/v0.4.0/docs/frontend.md).
+Walker windows now have consistent menus and tools.
 
-macOS downloads now use a drag-to-Applications DMG.
+- Manage melonDS, Local Link, and TCP connections in one Infrared window, with live activity and recovery guidance.
+- Edit any palette, preview its LCD colors, import several palettes at once, or copy the whole collection.
+- Adjust pace with the redesigned Walking controls.
+- Record shortcuts in their fields and swap conflicting assignments.
 
-Release downloads no longer include the bundled native CLI or the separate WASI CLI.
+Settings, the launcher, and state-slot menus have also been reorganized.
+
+[Desktop guide](https://github.com/lumirth/hachistep/blob/v0.5.0/docs/frontend.md).
