@@ -53,17 +53,21 @@ pub(crate) enum Reply {
         machine: Box<Machine>,
         firmware: Arc<Vec<u8>>,
         path: Option<PathBuf>,
-        slots: [bool; 10],
+        slots: [Option<u64>; 10],
     },
     Saved {
         id: Id,
         path: PathBuf,
-        slots: [bool; 10],
+        slots: [Option<u64>; 10],
     },
-    Written(Id),
+    Written {
+        id: Id,
+        path: PathBuf,
+    },
     StateWritten {
         id: Id,
-        slots: [bool; 10],
+        path: PathBuf,
+        slots: [Option<u64>; 10],
     },
     Loaded {
         id: Id,
@@ -130,7 +134,7 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                             let slots = path
                                 .as_ref()
                                 .map(|path| state::slots(path))
-                                .unwrap_or([false; 10]);
+                                .unwrap_or([None; 10]);
                             bindings.insert(id, (binding, firmware.clone()));
                             Ok(Reply::Opened {
                                 id,
@@ -193,7 +197,7 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                     Job::Write { id, path, bytes } => (
                         id,
                         "Write file",
-                        storage::atomic(&path, &bytes).map(|()| Reply::Written(id)),
+                        storage::atomic(&path, &bytes).map(|()| Reply::Written { id, path }),
                     ),
                     Job::Load { id, path } => (
                         id,
@@ -228,8 +232,8 @@ pub(crate) fn start() -> (Files, Receiver<Reply>) {
                                 .get(&id)
                                 .and_then(|(binding, _)| binding.as_ref())
                                 .map(|binding| state::slots(&binding.path))
-                                .unwrap_or([false; 10]);
-                            Ok(Reply::StateWritten { id, slots })
+                                .unwrap_or([None; 10]);
+                            Ok(Reply::StateWritten { id, path, slots })
                         })(),
                     ),
                     Job::Close(id) => {

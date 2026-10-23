@@ -96,9 +96,15 @@ fn locate(rsp: &mut Rsp, stop: &AtomicBool) -> Result<u32> {
                 && recognize(&ram[i..i + IMAGE.len()])
         })
         .collect();
+    if candidates.is_empty() {
+        ensure!(
+            !ram.windows(16).any(|bytes| bytes.starts_with(b"HachiStep IR v") && bytes != &IMAGE[532..548]),
+            "This game session contains an older HachiStep connection. In melonDS, choose System → Reset, then reconnect before opening Connect to Pokéwalker"
+        );
+    }
     ensure!(
         candidates.len() == 1,
-        "Could not identify a supported HGSS cartridge IR driver. Open the game and try again"
+        "Could not find the Pokéwalker driver. Start HeartGold or SoulSilver and reconnect before opening Connect to Pokéwalker"
     );
     Ok(RAM + candidates[0] as u32)
 }
@@ -189,6 +195,13 @@ pub(super) fn transport(
     incoming: Incoming,
 ) -> Result<()> {
     let mut rsp = Rsp::connect(port)?;
+    {
+        let mut state = state.lock().unwrap();
+        if stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        *state = Connection::Preparing;
+    }
     let base = locate(&mut rsp, stop)?;
     install(&mut rsp, base)?;
     let epoch = SystemTime::now()
@@ -197,7 +210,12 @@ pub(super) fn transport(
         .to_le_bytes();
     rsp.write(base + EPOCH as u32, &epoch)?;
     rsp.resume()?;
-    *state.lock().unwrap() = Connection::Connected;
+    {
+        let mut state = state.lock().unwrap();
+        if !stop.load(Ordering::Relaxed) {
+            *state = Connection::Connected;
+        }
+    }
     let mut receive_end = Instant::now();
     let mut rx_sequence = 0u32;
     let mut tx_sequence = 0u32;

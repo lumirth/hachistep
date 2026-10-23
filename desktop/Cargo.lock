@@ -2983,11 +2983,14 @@ name = "hs-desktop"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "cocoa-foundation 0.2.0",
  "directories",
  "gpui-kit",
  "hs-runtime",
  "objc",
  "png 0.18.1",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "sha2 0.10.9",

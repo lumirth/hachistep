@@ -46,7 +46,7 @@ pub(crate) fn apply(appearance: usize, cx: &mut App) {
         c.primary_foreground = color(0xffffff, 0x27281f);
         c.primary_hover = color(0x855600, 0xf2c577);
         c.primary_active = color(0x704900, 0xd8a246);
-        c.accent = color(0xf1e7d0, 0x49412c);
+        c.accent = c.muted;
         c.accent_foreground = c.foreground;
         c.secondary = c.muted;
         c.secondary_foreground = c.foreground;
@@ -61,7 +61,7 @@ pub(crate) fn apply(appearance: usize, cx: &mut App) {
         c.button_primary_active = c.primary_active;
         c.ring = c.primary;
         c.caret = c.foreground;
-        c.selection = c.accent;
+        c.selection = color(0xf1e7d0, 0x49412c);
         c.sidebar = color(0xf0f0e9, 0x292b25);
         c.sidebar_foreground = c.foreground;
         c.sidebar_border = c.border;
@@ -75,7 +75,7 @@ pub(crate) fn apply(appearance: usize, cx: &mut App) {
         c.status_bar_border = c.border;
         c.list = c.background;
         c.list_hover = c.muted;
-        c.list_active = c.accent;
+        c.list_active = c.selection;
         c.list_active_border = c.border;
         c.group_box = c.background;
         c.group_box_foreground = c.foreground;
@@ -84,7 +84,8 @@ pub(crate) fn apply(appearance: usize, cx: &mut App) {
         c.slider_bar = c.muted;
         c.slider_thumb = c.primary;
         c.switch = c.muted;
-        c.tab_bar = c.background;
+        c.switch_thumb = color(0xfffefa, 0xeeede7);
+        c.tab_bar = c.muted;
         c.tab_bar_segmented = c.muted;
         c.tab_active = c.popover;
         c.tab_active_foreground = c.foreground;
@@ -112,4 +113,12 @@ pub(crate) fn title(name: impl Into<SharedString>, window: &Window, cx: &App) ->
             })
             .child(name.into()),
     )
+}
+
+pub(crate) fn settings_heading(label: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .text_sm()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(cx.theme().muted_foreground)
+        .child(label.into())
 }
