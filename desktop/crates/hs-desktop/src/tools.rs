@@ -3,6 +3,7 @@ use gpui_kit::{
     component::{
         button::{Button, ButtonVariants},
         checkbox::Checkbox,
+        dialog::DialogButtonProps,
         h_flex,
         input::{Input, InputEvent, InputState},
         radio::RadioGroup,
@@ -35,6 +36,15 @@ enum Target {
     MelonDs,
     Local,
     Tcp,
+}
+impl Target {
+    fn name(self) -> &'static str {
+        match self {
+            Self::MelonDs => "melonDS",
+            Self::Local => "Local Link",
+            Self::Tcp => "TCP",
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct TcpOptions {
@@ -127,6 +137,7 @@ struct Tool {
     owner: WeakEntity<PlayerView>,
     kind: Kind,
     target: Target,
+    pending_target: Option<Target>,
     cadence: Entity<InputState>,
     slider: Entity<SliderState>,
     address: Entity<InputState>,
@@ -281,6 +292,11 @@ impl Tool {
                         cx.global_mut::<Desktop>()
                             .tool_bounds
                             .insert((view.player.id(), view.kind), window.bounds());
+                        if !frame.is_connection_active() {
+                            if let Some(target) = view.pending_target.take() {
+                                view.select_target(target, cx);
+                            }
+                        }
                         if frame.peer.is_some() {
                             view.target = Target::Local;
                         } else if frame.connection.is_active() {
@@ -319,6 +335,7 @@ impl Tool {
             owner,
             kind,
             target,
+            pending_target: None,
             cadence,
             slider,
             address,
@@ -544,6 +561,66 @@ impl Tool {
             Target::Local => (),
         }
         cx.notify();
+    }
+    fn select_target(&mut self, target: Target, cx: &mut Context<Self>) {
+        self.pending_target = None;
+        self.target = target;
+        self.tcp.target = target;
+        self.remember_tcp(cx);
+        self.error = None;
+        cx.notify();
+    }
+    fn change_target(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        if target == self.target {
+            self.pending_target = None;
+            cx.notify();
+            return;
+        }
+        let frame = self.player.presentation();
+        if !frame.is_connection_active() {
+            self.player.send(Command::Disconnect);
+            self.select_target(target, cx);
+            return;
+        }
+        if self.pending_target.is_some() || frame.connection == Connection::Disconnecting {
+            self.pending_target = Some(target);
+            cx.notify();
+            return;
+        }
+        let action = if frame.peer.is_some() {
+            "Unlink and Switch"
+        } else if frame.connection == Connection::Listening {
+            "Stop Listening and Switch"
+        } else if matches!(
+            frame.connection,
+            Connection::Connecting | Connection::Preparing
+        ) {
+            "Stop and Switch"
+        } else {
+            "Disconnect and Switch"
+        };
+        let owner = cx.weak_entity();
+        window.open_alert_dialog(cx, move |dialog, window, _| {
+            let owner = owner.clone();
+            dialog
+                .title(format!("Switch to {}?", target.name()))
+                .width(window.rem_size() * 26.)
+                .child("Any transfer in progress will stop.")
+                .confirm()
+                .button_props(DialogButtonProps::default().ok_text(action))
+                .on_ok(move |_, _, cx| {
+                    let _ = owner.update(cx, |view, cx| {
+                        if view.player.presentation().is_connection_active() {
+                            view.pending_target = Some(target);
+                        } else {
+                            view.select_target(target, cx);
+                        }
+                        view.player.send(Command::Disconnect);
+                        cx.notify();
+                    });
+                    true
+                })
+        });
     }
     fn local(&self, frame: &Presentation, cx: &mut Context<Self>) -> AnyElement {
         let peers: Vec<_> = cx
@@ -821,17 +898,9 @@ impl Tool {
         v_flex().size_full().gap_3()
             .child(TabBar::new("infrared-target").segmented().small()
                 .selected_index(targets.iter().position(|target| *target == self.target).unwrap_or(0))
-                .children(targets.into_iter().zip(["melonDS", "Local Link", "TCP"]).map(|(target, label)|
-                    Tab::new().label(label).flex_1().disabled(active && self.target != target)))
-                .on_click(cx.listener(move |view, ix: &usize, _, cx| {
-                    if view.target != targets[*ix] {
-                        view.player.send(Command::Disconnect);
-                    }
-                    view.target = targets[*ix];
-                    view.tcp.target = view.target;
-                    view.remember_tcp(cx);
-                    view.error = None;
-                    cx.notify();
+                .children(targets.into_iter().map(|target| Tab::new().label(target.name()).flex_1()))
+                .on_click(cx.listener(move |view, ix: &usize, window, cx| {
+                    view.change_target(targets[*ix], window, cx);
                 })))
             .child(div().id("infrared-body").w_full().min_w_0().flex_1().min_h_0().overflow_y_scroll()
                 .child(v_flex().w_full().min_w_0().gap_3()
@@ -843,6 +912,7 @@ impl Tool {
                             .child(div().text_color(cx.theme().chart_2).child("Received"))))
                     .child(v_flex().w_full().min_w_0().gap_1()
                         .child(div().font_weight(FontWeight::SEMIBOLD).text_color(if failed { cx.theme().danger } else { cx.theme().foreground }).child(headline))
+                        .when_some(self.pending_target, |root, target| root.child(div().text_color(cx.theme().muted_foreground).child(format!("Switching to {}…", target.name()))))
                         .when(self.target == Target::Tcp && active, |root| root.child(div().text_xs().text_color(cx.theme().muted_foreground).child(endpoint.clone())))
                         .when(!guidance.is_empty(), |root| root.child(div().w_full().whitespace_normal().text_color(cx.theme().muted_foreground).child(guidance)))
                         .when_some(error, |root, error| root.child(div().w_full().whitespace_normal().text_color(cx.theme().danger).child(error))))
