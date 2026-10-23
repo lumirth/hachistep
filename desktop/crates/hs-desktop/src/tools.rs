@@ -630,9 +630,18 @@ impl Tool {
             .filter_map(|w| w.view.upgrade())
             .filter_map(|view| {
                 let view = view.read(cx);
-                let other = view.presentation();
-                (view.player().id() != self.player.id() && other.ready && !other.closing)
-                    .then(|| (view.player().clone(), view.filename()))
+                let other = view.player().presentation();
+                (view.player().id() != self.player.id() && other.ready && !other.closing).then(
+                    || {
+                        (
+                            view.player().id(),
+                            view.filename(),
+                            other,
+                            view.palette(cx),
+                            view.raw_display(),
+                        )
+                    },
+                )
             })
             .collect();
         v_flex()
@@ -650,9 +659,7 @@ impl Tool {
                         ),
                 )
             })
-            .children(peers.into_iter().map(|(player, name)| {
-                let other = player.presentation();
-                let id = player.id();
+            .children(peers.into_iter().map(|(id, name, other, palette, raw)| {
                 let linked = frame.peer == Some(id);
                 let blocked = !linked
                     && (frame.is_connection_active()
@@ -678,12 +685,7 @@ impl Tool {
                             .w(lcd::dimensions(0.75, 1.).width)
                             .h(lcd::dimensions(0.75, 1.).height)
                             .flex_shrink_0()
-                            .child(lcd::display(
-                                other.pixels,
-                                other.contrast,
-                                false,
-                                crate::palette_for(id, cx),
-                            )),
+                            .child(lcd::display(other.pixels, other.contrast, raw, palette)),
                     )
                     .child(
                         v_flex()

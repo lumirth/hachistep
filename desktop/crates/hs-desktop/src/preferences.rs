@@ -36,6 +36,7 @@ fn open_section(section: Option<Section>, cx: &mut App) {
                             crate::macos::resize_settings(window, px(section.height()), cx);
                     }
                     view.capture = None;
+                    view.error = None;
                     cx.notify();
                 });
                 window.activate_window();
@@ -172,6 +173,7 @@ impl Settings {
         let target = cx.global::<Desktop>().active_player.clone();
         subscriptions.push(cx.observe_window_activation(window, |view, window, cx| {
             view.capture = None;
+            view.error = None;
             if window.is_window_active() {
                 view.target = cx.global::<Desktop>().active_player.clone();
                 if let Some(target) = &view.target {
@@ -196,28 +198,26 @@ impl Settings {
             });
         }));
         cx.spawn_in(window, async move |view, cx| loop {
-            cx.background_executor().timer(std::time::Duration::from_millis(50)).await;
-            if cx.update(|window, cx| view.update(cx, |view, cx| {
-                if window.is_window_active() {
-                    if let Some(Capture::Gamepad(ix)) = view.capture {
-                        let press = cx.global::<Desktop>().windows.iter().filter_map(|w| w.view.upgrade()).find_map(|view| view.read(cx).player().presentation().gamepad_press);
-                        if let Some((sequence, button))=press.filter(|(sequence,_)| *sequence != view.pad_sequence) {
-                            view.pad_sequence=sequence;
-                            if let Some(choice)=settings::GAMEPAD.iter().position(|(value,_)| *value==button) {
-                                view.update(|p| {
-                                    let old=p.gamepad[ix];
-                                    if let Some(other)=p.gamepad.iter().enumerate().find_map(|(other,value)| (other!=ix && *value==choice).then_some(other)) {p.gamepad[other]=old;}
-                                    p.gamepad[ix]=choice;
-                                }, cx);
-                                view.apply_gamepad(cx); view.capture=None;
-                            } else {view.error=Some("Choose a face button, shoulder button, or D-pad direction.".into());}
-                            cx.notify();
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(50))
+                .await;
+            if cx
+                .update(|window, cx| {
+                    view.update(cx, |view, cx| {
+                        if window.is_window_active() {
+                            view.capture_gamepad(cx);
+                            if let Some(target) = &view.target {
+                                crate::player_menu(target, cx);
+                            }
                         }
-                    }
-                    if let Some(target)=&view.target {crate::player_menu(target, cx);}
-                }
-            })).is_err() {break;}
-        }).detach();
+                    })
+                })
+                .is_err()
+            {
+                break;
+            }
+        })
+        .detach();
         Self {
             section,
             focus,
@@ -245,6 +245,43 @@ impl Settings {
             .gamepad
             .map(|ix| settings::GAMEPAD[ix.min(settings::GAMEPAD.len() - 1)].0);
         cx.global::<Desktop>().runtime.gamepad_mapping(mapping);
+    }
+    fn capture_gamepad(&mut self, cx: &mut Context<Self>) {
+        let Some(Capture::Gamepad(ix)) = self.capture else {
+            return;
+        };
+        let Some((sequence, button)) = cx
+            .global::<Desktop>()
+            .runtime
+            .gamepad_press()
+            .filter(|(sequence, _)| *sequence != self.pad_sequence)
+        else {
+            return;
+        };
+        self.pad_sequence = sequence;
+        if let Some(choice) = settings::GAMEPAD
+            .iter()
+            .position(|(value, _)| *value == button)
+        {
+            self.update(
+                |p| {
+                    let old = p.gamepad[ix];
+                    if let Some(other) = p.gamepad.iter().enumerate().find_map(|(other, value)| {
+                        (other != ix && *value == choice).then_some(other)
+                    }) {
+                        p.gamepad[other] = old;
+                    }
+                    p.gamepad[ix] = choice;
+                },
+                cx,
+            );
+            self.apply_gamepad(cx);
+            self.capture = None;
+            self.error = None;
+        } else {
+            self.error = Some("Choose a face button, shoulder button, or D-pad direction.".into());
+        }
+        cx.notify();
     }
     fn changed_keys(&mut self, cx: &mut Context<Self>) {
         commands::bind(cx);
@@ -281,6 +318,7 @@ impl Settings {
         };
         if key.key == "escape" {
             self.capture = None;
+            self.error = None;
             cx.notify();
             return;
         }
@@ -290,23 +328,14 @@ impl Settings {
         ) {
             return;
         }
+        let fixed = commands::fixed_bindings()
+            .iter()
+            .any(|binding| binding.match_keystrokes(std::slice::from_ref(key)) == Some(false));
         let key = if key.key == "backspace" {
             String::new()
         } else {
             key.unparse()
         };
-        let modifier = if cfg!(target_os = "macos") {
-            "cmd"
-        } else {
-            "ctrl"
-        };
-        let reserved = [
-            "n", "o", "shift-o", "s", "shift-s", "w", "q", ",", "=", "-", "/", "alt-i",
-        ];
-        let fixed = reserved.iter().any(|reserved| {
-            Keystroke::parse(&format!("{modifier}-{reserved}")).ok() == Keystroke::parse(&key).ok()
-        }) || (1..=10)
-            .any(|slot| key == format!("f{slot}") || key == format!("shift-f{slot}"));
         if fixed || !target.accepts(&key) {
             self.error = Some(
                 if fixed {
@@ -367,16 +396,9 @@ impl Settings {
                 view.error = None;
                 view.pad_sequence = cx
                     .global::<Desktop>()
-                    .windows
-                    .iter()
-                    .filter_map(|w| w.view.upgrade())
-                    .find_map(|view| {
-                        view.read(cx)
-                            .player()
-                            .presentation()
-                            .gamepad_press
-                            .map(|(sequence, _)| sequence)
-                    })
+                    .runtime
+                    .gamepad_press()
+                    .map(|(sequence, _)| sequence)
                     .unwrap_or(0);
                 view.focus.focus(window, cx);
                 cx.notify();
@@ -740,6 +762,7 @@ impl Render for Settings {
             .capture_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" && view.capture.is_some() {
                     view.capture = None;
+                    view.error = None;
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -838,12 +861,19 @@ impl Render for Settings {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(
+                    .child(v_flex().px_5().py_3().gap_3().child(content)),
+            )
+            .when(
+                self.capture.is_some() || self.conflict.is_some() || self.error.is_some(),
+                |root| {
+                    root.child(
                         v_flex()
+                            .flex_shrink_0()
+                            .border_t_1()
+                            .border_color(cx.theme().border)
                             .px_5()
                             .py_3()
                             .gap_3()
-                            .child(content)
                             .when(self.capture.is_some(), |root| {
                                 root.child(
                                     Button::new("cancel-capture")
@@ -852,6 +882,7 @@ impl Render for Settings {
                                         .label("Cancel")
                                         .on_click(cx.listener(|view, _, _, cx| {
                                             view.capture = None;
+                                            view.error = None;
                                             cx.notify();
                                         })),
                                 )
@@ -926,7 +957,8 @@ impl Render for Settings {
                                     div().text_sm().text_color(cx.theme().danger).child(error),
                                 )
                             }),
-                    ),
+                    )
+                },
             )
     }
 }

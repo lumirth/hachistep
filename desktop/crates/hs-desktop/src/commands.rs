@@ -58,22 +58,13 @@ pub(crate) enum Intent {
     About,
 }
 
-pub(crate) fn bind(cx: &mut App) {
-    let retained: Vec<_> = cx
-        .key_bindings()
-        .borrow()
-        .bindings()
-        .filter(|binding| !binding.action().as_any().is::<Intent>())
-        .cloned()
-        .collect();
-    cx.clear_key_bindings();
-    cx.bind_keys(retained);
+pub(crate) fn fixed_bindings() -> Vec<KeyBinding> {
     let modifier = if cfg!(target_os = "macos") {
         "cmd"
     } else {
         "ctrl"
     };
-    for (key, intent) in [
+    let mut bindings: Vec<_> = [
         ("n", Intent::NewWindow),
         ("o", Intent::OpenEeprom),
         ("shift-o", Intent::OpenFirmware),
@@ -82,11 +73,12 @@ pub(crate) fn bind(cx: &mut App) {
         (",", Intent::Settings),
         ("w", Intent::Close),
         ("q", Intent::Quit),
-    ] {
-        cx.bind_keys([KeyBinding::new(&format!("{modifier}-{key}"), intent, None)]);
-    }
+    ]
+    .into_iter()
+    .map(|(key, intent)| KeyBinding::new(&format!("{modifier}-{key}"), intent, None))
+    .collect();
     for slot in 1..=10 {
-        cx.bind_keys([
+        bindings.extend([
             KeyBinding::new(
                 &format!("f{slot}"),
                 Intent::LoadSlot(slot),
@@ -99,7 +91,7 @@ pub(crate) fn bind(cx: &mut App) {
             ),
         ]);
     }
-    cx.bind_keys([
+    bindings.extend([
         KeyBinding::new(&format!("{modifier}-="), Intent::Larger, None),
         KeyBinding::new(&format!("{modifier}--"), Intent::Smaller, None),
         KeyBinding::new(&format!("{modifier}-/"), Intent::Status, None),
@@ -114,6 +106,28 @@ pub(crate) fn bind(cx: &mut App) {
             Some("Player"),
         ),
     ]);
+    if cfg!(target_os = "macos") {
+        bindings.extend([
+            KeyBinding::new("cmd-h", Intent::Hide, None),
+            KeyBinding::new("alt-cmd-h", Intent::HideOthers, None),
+            KeyBinding::new("cmd-m", Intent::Minimize, None),
+            KeyBinding::new("ctrl-cmd-f", Intent::Fullscreen, None),
+        ]);
+    }
+    bindings
+}
+
+pub(crate) fn bind(cx: &mut App) {
+    let retained: Vec<_> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .filter(|binding| !binding.action().as_any().is::<Intent>())
+        .cloned()
+        .collect();
+    cx.clear_key_bindings();
+    cx.bind_keys(retained);
+    cx.bind_keys(fixed_bindings());
     let preferences = &cx.global::<crate::Desktop>().preferences;
     let bindings: Vec<_> = shortcuts()
         .into_iter()
@@ -125,20 +139,12 @@ pub(crate) fn bind(cx: &mut App) {
                 } else {
                     "EmulatorCommands && !Input"
                 };
-                KeyBinding::new(&key, shortcut.intent.clone(), Some(context))
+                KeyBinding::new(&key, shortcut.intent, Some(context))
             })
         })
         .collect();
     cx.bind_keys(bindings);
     cx.global_mut::<crate::Desktop>().menu = None;
-    if cfg!(target_os = "macos") {
-        cx.bind_keys([
-            KeyBinding::new("cmd-h", Intent::Hide, None),
-            KeyBinding::new("alt-cmd-h", Intent::HideOthers, None),
-            KeyBinding::new("cmd-m", Intent::Minimize, None),
-            KeyBinding::new("ctrl-cmd-f", Intent::Fullscreen, None),
-        ]);
-    }
 }
 
 pub(crate) fn init(cx: &mut App) {

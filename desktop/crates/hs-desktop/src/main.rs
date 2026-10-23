@@ -216,18 +216,6 @@ fn create_window(cx: &mut App, launch: Option<Launch>) {
     }
 }
 
-fn palette_for(id: hs_runtime::Id, cx: &App) -> lcd::Palette {
-    cx.global::<Desktop>()
-        .windows
-        .iter()
-        .filter_map(|window| window.view.upgrade())
-        .find_map(|view| {
-            let view = view.read(cx);
-            (view.player().id() == id).then(|| view.palette(cx))
-        })
-        .unwrap_or(cx.global::<Desktop>().preferences.palette)
-}
-
 fn system_action(intent: &commands::Intent, window: &mut Window, cx: &mut App) -> bool {
     use commands::Intent;
     match intent {

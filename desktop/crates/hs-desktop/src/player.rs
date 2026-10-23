@@ -57,7 +57,6 @@ pub(crate) struct PlayerView {
     firmware: Option<PathBuf>,
     new_after_firmware: bool,
     requested: Option<Recent>,
-    palette_id: Option<String>,
     options: settings::WalkerPreferences,
     walk_held: Option<bool>,
     notice: Option<(String, Instant, bool)>,
@@ -65,7 +64,6 @@ pub(crate) struct PlayerView {
     focus: FocusHandle,
     buttons: Buttons,
     scale: u8,
-    raw: bool,
     status: bool,
     margin: u16,
     pending_layout: Option<(bool, u16, Size<Pixels>)>,
@@ -186,7 +184,6 @@ impl PlayerView {
             new_after_firmware: false,
             firmware,
             requested: None,
-            palette_id: None,
             options: settings::WalkerPreferences::default(),
             walk_held: None,
             notice: None,
@@ -194,7 +191,6 @@ impl PlayerView {
             focus,
             buttons: Buttons::RELEASED,
             scale: 4,
-            raw: false,
             status: false,
             margin: cx.global::<Desktop>().preferences.lcd_margin,
             pending_layout: None,
@@ -436,8 +432,7 @@ impl PlayerView {
                     self.cancel_close(cx);
                 }
                 self.release();
-                let eeprom = self.presentation.eeprom_error.is_some();
-                if !eeprom {
+                if self.presentation.eeprom_error.is_none() {
                     self.notify(error, true, cx);
                     if changed {
                         cx.notify();
@@ -446,16 +441,7 @@ impl PlayerView {
                 }
                 let owner = cx.weak_entity();
                 window.open_dialog(cx, move |dialog, _, _| {
-                    let dialog = dialog
-                        .title(if eeprom {
-                            "Could not save EEPROM"
-                        } else {
-                            "hachistep"
-                        })
-                        .child(error.clone());
-                    if !eeprom {
-                        return dialog;
-                    }
+                    let dialog = dialog.title("Could not save EEPROM").child(error.clone());
                     let save = owner.clone();
                     let state = owner.clone();
                     let retry = owner.clone();
@@ -507,7 +493,7 @@ impl PlayerView {
     fn menu(&self, cx: &App) -> commands::MenuState {
         commands::MenuState::new(
             &self.presentation,
-            self.raw,
+            self.options.raw,
             self.status,
             self.scale,
             &cx.global::<Desktop>().preferences,
@@ -541,7 +527,7 @@ impl PlayerView {
         }
     }
 
-    fn slot(&mut self, slot: u8, load: bool, _cx: &mut App) {
+    fn slot(&mut self, slot: u8, load: bool) {
         if let Some(eeprom) = &self.presentation.eeprom {
             let path = hs_runtime::slot_path(eeprom, slot);
 
@@ -634,8 +620,6 @@ impl PlayerView {
             .and_then(|path| preferences.walkers.get(path))
             .cloned()
             .unwrap_or_default();
-        self.palette_id = self.options.palette.clone();
-        self.raw = self.options.raw;
         let speed = self
             .options
             .speed
@@ -652,6 +636,10 @@ impl PlayerView {
             .filter(|value| (30..=240).contains(value))
             .unwrap_or(preferences.cadence);
         let muted = self.options.muted.unwrap_or(preferences.mute);
+        self.options.speed = Some(speed);
+        self.options.turbo = Some(rate);
+        self.options.cadence = Some(cadence);
+        self.options.muted = Some(muted);
         self.player.send(Command::Speed(speed));
         self.player.send(Command::TurboRate(rate));
         self.player.send(Command::Cadence(cadence));
@@ -672,7 +660,8 @@ impl PlayerView {
     pub fn palette(&self, cx: &App) -> lcd::Palette {
         let preferences = &cx.global::<Desktop>().preferences;
         let id = self
-            .palette_id
+            .options
+            .palette
             .as_deref()
             .filter(|id| preferences.palette_named(id).is_some())
             .unwrap_or(&preferences.palette_id);
@@ -681,16 +670,17 @@ impl PlayerView {
                 return *colors;
             }
         }
-        self.palette_id
+        self.options
+            .palette
             .as_deref()
             .and_then(|id| preferences.palette_named(id))
             .unwrap_or(preferences.palette)
     }
     pub(crate) fn raw_display(&self) -> bool {
-        self.raw
+        self.options.raw
     }
     pub(crate) fn palette_id(&self) -> Option<&str> {
-        self.palette_id.as_deref()
+        self.options.palette.as_deref()
     }
     pub fn open_pair(&mut self, pair: Recent, cx: &mut Context<Self>) {
         self.requested = Some(pair);
@@ -908,7 +898,6 @@ impl PlayerView {
             | Intent::Zoom
             | Intent::BringAll => {}
             Intent::Palette(ref id) => {
-                self.palette_id = id.clone();
                 self.options.palette = id.clone();
                 self.remember_options(cx);
             }
@@ -933,10 +922,10 @@ impl PlayerView {
             Intent::SaveEepromAs => self.choose(FileCommand::SaveEepromAs, window, cx),
             Intent::SaveState => self.choose(FileCommand::SaveState, window, cx),
             Intent::LoadState => self.choose(FileCommand::LoadState, window, cx),
-            Intent::SaveSelectedState => self.slot(self.selected_slot(cx), false, cx),
-            Intent::LoadSelectedState => self.slot(self.selected_slot(cx), true, cx),
-            Intent::SaveSlot(slot) => self.slot(slot, false, cx),
-            Intent::LoadSlot(slot) => self.slot(slot, true, cx),
+            Intent::SaveSelectedState => self.slot(self.selected_slot(cx), false),
+            Intent::LoadSelectedState => self.slot(self.selected_slot(cx), true),
+            Intent::SaveSlot(slot) => self.slot(slot, false),
+            Intent::LoadSlot(slot) => self.slot(slot, true),
             Intent::SelectSlot(slot) => self.select_slot(slot, cx),
             Intent::UndoLoadState => self.player.send(Command::UndoLoadState),
             Intent::ToggleTurbo => self.player.send(Command::ToggleTurbo),
@@ -996,8 +985,7 @@ impl PlayerView {
                 self.remember_options(cx);
             }
             Intent::Raw => {
-                self.raw = !self.raw;
-                self.options.raw = self.raw;
+                self.options.raw = !self.options.raw;
                 self.remember_options(cx);
             }
             Intent::RecentEeprom(pair) => self.open_pair(pair, cx),
@@ -1022,7 +1010,7 @@ impl PlayerView {
         match lcd::screenshot(
             &self.presentation.pixels,
             self.presentation.contrast,
-            self.raw,
+            self.options.raw,
             self.palette(cx),
         ) {
             Ok(bytes) => {
@@ -1246,7 +1234,7 @@ impl PlayerView {
             FileCommand::Screenshot => match lcd::screenshot(
                 &self.presentation.pixels,
                 self.presentation.contrast,
-                self.raw,
+                self.options.raw,
                 self.palette(cx),
             ) {
                 Ok(bytes) => self.player.send(Command::WriteFile { path, bytes }),
@@ -1448,7 +1436,7 @@ impl Render for PlayerView {
                 .child(lcd::display(
                     self.presentation.pixels.clone(),
                     self.presentation.contrast,
-                    self.raw,
+                    self.options.raw,
                     self.palette(cx),
                 ))
                 .when(self.presentation.paused, |root| {

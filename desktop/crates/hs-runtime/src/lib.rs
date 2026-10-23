@@ -60,6 +60,7 @@ pub struct Runtime {
     next: Arc<AtomicU64>,
     commands: Sender<(Id, Command)>,
     worker: thread::Thread,
+    gamepad_press: Arc<Mutex<Option<(u64, GamepadButton)>>>,
 }
 
 impl Default for Runtime {
@@ -71,9 +72,11 @@ impl Default for Runtime {
 impl Runtime {
     pub fn new() -> Self {
         let (commands, receiver) = mpsc::channel();
+        let gamepad_press = Arc::new(Mutex::new(None));
+        let presses = gamepad_press.clone();
         let worker = thread::Builder::new()
             .name("hachistep-machines".into())
-            .spawn(move || Worker::new(receiver).run())
+            .spawn(move || Worker::new(receiver, presses).run())
             .expect("create emulation worker")
             .thread()
             .clone();
@@ -81,6 +84,7 @@ impl Runtime {
             next: Arc::new(AtomicU64::new(1)),
             commands,
             worker,
+            gamepad_press,
         }
     }
     pub fn player(&self) -> Player {
@@ -95,10 +99,6 @@ impl Runtime {
         player.send(Command::Attach(presentation));
         player
     }
-    pub fn sound_enabled(&self, enabled: bool) {
-        let _ = self.commands.send((0, Command::Sound(enabled)));
-        self.worker.unpark();
-    }
     pub fn retry_audio(&self) {
         let _ = self.commands.send((0, Command::RetryAudio));
         self.worker.unpark();
@@ -106,6 +106,9 @@ impl Runtime {
     pub fn gamepad_mapping(&self, mapping: [GamepadButton; 3]) {
         let _ = self.commands.send((0, Command::GamepadMapping(mapping)));
         self.worker.unpark();
+    }
+    pub fn gamepad_press(&self) -> Option<(u64, GamepadButton)> {
+        *self.gamepad_press.lock().unwrap()
     }
 }
 
@@ -128,7 +131,6 @@ pub enum Command {
     Cadence(u16),
     Mute(bool),
     RetryAudio,
-    Sound(bool),
     GamepadMapping([gilrs::Button; 3]),
     SaveEepromAs(PathBuf),
     SaveState(PathBuf),
@@ -194,7 +196,6 @@ pub struct Presentation {
     pub closing: bool,
     pub closed: bool,
     pub completion: Option<(u64, Completion)>,
-    pub gamepad_press: Option<(u64, GamepadButton)>,
 }
 
 #[derive(Clone, Copy)]
@@ -253,7 +254,6 @@ impl Default for Presentation {
             closing: false,
             closed: false,
             completion: None,
-            gamepad_press: None,
         }
     }
 }
@@ -644,12 +644,16 @@ struct Worker {
     replies: Receiver<Reply>,
     sound: Sound,
     gamepads: Option<gilrs::Gilrs>,
+    gamepad_press: Arc<Mutex<Option<(u64, GamepadButton)>>>,
     mapping: [gilrs::Button; 3],
     focused: Option<Id>,
 }
 
 impl Worker {
-    fn new(receive: Receiver<(Id, Command)>) -> Self {
+    fn new(
+        receive: Receiver<(Id, Command)>,
+        gamepad_press: Arc<Mutex<Option<(u64, GamepadButton)>>>,
+    ) -> Self {
         let (jobs, replies) = files::start();
         Self {
             receive,
@@ -661,6 +665,7 @@ impl Worker {
             undos: BTreeMap::new(),
             sound: Sound::new(),
             gamepads: gilrs::Gilrs::new().ok(),
+            gamepad_press,
             mapping: [
                 gilrs::Button::DPadLeft,
                 gilrs::Button::South,
@@ -729,9 +734,7 @@ impl Worker {
         }
     }
     fn restart_audio(&mut self) -> Result<()> {
-        let enabled = self.sound.enabled.load(Ordering::Relaxed);
         self.sound = Sound::new();
-        self.sound.enabled.store(enabled, Ordering::Relaxed);
         for (&id, session) in &mut self.sessions {
             session.samples = self.sound.add(id);
             session.clear_audio(self.sound.rate)?;
@@ -775,10 +778,6 @@ impl Worker {
                     firmware,
                     eeprom,
                 })?;
-                return Ok(());
-            }
-            Command::Sound(enabled) => {
-                self.sound.enabled.store(enabled, Ordering::Relaxed);
                 return Ok(());
             }
             Command::RetryAudio => return self.restart_audio(),
@@ -1462,11 +1461,9 @@ impl Worker {
                 gilrs::EventType::ButtonPressed(button, _)
                 | gilrs::EventType::ButtonReleased(button, _) => {
                     if matches!(event.event, gilrs::EventType::ButtonPressed(..)) {
-                        for view in self.views.values() {
-                            let mut view = view.lock().unwrap();
-                            let next = view.gamepad_press.map_or(1, |(id, _)| id.saturating_add(1));
-                            view.gamepad_press = Some((next, button));
-                        }
+                        let mut press = self.gamepad_press.lock().unwrap();
+                        let next = press.map_or(1, |(id, _)| id.saturating_add(1));
+                        *press = Some((next, button));
                     }
                     if let Some(session) = self.focused.and_then(|id| self.sessions.get_mut(&id)) {
                         let pressed = matches!(event.event, gilrs::EventType::ButtonPressed(..));

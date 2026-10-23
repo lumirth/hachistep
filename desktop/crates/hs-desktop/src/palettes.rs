@@ -99,18 +99,17 @@ impl Editor {
                 .max(128.)
                 .step(1.)
         });
-        let mut subscriptions = vec![cx.subscribe_in(
-            &margin,
-            window,
-            |view, input, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::Change) {
-                    if let Ok(value @ 0..=128) = input.read(cx).value().parse::<u16>() {
-                        cx.global_mut::<Desktop>().preferences.lcd_margin = value;
-                        view.changed(window, cx);
+        let mut subscriptions =
+            vec![
+                cx.subscribe_in(&margin, window, |view, input, event: &InputEvent, _, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        if let Ok(value @ 0..=128) = input.read(cx).value().parse::<u16>() {
+                            cx.global_mut::<Desktop>().preferences.lcd_margin = value;
+                            view.changed(cx);
+                        }
                     }
-                }
-            },
-        )];
+                }),
+            ];
         for (ix, color) in colors.iter().enumerate() {
             subscriptions.push(cx.subscribe_in(
                 color,
@@ -149,7 +148,7 @@ impl Editor {
             _subscriptions: subscriptions,
         }
     }
-    fn changed(&self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn changed(&self, cx: &mut Context<Self>) {
         crate::save_preferences(cx);
         cx.refresh_windows();
         cx.notify();
@@ -265,7 +264,7 @@ impl Editor {
         };
         p.select_palette(&id);
         self.focus.focus(window, cx);
-        self.changed(window, cx);
+        self.changed(cx);
         true
     }
     fn import(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -296,30 +295,28 @@ impl Editor {
                 })
                 .confirm()
                 .button_props(DialogButtonProps::default().ok_text("Import"))
-                .on_ok(
-                    move |_, window, cx| match parse_many(&field.read(cx).value()) {
-                        Ok(records) => {
-                            let _ = owner.update(cx, |view, cx| {
-                                let p = &mut cx.global_mut::<Desktop>().preferences;
-                                let mut first = None;
-                                for (name, colors) in records {
-                                    let id = p.add_palette(name, colors);
-                                    first.get_or_insert(id);
-                                }
-                                if let Some(id) = first {
-                                    p.select_palette(&id);
-                                }
-                                view.changed(window, cx);
-                            });
-                            true
-                        }
-                        Err(error) => {
-                            *failure.borrow_mut() = Some(error.to_string());
-                            cx.refresh_windows();
-                            false
-                        }
-                    },
-                )
+                .on_ok(move |_, _, cx| match parse_many(&field.read(cx).value()) {
+                    Ok(records) => {
+                        let _ = owner.update(cx, |view, cx| {
+                            let p = &mut cx.global_mut::<Desktop>().preferences;
+                            let mut first = None;
+                            for (name, colors) in records {
+                                let id = p.add_palette(name, colors);
+                                first.get_or_insert(id);
+                            }
+                            if let Some(id) = first {
+                                p.select_palette(&id);
+                            }
+                            view.changed(cx);
+                        });
+                        true
+                    }
+                    Err(error) => {
+                        *failure.borrow_mut() = Some(error.to_string());
+                        cx.refresh_windows();
+                        false
+                    }
+                })
         });
     }
     fn delete(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -344,7 +341,7 @@ impl Editor {
                 .title(format!("Delete \"{}\"?", saved.name))
                 .confirm()
                 .button_props(DialogButtonProps::default().ok_text("Delete"))
-                .on_ok(move |_, window, cx| {
+                .on_ok(move |_, _, cx| {
                     let _ = owner.update(cx, |view, cx| {
                         let p = &mut cx.global_mut::<Desktop>().preferences;
                         if p.palettes.len() <= 1 {
@@ -356,16 +353,15 @@ impl Editor {
                             .id
                             .clone();
                         p.select_palette(&fallback);
-                        view.changed(window, cx);
+                        view.changed(cx);
                     });
                     true
                 })
         });
     }
-    fn appearance(&self, _: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let p = cx.global::<Desktop>().preferences.clone();
+    fn appearance(&self, cx: &Context<Self>) -> AnyElement {
+        let p = &cx.global::<Desktop>().preferences;
         let saved = p.palettes.iter().any(|saved| saved.id == p.palette_id);
-        let palettes = p.palettes.clone();
         v_flex()
             .gap_5()
             .child(
@@ -377,10 +373,10 @@ impl Editor {
                         RadioGroup::horizontal("appearance")
                             .children(["System", "Light", "Dark"])
                             .selected_index(Some(p.appearance))
-                            .on_change(cx.listener(|view, value, window, cx| {
+                            .on_change(cx.listener(|view, value, _, cx| {
                                 cx.global_mut::<Desktop>().preferences.appearance = *value;
                                 theme::apply(*value, cx);
-                                view.changed(window, cx);
+                                view.changed(cx);
                             })),
                     ),
             )
@@ -408,7 +404,7 @@ impl Editor {
                             .border_1()
                             .border_color(cx.theme().border)
                             .rounded_md()
-                            .children(palettes.into_iter().map(|palette| {
+                            .children(p.palettes.iter().cloned().map(|palette| {
                                 let SavedPalette { id, name, colors } = palette;
                                 let selected = p.palette_id == id;
                                 Button::new(SharedString::from(format!("palette-{id}")))
@@ -433,9 +429,9 @@ impl Editor {
                                                 )
                                             }),
                                     )
-                                    .on_click(cx.listener(move |view, _, window, cx| {
+                                    .on_click(cx.listener(move |view, _, _, cx| {
                                         cx.global_mut::<Desktop>().preferences.select_palette(&id);
-                                        view.changed(window, cx);
+                                        view.changed(cx);
                                     }))
                             })),
                     )
@@ -481,8 +477,8 @@ impl Editor {
                 menu.item(
                     PopupMenuItem::new("Duplicate")
                         .disabled(!selected)
-                        .on_click(move |_, window, cx| {
-                            let _ = duplicate.update(cx, |view, cx| view.duplicate(window, cx));
+                        .on_click(move |_, _, cx| {
+                            let _ = duplicate.update(cx, |view, cx| view.duplicate(cx));
                         }),
                 )
                 .item(
@@ -546,7 +542,7 @@ impl Editor {
             cx.global_mut::<Desktop>()
                 .preferences
                 .restore_default_palettes();
-            self.changed(window, cx);
+            self.changed(cx);
             return;
         }
         let owner = cx.weak_entity();
@@ -557,18 +553,18 @@ impl Editor {
                 .child("Your changes to the included palettes will be lost.")
                 .confirm()
                 .button_props(DialogButtonProps::default().ok_text("Restore"))
-                .on_ok(move |_, window, cx| {
+                .on_ok(move |_, _, cx| {
                     let _ = owner.update(cx, |view, cx| {
                         cx.global_mut::<Desktop>()
                             .preferences
                             .restore_default_palettes();
-                        view.changed(window, cx);
+                        view.changed(cx);
                     });
                     true
                 })
         });
     }
-    fn duplicate(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn duplicate(&self, cx: &mut Context<Self>) {
         let p = &mut cx.global_mut::<Desktop>().preferences;
         if let Some(original) = p
             .palettes
@@ -578,7 +574,7 @@ impl Editor {
         {
             let id = p.add_palette(format!("{} copy", original.name), original.colors);
             p.select_palette(&id);
-            self.changed(window, cx);
+            self.changed(cx);
         }
     }
     fn form(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -690,11 +686,11 @@ impl Editor {
     }
 }
 impl Render for Editor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .id("palette-editor")
             .track_focus(&self.focus)
-            .child(self.appearance(window, cx))
+            .child(self.appearance(cx))
     }
 }
 
