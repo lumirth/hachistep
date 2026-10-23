@@ -9,9 +9,8 @@ use gpui_kit::{
         h_flex,
         kbd::Kbd,
         menu::{DropdownMenu, PopupMenuItem},
-        popover::Popover,
         switch::Switch,
-        v_flex, ActiveTheme, Selectable, Sizable,
+        v_flex, ActiveTheme, Selectable, Sizable, ThemeStyled,
     },
     prelude::*,
     *,
@@ -150,6 +149,8 @@ pub(crate) struct Settings {
     focus: FocusHandle,
     capture: Option<Capture>,
     conflict: Option<Conflict>,
+    binding_focus: Option<FocusHandle>,
+    feedback_focus: FocusHandle,
     error: Option<String>,
     palettes: Entity<crate::palettes::Editor>,
     firmware_error: Option<String>,
@@ -191,7 +192,11 @@ impl Settings {
                     .is_some_and(|capture| !matches!(capture, Capture::Gamepad(_)))
                 {
                     cx.stop_propagation();
-                    view.capture_key(&event.keystroke, cx);
+                    view.capture_key(&event.keystroke, window, cx);
+                } else if matches!(view.capture, Some(Capture::Gamepad(_)))
+                    && event.keystroke.key == "tab"
+                {
+                    view.cancel_binding(cx);
                 }
             });
         }));
@@ -221,6 +226,8 @@ impl Settings {
             focus,
             capture: None,
             conflict: None,
+            binding_focus: None,
+            feedback_focus: cx.focus_handle(),
             error: None,
             palettes,
             firmware_error: None,
@@ -275,6 +282,7 @@ impl Settings {
             );
             self.apply_gamepad(cx);
             self.capture = None;
+            self.binding_focus = None;
             self.error = None;
         } else {
             self.error = Some("Press a face button, shoulder button, or D-pad direction.".into());
@@ -310,7 +318,7 @@ impl Settings {
         .chain((0..commands::shortcuts().len()).map(Capture::Shortcut))
         .collect()
     }
-    fn capture_key(&mut self, key: &Keystroke, cx: &mut Context<Self>) {
+    fn capture_key(&mut self, key: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = self.capture else {
             return;
         };
@@ -353,9 +361,11 @@ impl Settings {
                 && Keystroke::parse(&other.key(p)).ok() == Keystroke::parse(&key).ok()
         }) {
             self.conflict = Some(Conflict { target, key, other });
+            self.feedback_focus.focus(window, cx);
             cx.notify();
             return;
         }
+        self.binding_focus = None;
         self.update(|p| target.set(p, key), cx);
         self.changed_keys(cx);
     }
@@ -366,6 +376,7 @@ impl Settings {
     fn cancel_binding(&mut self, cx: &mut Context<Self>) {
         self.capture = None;
         self.conflict = None;
+        self.binding_focus = None;
         self.error = None;
         cx.notify();
     }
@@ -383,96 +394,37 @@ impl Settings {
             self.changed_keys(cx);
         }
     }
-    // Handle Confirm before the popover trigger consumes a button's Enter or Space.
-    fn binding_editor(&self, target: Capture, cx: &Context<Self>) -> impl IntoElement {
-        v_flex()
-            .w_64()
-            .gap_2()
-            .text_sm()
-            .child(
-                h_flex()
-                    .gap_3()
-                    .justify_between()
-                    .child(
-                        crate::theme::settings_heading(target.name(), cx)
-                            .flex_1()
-                            .min_w_0(),
-                    )
-                    .child(
-                        Button::new("cancel-binding")
-                            .small()
-                            .ghost()
-                            .label("Cancel")
-                            .on_click(cx.listener(|view, _, _, cx| view.cancel_binding(cx)))
-                            .on_action(cx.listener(
-                                |view, _: &gpui_kit::base::actions::Confirm, _, cx| {
-                                    cx.stop_propagation();
-                                    view.cancel_binding(cx);
-                                },
-                            )),
-                    ),
-            )
-            .when(self.capture == Some(target), |panel| {
-                let gamepad = matches!(target, Capture::Gamepad(_));
-                panel.child(
-                    h_flex()
-                        .gap_2()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(
-                            component::Icon::new(if gamepad {
-                                gpui_kit::assets::IconName::Gamepad2
-                            } else {
-                                gpui_kit::assets::IconName::Keyboard
-                            })
-                            .small(),
-                        )
-                        .child(if gamepad {
-                            "Press a button…"
-                        } else {
-                            "Press a key…"
-                        }),
-                )
+    fn key_button(
+        &self,
+        target: Capture,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let id = ElementId::from(SharedString::from(format!("binding-{}", target.name())));
+        let focus = window
+            .use_keyed_state((id.clone(), "focus"), cx, |_, cx| {
+                cx.focus_handle().tab_stop(true)
             })
-            .when_some(self.error.clone(), |panel, error| {
-                panel.child(div().text_color(cx.theme().danger).child(error))
-            })
-            .when_some(self.conflict.as_ref(), |panel, conflict| {
-                let old = conflict.target.key(&cx.global::<Desktop>().preferences);
-                panel
-                    .child(format!(
-                        "{} is already used by {}.",
-                        settings::key_name(&conflict.key),
-                        conflict.other.name()
-                    ))
-                    .when(conflict.other.accepts(&old), |panel| {
-                        panel.child(
-                            Button::new("swap-bindings")
-                                .small()
-                                .primary()
-                                .self_end()
-                                .label("Swap")
-                                .on_click(cx.listener(|view, _, _, cx| view.swap_binding(cx)))
-                                .on_action(cx.listener(
-                                    |view, _: &gpui_kit::base::actions::Confirm, _, cx| {
-                                        cx.stop_propagation();
-                                        view.swap_binding(cx);
-                                    },
-                                )),
-                        )
-                    })
-            })
-    }
-    fn key_button(&self, target: Capture, cx: &Context<Self>) -> Popover {
+            .read(cx)
+            .clone();
+        let active = self.binding_target() == Some(target);
+        let recording = self.capture == Some(target);
+        let feedback = active && (self.error.is_some() || self.conflict.is_some());
         let binding = target.key(&cx.global::<Desktop>().preferences);
-        let owner = cx.weak_entity();
-        let open = self.binding_target() == Some(target);
-        let button = Button::new(SharedString::from(format!("binding-{}", target.name())))
+        let button = Button::new(id.clone())
             .small()
             .w_40()
-            .selected(open)
-            .accessibility_label(format!("Change {} binding", target.name()))
+            .role(None)
+            .tab_stop(false)
+            .selected(active)
             .map(|button| {
-                if matches!(target, Capture::Gamepad(_)) || binding.is_empty() {
+                if recording {
+                    button.label(if matches!(target, Capture::Gamepad(_)) {
+                        "Press a button…"
+                    } else {
+                        "Press a key…"
+                    })
+                } else if matches!(target, Capture::Gamepad(_)) || binding.is_empty() {
                     button.label(if binding.is_empty() {
                         "None".into()
                     } else {
@@ -483,36 +435,142 @@ impl Settings {
                         Kbd::new(Keystroke::parse(&binding).unwrap_or_default()).appearance(false),
                     )
                 }
-            });
-        Popover::new(SharedString::from(format!(
-            "binding-editor-{}",
-            target.name()
-        )))
-        .anchor(Anchor::BottomRight)
-        .arrow(true)
-        .open(open)
-        .trigger(button)
-        .on_open_change(move |open, _, cx| {
-            let _ = owner.update(cx, |view, cx| {
-                if *open {
-                    view.capture = Some(target);
-                    view.conflict = None;
-                    view.error = None;
-                    view.pad_sequence = cx
-                        .global::<Desktop>()
-                        .runtime
-                        .gamepad_press()
-                        .map(|(sequence, _)| sequence)
-                        .unwrap_or(0);
-                    cx.notify();
-                } else if view.binding_target() == Some(target) {
-                    view.cancel_binding(cx);
+            })
+            .when(recording, |button| button.tooltip("Cancel recording"));
+        let trigger = gpui_kit::base::Button::new((id.clone(), "control"))
+            .track_focus(&focus)
+            .accessibility_label(if recording {
+                format!("Cancel recording {} binding", target.name())
+            } else {
+                format!("Change {} binding", target.name())
+            })
+            .relative()
+            .rounded(cx.theme().radius)
+            .when(focus.is_focused(window), |button| {
+                button.focus_ring_style(window, cx)
+            })
+            .child(button)
+            .on_click(cx.listener({
+                let focus = focus.clone();
+                move |view, _, window, cx| {
+                    if active {
+                        if view.binding_target() == Some(target) {
+                            view.cancel_binding(cx);
+                        }
+                    } else {
+                        view.capture = Some(target);
+                        view.conflict = None;
+                        view.error = None;
+                        view.binding_focus = Some(focus.clone());
+                        view.pad_sequence = cx
+                            .global::<Desktop>()
+                            .runtime
+                            .gamepad_press()
+                            .map(|(sequence, _)| sequence)
+                            .unwrap_or(0);
+                        cx.notify();
+                    }
+                    focus.focus(window, cx);
                 }
+            }))
+            .when(active && !feedback, |button| {
+                button.on_mouse_down_out(cx.listener(move |view, _, _, cx| {
+                    if view.binding_target() == Some(target) {
+                        view.cancel_binding(cx);
+                    }
+                }))
             });
-        })
-        .child(self.binding_editor(target, cx))
+        let popup = gpui_kit::base::Popup::new((id, "feedback"), trigger)
+            .anchor(Anchor::BottomRight)
+            .offset(px(4.));
+        if !feedback {
+            return popup;
+        }
+        let trigger_bounds = std::rc::Rc::new(std::cell::Cell::new(Bounds::<Pixels>::default()));
+        let conflict_message = self.conflict.as_ref().map(|conflict| {
+            format!(
+                "{} is already used by {}.",
+                settings::key_name(&conflict.key),
+                conflict.other.name()
+            )
+        });
+        let content = v_flex()
+            .id("binding-feedback")
+            .track_focus(&self.feedback_focus)
+            .occlude()
+            .w_64()
+            .gap_2()
+            .p_3()
+            .text_sm()
+            .popover_style(cx)
+            .tab_group()
+            .on_mouse_down_out(cx.listener({
+                let trigger_bounds = trigger_bounds.clone();
+                move |view, event: &MouseDownEvent, _, cx| {
+                    if view.binding_target() == Some(target)
+                        && !trigger_bounds.get().contains(&event.position)
+                    {
+                        view.cancel_binding(cx);
+                    }
+                }
+            }))
+            .when_some(self.error.clone(), |panel, error| {
+                panel.child(
+                    div()
+                        .id("binding-error")
+                        .role(Role::Alert)
+                        .aria_label(error.clone())
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                )
+            })
+            .when_some(conflict_message, |panel, message| {
+                panel
+                    .role(Role::Dialog)
+                    .aria_label(message.clone())
+                    .child(message)
+            })
+            .when_some(self.conflict.as_ref(), |panel, conflict| {
+                let old = conflict.target.key(&cx.global::<Desktop>().preferences);
+                panel.child(
+                    h_flex()
+                        .gap_2()
+                        .justify_end()
+                        .child(
+                            Button::new("cancel-binding")
+                                .small()
+                                .ghost()
+                                .label("Cancel")
+                                .on_click(cx.listener({
+                                    let focus = focus.clone();
+                                    move |view, _, window, cx| {
+                                        view.cancel_binding(cx);
+                                        focus.focus(window, cx);
+                                    }
+                                })),
+                        )
+                        .when(conflict.other.accepts(&old), |actions| {
+                            actions.child(
+                                Button::new("swap-bindings")
+                                    .small()
+                                    .primary()
+                                    .label("Swap")
+                                    .on_click(cx.listener({
+                                        let focus = focus.clone();
+                                        move |view, _, window, cx| {
+                                            view.swap_binding(cx);
+                                            focus.focus(window, cx);
+                                        }
+                                    })),
+                            )
+                        }),
+                )
+            });
+        popup
+            .on_position(move |_, bounds| trigger_bounds.set(bounds))
+            .content(content)
     }
-    fn controls(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn controls(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         v_flex()
             .gap_4()
             .child(
@@ -530,8 +588,8 @@ impl Settings {
                         h_flex()
                             .gap_4()
                             .child(div().w_16().child(name))
-                            .child(self.key_button(Capture::Button(ix), cx))
-                            .child(self.key_button(Capture::Gamepad(ix), cx))
+                            .child(self.key_button(Capture::Button(ix), window, cx))
+                            .child(self.key_button(Capture::Gamepad(ix), window, cx))
                     }),
             )
             .child(
@@ -542,7 +600,7 @@ impl Settings {
             )
             .into_any_element()
     }
-    fn hotkeys(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn hotkeys(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let shortcuts = commands::shortcuts();
         v_flex()
             .gap_3()
@@ -555,14 +613,14 @@ impl Settings {
                             .justify_between()
                             .gap_3()
                             .child("Fast-forward while held")
-                            .child(self.key_button(Capture::FastHold, cx)),
+                            .child(self.key_button(Capture::FastHold, window, cx)),
                     )
                     .child(
                         h_flex()
                             .justify_between()
                             .gap_3()
                             .child("Walk while held")
-                            .child(self.key_button(Capture::WalkHold, cx)),
+                            .child(self.key_button(Capture::WalkHold, window, cx)),
                     ),
             )
             .children(["System", "States", "Screen"].map(|group| {
@@ -582,7 +640,7 @@ impl Settings {
                                     .gap_3()
                                     .justify_between()
                                     .child(shortcut.label)
-                                    .child(self.key_button(Capture::Shortcut(ix), cx))
+                                    .child(self.key_button(Capture::Shortcut(ix), window, cx))
                             }),
                     )
             }))
@@ -824,9 +882,9 @@ impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.section {
             Section::Display => self.palettes.clone().into_any_element(),
-            Section::Controls => self.controls(cx),
+            Section::Controls => self.controls(window, cx),
             Section::General => self.general(cx),
-            Section::Hotkeys => self.hotkeys(cx),
+            Section::Hotkeys => self.hotkeys(window, cx),
         };
         let sections = [
             Section::General,
@@ -858,9 +916,13 @@ impl Render for Settings {
                     }
                 }
             }))
-            .capture_key_down(cx.listener(|view, event: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" && view.binding_target().is_some() {
+                    let focus = view.binding_focus.clone();
                     view.cancel_binding(cx);
+                    if let Some(focus) = focus {
+                        focus.focus(window, cx);
+                    }
                     cx.stop_propagation();
                 }
             }))
