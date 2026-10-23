@@ -41,13 +41,13 @@ def main():
         (contents / "MacOS").mkdir(parents=True)
         (contents / "Resources").mkdir()
         shutil.copy2(binary, contents / "MacOS/hachistep")
-        shutil.copy2(assets / "macos/icon.icns", contents / "Resources/Hachistep.icns")
+        shutil.copy2(assets / "macos/icon.icns", contents / "Resources/hachistep.icns")
         shutil.copy2(ROOT.parent / "LICENSE", contents / "Resources/LICENSE")
         with (contents / "Info.plist").open("wb") as file:
             plistlib.dump({
                 "CFBundleExecutable": "hachistep", "CFBundleName": "hachistep",
                 "CFBundleDisplayName": "hachistep", "CFBundleIdentifier": "me.kukas.hachistep",
-                "CFBundlePackageType": "APPL", "CFBundleIconFile": "Hachistep.icns",
+                "CFBundlePackageType": "APPL", "CFBundleIconFile": "hachistep.icns",
                 "CFBundleShortVersionString": version.split("-")[0],
                 "CFBundleVersion": version.split("-")[0],
                 "NSHighResolutionCapable": True,

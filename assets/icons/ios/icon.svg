@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Hachistep iOS light app icon">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="hachistep iOS light app icon">
 <defs><linearGradient id="iosBG" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#FFF9EF"/><stop offset="1" stop-color="#F1E8D6"/></linearGradient></defs>
 <rect width="1024" height="1024" fill="url(#iosBG)"/>
 <svg x="62" y="62" width="900" height="900" viewBox="0 0 512 512">

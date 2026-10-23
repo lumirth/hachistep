@@ -69,9 +69,9 @@ To connect a walker to stock melonDS 1.1 on the same computer, set up melonDS on
 For each session:
 
 1. Start HeartGold or SoulSilver in melonDS.
-2. In HachiStep, choose **Tools → Infrared…** and select **melonDS**.
+2. In hachistep, choose **Tools → Infrared…** and select **melonDS**.
    If you changed the ARM9 port, enter it beside **ARM9 port**.
-   Click **Connect** and wait until HachiStep connects.
+   Click **Connect** and wait until hachistep connects.
 3. On the game's main menu, select **Connect to Pokéwalker**.
    Follow the prompts until the game waits for the walker.
 4. On a new walker's home screen, press the middle button. On a registered walker,
@@ -83,12 +83,12 @@ The Infrared window also offers **Local Link** for other open walkers and **TCP*
 for compatible emulators. The connection diagram shows optical activity in each
 direction. The game and walker display the transfer result.
 
-Keep both emulators at normal speed during transfers. Disconnect HachiStep before
+Keep both emulators at normal speed during transfers. Disconnect hachistep before
 changing games or loading a melonDS state, then reconnect.
 Only one walker can use a melonDS debugger port at a time. If a game session contains
-an older HachiStep adapter, reset the game in melonDS before reconnecting.
+an older hachistep adapter, reset the game in melonDS before reconnecting.
 
-HachiStep recognizes the cartridge IR driver across all HGSS languages and in
+hachistep recognizes the cartridge IR driver across all HGSS languages and in
 hacks that retain the retail driver and the standard Pokéwalker protocol. It rejects
 unrecognized drivers. The connection installs a temporary adapter in game RAM.
 Reset the game to remove the adapter.

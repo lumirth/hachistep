@@ -1,4 +1,4 @@
-"""Native and WASI command invocation for HachiStep host tools."""
+"""Native and WASI command invocation for hachistep host tools."""
 import shutil
 from pathlib import Path
 

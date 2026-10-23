@@ -1,6 +1,8 @@
 # Agent guidance
 
-Treat HachiStep as a fresh implementation. Never consult past HachiStep implementations,
+Write the product name as `hachistep` in all copy, including sentence starts and headings.
+
+Treat hachistep as a fresh implementation. Never consult past hachistep implementations,
 their documentation, or project memories. Ground decisions in this repository, agreed
 requirements, hardware documentation, observations, and the `pw` decompilation.
 
